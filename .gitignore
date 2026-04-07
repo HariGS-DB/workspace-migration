@@ -1,5 +1,9 @@
-*conf*.json
 .DS_Store
-__pycache__
-.idea/
+__pycache__/
+*.pyc
 .env
+*.egg-info/
+dist/
+build/
+.databricks/
+.venv/

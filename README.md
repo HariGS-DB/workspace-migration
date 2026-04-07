@@ -1,28 +1,22 @@
-# REPO NAME 
+# Azure UK South Control Plane Migration Analysis
 
-```
-Placeholder
+Analysis of workspaces with data plane in **UK South** and control plane in **UK West**,
+in preparation for introducing a dedicated control plane for UK South.
 
-Fill here a description at a functional level - what is this content doing
-```
+## Key Findings (Q4 2025: Oct-Dec 2025)
 
-## Video Overview
+- **1,222 paying accounts** / **2,075 total active accounts** (including zero-consumption)
+- **7,076 paying workspaces** / **12,139 total active workspaces**
+- **56.9M DBUs** / **$15.2M** consumption in Q4 2025
+- **56% UC adoption** by dollars ($8.5M UC vs $6.7M legacy)
+- **12.6M UC tables** registered (4.5M managed, 2.4M external, 1.1M foreign)
 
-Include a GIF overview of what your project does. Use a service like Quicktime, Zoom or Loom to create the video, then convert to a GIF.
+## Files
 
-
-## Installation
-
-Include details on how to use and install this content. 
-
-## How to get help
-
-Databricks support doesn't cover this content. For questions or bugs, please open a GitHub issue and the team will help on a best effort basis.
-
-
-## License
-
-&copy; 2025 Databricks, Inc. All rights reserved. The source in this notebook is provided subject to the Databricks License [https://databricks.com/db-license-source].  All included or referenced third party libraries are subject to the licenses set forth below.
-
-| library                                | description             | license    | source                                              |
-|----------------------------------------|-------------------------|------------|-----------------------------------------------------|
+| File | Description |
+|------|-------------|
+| `queries/01_active_workspaces.sql` | Active workspaces with Q4 consumption |
+| `queries/02_product_breakdown.sql` | Product type and SKU breakdown |
+| `queries/03_uc_vs_legacy.sql` | Unity Catalog vs legacy Hive split |
+| `queries/04_table_type_breakdown.sql` | Managed vs external table counts |
+| `data/` | CSV exports of query results |
