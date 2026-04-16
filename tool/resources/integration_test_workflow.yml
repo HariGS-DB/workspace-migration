@@ -54,8 +54,4 @@ resources:
             spark_version: "15.4.x-scala2.12"
             node_type_id: "Standard_D4ds_v5"
             num_workers: 0
-            spark_conf:
-              "spark.master": "local[*]"
-              "spark.databricks.cluster.profile": "singleNode"
-            custom_tags:
-              "ResourceClass": "SingleNode"
+            data_security_mode: "SINGLE_USER"
