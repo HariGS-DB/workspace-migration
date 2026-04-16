@@ -5,7 +5,7 @@ from typing import TYPE_CHECKING
 from common.config import MigrationConfig
 
 if TYPE_CHECKING:
-    from pyspark.sql import DataFrame
+    from pyspark.sql import DataFrame, SparkSession
 
 
 class TrackingManager:

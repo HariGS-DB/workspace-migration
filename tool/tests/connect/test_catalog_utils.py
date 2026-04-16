@@ -1,4 +1,5 @@
 """Test catalog operations against real Unity Catalog via SQL connector."""
+
 from __future__ import annotations
 
 

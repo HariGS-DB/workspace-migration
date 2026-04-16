@@ -9,6 +9,7 @@ Requires:
   - DATABRICKS_HOST env var
   - A SQL warehouse on the workspace (auto-discovered)
 """
+
 from __future__ import annotations
 
 import os
@@ -57,7 +58,7 @@ def sql(sql_connection):
         cursor.execute(statement)
         if cursor.description:
             columns = [desc[0] for desc in cursor.description]
-            rows = [dict(zip(columns, row)) for row in cursor.fetchall()]
+            rows = [dict(zip(columns, row, strict=False)) for row in cursor.fetchall()]
         else:
             rows = []
         cursor.close()
