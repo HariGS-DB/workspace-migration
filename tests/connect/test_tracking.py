@@ -1,4 +1,5 @@
 """Test tracking table operations against real Delta tables via SQL connector."""
+
 from __future__ import annotations
 
 import uuid

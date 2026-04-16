@@ -22,10 +22,10 @@ def find_warehouse(auth_mgr: AuthManager) -> str:
     for wh in warehouses:
         if wh.state and wh.state.value in ("RUNNING", "STARTING"):
             logger.info("Using warehouse '%s' (%s).", wh.name, wh.id)
-            return wh.id
+            return wh.id  # type: ignore[return-value]
     if warehouses:
         logger.info("No running warehouse found; using '%s' (%s).", warehouses[0].name, warehouses[0].id)
-        return warehouses[0].id
+        return warehouses[0].id  # type: ignore[return-value]
     msg = "No SQL warehouse found on the target workspace."
     raise RuntimeError(msg)
 
@@ -48,7 +48,7 @@ def execute_and_poll(
 
     elapsed = 0
     while elapsed < poll_timeout:
-        status_resp = auth_mgr.target_client.statement_execution.get_statement(statement_id)
+        status_resp = auth_mgr.target_client.statement_execution.get_statement(statement_id)  # type: ignore[arg-type]
         state = status_resp.status.state if status_resp.status else None
         if state in (StatementState.SUCCEEDED,):
             return {"state": "SUCCEEDED", "statement_id": statement_id}
