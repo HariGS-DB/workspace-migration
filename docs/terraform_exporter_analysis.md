@@ -1,10 +1,45 @@
 # Terraform Exporter Analysis for UK South Migration
 
+## Decision Summary (2026-04-18)
+
+**UC objects → Code (this DAB tool). Non-UC workspace assets → Terraform Exporter.**
+
+We evaluated the exporter against the 16 UC-governance objects enumerated in Section 2.3.5 of the [Migration Guide](https://docs.google.com/document/d/1wf03gtFsIHKMpIMMBE3k4DyWKSfHg-jnM8iQGAihjpw/). The exporter cleanly covers only 3 of them (Foreign Catalogs, Providers, Lakehouse Monitors) and is materially incomplete for the rest — most notably ABAC policies, row filters, column masks, and per-entity tag assignments, which would silently drop during a TF-based migration.
+
+Because splitting 16 UC object types between two tools (TF for 3, code for 13) creates two reconciliation passes and an opaque customer workflow, we migrate **all UC objects via code** and reserve the exporter for workspace assets (Phase 3 of the guide: notebooks, jobs, cluster policies, SQL warehouses, dashboards, secrets, identity, etc.).
+
+### UC Object Coverage Matrix
+
+| UC Object | TF Resource | Exporter? | Decision | Rationale |
+|---|---|---|---|---|
+| Catalogs, Schemas | Yes | Yes | **Code** | Already in the tool |
+| Managed tables | Yes | Metadata only | **Code** | Data copy needed (DEEP CLONE) — already in tool |
+| External tables | Yes | Metadata only | **Code** | Already in tool |
+| Volumes (ext / managed) | Yes | Yes / partial | **Code** | Already in tool |
+| Views, Functions | Yes | Yes | **Code** | Already in tool; dependency ordering matters |
+| Grants | Yes | Yes, diffs | **Code** | Already in tool |
+| Registered Models | Yes | Metadata only | **Code** | Artifact copy via REST; exporter can't do it |
+| Connections (Fed) | Yes | Yes, no passwords | **Code** | Same password gap both ways; keeps tool coherent |
+| Foreign Catalogs | Yes | Yes | **Code** | Keeps all UC in one tool |
+| Shares / Recipients / Providers | Yes | Yes | **Code** | Customer's own shares (ours is handled separately by setup_sharing) |
+| Online Tables | `databricks_online_table` | Not in exporter | **Code** | REST only |
+| Governed Tags | `databricks_entity_tag_assignment` | Only `tag_policy` definitions | **Code** | Assignments dropped by exporter |
+| ABAC Policies | `databricks_policy_info` (PrPr) | No | **Code** | REST `/unity-catalog/policies` |
+| Row Filters | Via policy_info only | No | **Code** | SQL `ALTER TABLE ... SET ROW FILTER` |
+| Column Masks | Via policy_info only | No | **Code** | SQL `ALTER ... SET MASK` |
+| Comments | Partial (on parent) | Partial | **Code** | Preserved by DEEP CLONE for Delta; DDL for rest |
+| Table Properties | Yes | Yes | **Code** | Preserved by DEEP CLONE for Delta; DDL for rest |
+| Lakehouse Monitors | `data_quality_monitor` | Yes (`dq`) | **Code** | Only to keep UC in one tool; TF would also work |
+| Data Classification | N/A | N/A | **Out of scope** | Auto-rebuilds on new metastore |
+| Lineage | N/A | N/A | **Out of scope** | Auto-rebuilds as jobs run |
+
 ## Overview
 
 The Databricks Terraform Exporter is an **experimental** tool built into the `terraform-provider-databricks` binary. It exports workspace and account-level resources as Terraform HCL + state files, enabling recreation on a new workspace.
 
-**Key takeaway**: The exporter handles ~80% of workspace configuration migration but does NOT handle data migration, MLflow experiments, or secret values. It is the best available automation for the "workspace assets" portion of the migration.
+**Scope for this project:** Per the decision above, we use the exporter **only for non-UC workspace assets** (Phase 3 of the migration guide). The content below describes the exporter's full capability surface and is retained for the workspace-assets implementation.
+
+**Key takeaway for workspace assets**: The exporter handles ~80% of workspace configuration migration but does NOT handle data migration, MLflow experiments, or secret values.
 
 ## What the Exporter CAN Migrate
 
