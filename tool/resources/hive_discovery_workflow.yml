@@ -1,0 +1,9 @@
+resources:
+  jobs:
+    hive_discovery:
+      name: "${var.job_prefix}-hive-discovery"
+      description: "Scan hive_metastore and populate hive_discovery_inventory. Run before hive_migrate."
+      tasks:
+        - task_key: hive_discovery
+          notebook_task:
+            notebook_path: ../src/discovery/hive_discovery.py

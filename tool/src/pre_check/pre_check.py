@@ -160,9 +160,9 @@ def run(dbutils, spark):  # noqa: D103
             if missing:
                 _add(
                     "check_catalog_filter",
-                    "FAIL",
-                    f"Catalogs not found: {missing}",
-                    "Check catalog_filter parameter for typos.",
+                    "WARN",
+                    f"Catalogs listed in catalog_filter not found on source: {missing}. Discovery will skip them.",
+                    "If this is unexpected, check catalog_filter for typos. Safe to ignore when running Hive-only or partial migrations.",
                 )
             else:
                 _add(
@@ -235,6 +235,128 @@ def run(dbutils, spark):  # noqa: D103
             "Run init_tracking_tables or check tracking_catalog/tracking_schema params.",
         )
 
+
+    # ----- Hive Metastore checks (Phase 2) -----
+
+    # 11. check_hive_metastore_accessible
+    try:
+        dbs = spark.sql("SHOW DATABASES IN hive_metastore").collect()
+        _add(
+            "check_hive_metastore_accessible",
+            "PASS",
+            f"Hive metastore reachable; {len(dbs)} database(s) found.",
+        )
+    except Exception as e:
+        _add(
+            "check_hive_metastore_accessible",
+            "WARN",
+            f"hive_metastore not accessible: {e}",
+            "If the source has no Hive data, ignore. Otherwise verify the source workspace has hive_metastore enabled.",
+        )
+
+    # 12. check_hive_dbfs_root_config — surfaces DBFS-root tables and flags
+    # config requirements for the Hive DBFS-root worker.
+    try:
+        from common.catalog_utils import CatalogExplorer as _CE
+        hive_explorer = _CE(spark, auth)
+        dbfs_root_tables: list[str] = []
+        for db in hive_explorer.list_hive_databases():
+            for tbl in hive_explorer.classify_hive_tables(db):
+                if tbl["data_category"] == "hive_managed_dbfs_root":
+                    dbfs_root_tables.append(tbl["fqn"])
+        if not dbfs_root_tables:
+            _add(
+                "check_hive_dbfs_root_config",
+                "PASS",
+                "No Hive DBFS-root managed tables found — migrate_hive_dbfs_root can stay false.",
+            )
+        elif not config.migrate_hive_dbfs_root:
+            _add(
+                "check_hive_dbfs_root_config",
+                "WARN",
+                f"{len(dbfs_root_tables)} Hive DBFS-root managed table(s) discovered; "
+                f"migration skipped because migrate_hive_dbfs_root=false.",
+                "Review the discovered list; set migrate_hive_dbfs_root=true "
+                "and hive_dbfs_target_path in config.yaml to include them.",
+            )
+        elif not config.hive_dbfs_target_path:
+            _add(
+                "check_hive_dbfs_root_config",
+                "FAIL",
+                f"{len(dbfs_root_tables)} DBFS-root table(s) selected for migration but "
+                f"hive_dbfs_target_path is empty.",
+                "Set hive_dbfs_target_path in config.yaml to an ADLS location "
+                "the migration SPN can write to (e.g. abfss://hive@acct.dfs.core.windows.net/upgraded/).",
+            )
+        else:
+            # Probe write to the configured path
+            from datetime import datetime as _dt
+            probe_path = config.hive_dbfs_target_path.rstrip("/") + f"/.precheck_probe_{_dt.utcnow().strftime('%Y%m%d%H%M%S')}"
+            try:
+                spark.createDataFrame([(1,)], "x INT").write.mode("overwrite").format("delta").save(probe_path)  # type: ignore[attr-defined]
+                # Clean up
+                dbutils.fs.rm(probe_path, True)  # type: ignore[attr-defined] # noqa: F821
+                _add(
+                    "check_hive_dbfs_root_config",
+                    "PASS",
+                    f"{len(dbfs_root_tables)} DBFS-root table(s) will migrate to {config.hive_dbfs_target_path}; write probe passed.",
+                )
+            except Exception as probe_exc:  # noqa: BLE001
+                _add(
+                    "check_hive_dbfs_root_config",
+                    "FAIL",
+                    f"Cannot write to hive_dbfs_target_path {config.hive_dbfs_target_path}: {probe_exc}",
+                    "Verify the SPN has write access to this ADLS location, and that a storage credential + external location exists on target.",
+                )
+    except Exception as e:
+        _add(
+            "check_hive_dbfs_root_config",
+            "WARN",
+            f"Could not enumerate Hive tables: {e}",
+            "If hive_metastore is not in use, this is safe to ignore.",
+        )
+
+    # 13. check_external_hive_metastore — surface clusters & jobs that reference
+    # an external Hive metastore (customer-managed MySQL/Azure SQL). These need
+    # manual reconfiguration on target; see docs/external_hive_metastore.md.
+    try:
+        ws = auth.source_client
+        ext_ms_keys = (
+            "javax.jdo.option.ConnectionURL",
+            "spark.hadoop.javax.jdo.option.ConnectionURL",
+            "spark.sql.hive.metastore.jars",
+            "spark.sql.hive.metastore.version",
+        )
+        hits: list[str] = []
+        for c in ws.clusters.list():
+            conf = getattr(c, "spark_conf", None) or {}
+            if any(k in conf for k in ext_ms_keys):
+                hits.append(f"cluster:{c.cluster_name or c.cluster_id}")
+        for w in ws.warehouses.list():
+            conf = getattr(w, "spark_confs", None) or {}
+            if any(k in conf for k in ext_ms_keys):
+                hits.append(f"warehouse:{w.name}")
+        if hits:
+            _add(
+                "check_external_hive_metastore",
+                "WARN",
+                f"External Hive metastore referenced by {len(hits)} compute resource(s): {hits[:10]}"
+                + ("..." if len(hits) > 10 else ""),
+                "See docs/external_hive_metastore.md — customer must recreate clusters/warehouses on target with the same metastore config.",
+            )
+        else:
+            _add(
+                "check_external_hive_metastore",
+                "PASS",
+                "No external Hive metastore references found on source clusters or warehouses.",
+            )
+    except Exception as e:
+        _add(
+            "check_external_hive_metastore",
+            "WARN",
+            f"Could not scan compute for external metastore config: {e}",
+            "Manually check clusters/warehouses for javax.jdo.option.ConnectionURL in spark_conf.",
+        )
 
     # Persist results
     tracker.append_pre_check_results(results)

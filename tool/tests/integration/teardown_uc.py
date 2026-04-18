@@ -2,7 +2,6 @@
 
 # COMMAND ----------
 
-# Bootstrap: put the bundle's `src/` dir on sys.path so `from common...` imports resolve
 import sys  # noqa: E402
 try:
     _ctx = dbutils.notebook.entry_point.getDbutils().notebook().getContext()  # noqa: F821
@@ -11,37 +10,29 @@ try:
     if _src not in sys.path:
         sys.path.insert(0, _src)
 except NameError:
-    pass  # not running under a Databricks notebook (e.g. pytest)
+    pass
 
 # COMMAND ----------
-
-# Teardown: clean up all integration test artifacts (catalogs, schemas, shares).
 
 from databricks.sdk import WorkspaceClient
 
-# COMMAND ----------
-
-# Drop test catalogs and tracking schema
+# Drop UC test catalogs + tracking test schema
 spark.sql("DROP CATALOG IF EXISTS integration_test_tgt CASCADE")  # noqa: F821
 spark.sql("DROP CATALOG IF EXISTS integration_test_src CASCADE")  # noqa: F821
 spark.sql("DROP SCHEMA IF EXISTS migration_tracking.cp_migration_test CASCADE")  # noqa: F821
-
-print("Dropped test catalogs and tracking schema.")
+print("Dropped UC test catalogs.")
 
 # COMMAND ----------
 
-# Clean up delta shares via SDK
+# Clean up Delta Share created during UC migration
 w = WorkspaceClient()
-
-share_names = ["cp_migration_share"]
-for share_name in share_names:
+for share_name in ("cp_migration_share",):
     try:
         w.shares.delete(share_name)
         print(f"Deleted share '{share_name}'.")
     except Exception as e:  # noqa: BLE001
         print(f"Share '{share_name}' cleanup skipped: {e}")
 
-# Clean up recipients matching integration test pattern
 try:
     for recipient in w.recipients.list():
         if recipient.name and "cp_migration_recipient_" in recipient.name:
@@ -53,6 +44,4 @@ try:
 except Exception as e:  # noqa: BLE001
     print(f"Recipient listing skipped: {e}")
 
-# COMMAND ----------
-
-print("Teardown complete.")
+print("UC teardown complete.")
