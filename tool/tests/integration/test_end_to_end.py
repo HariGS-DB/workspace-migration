@@ -22,7 +22,7 @@ from common.tracking import TrackingManager
 
 # COMMAND ----------
 
-config = MigrationConfig.from_job_params(dbutils)  # noqa: F821
+config = MigrationConfig.from_workspace_file()
 tracker = TrackingManager(spark, config)  # noqa: F821
 
 # COMMAND ----------

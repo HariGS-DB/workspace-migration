@@ -1,35 +1,35 @@
 from unittest.mock import MagicMock, patch
 
+import pytest
+
+from common.config import MigrationConfig
 from pre_check.pre_check import run
 
 
-class TestPreCheck:
-    def _make_dbutils(self):
-        dbutils = MagicMock()
-        dbutils.widgets.get.side_effect = lambda key: {
-            "source_workspace_url": "https://source.test",
-            "target_workspace_url": "https://target.test",
-            "spn_client_id": "test-id",
-            "spn_secret_scope": "scope",
-            "spn_secret_key": "key",
-            "catalog_filter": "",
-            "schema_filter": "",
-            "tracking_catalog": "migration_tracking",
-            "tracking_schema": "cp_migration",
-            "dry_run": "false",
-            "batch_size": "50",
-        }.get(key, "")
-        dbutils.secrets.get.return_value = "fake-secret"
-        return dbutils
+def _make_config(**overrides) -> MigrationConfig:
+    defaults = dict(
+        source_workspace_url="https://source.test",
+        target_workspace_url="https://target.test",
+        spn_client_id="test-id",
+        spn_secret_scope="scope",
+        spn_secret_key="key",
+    )
+    defaults.update(overrides)
+    return MigrationConfig(**defaults)
 
+
+class TestPreCheck:
+    @patch("pre_check.pre_check.MigrationConfig.from_workspace_file")
     @patch("pre_check.pre_check.AuthManager")
     @patch("pre_check.pre_check.TrackingManager")
     @patch("pre_check.pre_check.CatalogExplorer")
-    def test_all_checks_pass(self, mock_explorer_cls, mock_tracker_cls, mock_auth_cls):
-        dbutils = self._make_dbutils()
+    def test_all_checks_pass(
+        self, mock_explorer_cls, mock_tracker_cls, mock_auth_cls, mock_from_file
+    ):
+        dbutils = MagicMock()
         spark = MagicMock()
+        mock_from_file.return_value = _make_config()
 
-        # Mock auth
         mock_auth = mock_auth_cls.return_value
         mock_auth.test_connectivity.return_value = {"source": True, "target": True}
         mock_auth.source_client.shares.list.return_value = []
@@ -38,25 +38,25 @@ class TestPreCheck:
         mock_auth.target_client.storage_credentials.list.return_value = [MagicMock()]
         mock_auth.target_client.external_locations.list.return_value = [MagicMock()]
 
-        # Mock explorer
         mock_explorer_cls.return_value.list_catalogs.return_value = ["cat_a"]
-
-        # Mock spark
         spark.sql.return_value.first.return_value = MagicMock(ms="test-metastore-id")
 
         results = run(dbutils, spark)
 
         assert len(results) == 10
         assert all(r["status"] in ("PASS", "WARN") for r in results)
-        fail_count = sum(1 for r in results if r["status"] == "FAIL")
-        assert fail_count == 0
+        assert sum(1 for r in results if r["status"] == "FAIL") == 0
 
+    @patch("pre_check.pre_check.MigrationConfig.from_workspace_file")
     @patch("pre_check.pre_check.AuthManager")
     @patch("pre_check.pre_check.TrackingManager")
     @patch("pre_check.pre_check.CatalogExplorer")
-    def test_auth_failure_raises(self, mock_explorer_cls, mock_tracker_cls, mock_auth_cls):
-        dbutils = self._make_dbutils()
+    def test_auth_failure_raises(
+        self, mock_explorer_cls, mock_tracker_cls, mock_auth_cls, mock_from_file
+    ):
+        dbutils = MagicMock()
         spark = MagicMock()
+        mock_from_file.return_value = _make_config()
 
         mock_auth = mock_auth_cls.return_value
         mock_auth.test_connectivity.return_value = {"source": False, "target": True}
@@ -66,8 +66,6 @@ class TestPreCheck:
         mock_auth.target_client.storage_credentials.list.return_value = []
         mock_auth.target_client.external_locations.list.return_value = []
         mock_explorer_cls.return_value.list_catalogs.return_value = []
-
-        import pytest
 
         with pytest.raises(Exception, match="Pre-check failed"):
             run(dbutils, spark)

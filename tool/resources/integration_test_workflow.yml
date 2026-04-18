@@ -2,29 +2,6 @@ resources:
   jobs:
     integration_test_workflow:
       name: "${var.job_prefix}-integration-test"
-      parameters:
-        - name: source_workspace_url
-          default: "${var.source_workspace_url}"
-        - name: target_workspace_url
-          default: "${var.target_workspace_url}"
-        - name: spn_client_id
-          default: "${var.spn_client_id}"
-        - name: spn_secret_scope
-          default: "${var.spn_secret_scope}"
-        - name: spn_secret_key
-          default: "${var.spn_secret_key}"
-        - name: catalog_filter
-          default: "integration_test_src"
-        - name: schema_filter
-          default: "${var.schema_filter}"
-        - name: tracking_catalog
-          default: "${var.tracking_catalog}"
-        - name: tracking_schema
-          default: "${var.tracking_schema}"
-        - name: dry_run
-          default: "${var.dry_run}"
-        - name: batch_size
-          default: "${var.batch_size}"
       tasks:
         - task_key: seed_test_data
           notebook_task:
