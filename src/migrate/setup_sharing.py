@@ -242,7 +242,7 @@ def ensure_target_catalogs_and_schemas(
 
 def run(dbutils, spark) -> None:  # noqa: ARG001
     """Entry point when running as a Databricks notebook."""
-    config = MigrationConfig.from_job_params(dbutils)
+    config = MigrationConfig.from_workspace_file()
     auth = AuthManager(config, dbutils)
     spark_session = spark
     tracker = TrackingManager(spark_session, config)

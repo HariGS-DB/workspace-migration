@@ -1,33 +1,33 @@
 from unittest.mock import MagicMock, patch
 
+from common.config import MigrationConfig
 from discovery.discovery import run
 
 
-class TestDiscovery:
-    def _make_dbutils(self):
-        dbutils = MagicMock()
-        dbutils.widgets.get.side_effect = lambda key: {
-            "source_workspace_url": "https://source.test",
-            "target_workspace_url": "https://target.test",
-            "spn_client_id": "test-id",
-            "spn_secret_scope": "scope",
-            "spn_secret_key": "key",
-            "catalog_filter": "test_catalog",
-            "schema_filter": "",
-            "tracking_catalog": "migration_tracking",
-            "tracking_schema": "cp_migration",
-            "dry_run": "false",
-            "batch_size": "50",
-        }.get(key, "")
-        dbutils.secrets.get.return_value = "fake-secret"
-        return dbutils
+def _make_config(**overrides) -> MigrationConfig:
+    defaults = dict(
+        source_workspace_url="https://source.test",
+        target_workspace_url="https://target.test",
+        spn_client_id="test-id",
+        spn_secret_scope="scope",
+        spn_secret_key="key",
+        catalog_filter=["test_catalog"],
+    )
+    defaults.update(overrides)
+    return MigrationConfig(**defaults)
 
+
+class TestDiscovery:
+    @patch("discovery.discovery.MigrationConfig.from_workspace_file")
     @patch("discovery.discovery.AuthManager")
     @patch("discovery.discovery.TrackingManager")
     @patch("discovery.discovery.CatalogExplorer")
-    def test_discovers_objects(self, mock_explorer_cls, mock_tracker_cls, mock_auth_cls):
-        dbutils = self._make_dbutils()
+    def test_discovers_objects(
+        self, mock_explorer_cls, mock_tracker_cls, mock_auth_cls, mock_from_file
+    ):
+        dbutils = MagicMock()
         spark = MagicMock()
+        mock_from_file.return_value = _make_config()
 
         explorer = mock_explorer_cls.return_value
         explorer.list_catalogs.return_value = ["test_catalog"]
@@ -50,21 +50,24 @@ class TestDiscovery:
 
         inventory = run(dbutils, spark)
 
-        assert len(inventory) == 3  # 1 table + 1 function + 1 volume
+        assert len(inventory) == 3
         types = {obj["object_type"] for obj in inventory}
         assert types == {"managed_table", "function", "volume"}
 
-        # Verify tracker was called
         tracker = mock_tracker_cls.return_value
         tracker.init_tracking_tables.assert_called_once()
         tracker.write_discovery_inventory.assert_called_once()
 
+    @patch("discovery.discovery.MigrationConfig.from_workspace_file")
     @patch("discovery.discovery.AuthManager")
     @patch("discovery.discovery.TrackingManager")
     @patch("discovery.discovery.CatalogExplorer")
-    def test_empty_catalog(self, mock_explorer_cls, mock_tracker_cls, mock_auth_cls):
-        dbutils = self._make_dbutils()
+    def test_empty_catalog(
+        self, mock_explorer_cls, mock_tracker_cls, mock_auth_cls, mock_from_file
+    ):
+        dbutils = MagicMock()
         spark = MagicMock()
+        mock_from_file.return_value = _make_config()
 
         explorer = mock_explorer_cls.return_value
         explorer.list_catalogs.return_value = ["test_catalog"]

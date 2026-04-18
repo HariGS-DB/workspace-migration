@@ -69,12 +69,12 @@ def test_no_indented_command_markers(nb: Path) -> None:
 def test_widgets_declared_before_use(nb: Path) -> None:
     """Every dbutils.widgets.get(name) call must be preceded by a
     dbutils.widgets.text(name, ...) call in the same file, OR the file must
-    delegate to MigrationConfig.from_job_params (which declares widgets with
-    defaults).
+    load configuration via MigrationConfig.from_workspace_file() (which does
+    not use widgets at all).
     """
     source = nb.read_text()
-    if "MigrationConfig.from_job_params" in source:
-        return  # delegates to from_job_params which handles declaration
+    if "MigrationConfig.from_workspace_file" in source:
+        return  # notebook uses the workspace-file config path; no widgets expected
     tree = ast.parse(source)
 
     declared: set[str] = set()

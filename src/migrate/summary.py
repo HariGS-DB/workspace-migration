@@ -142,7 +142,7 @@ def _is_notebook() -> bool:
 
 
 if _is_notebook():
-    config = MigrationConfig.from_job_params(dbutils)  # type: ignore[name-defined] # noqa: F821
+    config = MigrationConfig.from_workspace_file()  # type: ignore[name-defined] # noqa: F821
     spark_session = spark  # type: ignore[name-defined] # noqa: F821
     tracker = TrackingManager(spark_session, config)
 

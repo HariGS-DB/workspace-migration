@@ -6,6 +6,7 @@ from common.config import MigrationConfig
 
 @pytest.fixture
 def mock_config() -> MigrationConfig:
+    """Default MigrationConfig used across unit tests."""
     return MigrationConfig(
         source_workspace_url="https://source.azuredatabricks.net",
         target_workspace_url="https://target.azuredatabricks.net",
@@ -20,24 +21,10 @@ def mock_config() -> MigrationConfig:
 
 @pytest.fixture
 def mock_dbutils():
+    """Minimal dbutils mock. Config is now loaded from a workspace YAML file, so
+    most tests mock MigrationConfig.from_workspace_file directly instead of
+    relying on widget seeding here. Left for tests that only need secrets.get."""
     dbutils = MagicMock()
-    _widget_values = {
-        "source_workspace_url": "https://source.azuredatabricks.net",
-        "target_workspace_url": "https://target.azuredatabricks.net",
-        "spn_client_id": "test-client-id",
-        "spn_secret_scope": "migration-scope",
-        "spn_secret_key": "spn-secret",
-        "catalog_filter": "catalog_a, catalog_b",
-        "schema_filter": "",
-        "tracking_catalog": "migration_tracking",
-        "tracking_schema": "cp_migration",
-        "dry_run": "false",
-        "batch_size": "50",
-    }
-    # Use .get with default so new widgets (added via `dbutils.widgets.text`) that
-    # aren't pre-seeded here fall back cleanly rather than raising KeyError.
-    dbutils.widgets.get.side_effect = lambda key: _widget_values.get(key, "")
-    dbutils.widgets.text.side_effect = lambda name, default, *args, **kwargs: _widget_values.setdefault(name, default)
     dbutils.secrets.get.return_value = "fake-secret"
     return dbutils
 
