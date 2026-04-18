@@ -41,9 +41,17 @@ class TestPreCheck:
         mock_explorer_cls.return_value.list_catalogs.return_value = ["cat_a"]
         spark.sql.return_value.first.return_value = MagicMock(ms="test-metastore-id")
 
+        # Phase 2 additions need a source_client that supports cluster/warehouse listing
+        mock_auth.source_client.clusters.list.return_value = []
+        mock_auth.source_client.warehouses.list.return_value = []
+        # Hive enumeration used by check_hive_dbfs_root_config — succeed with no DBFs
+        mock_explorer_cls.return_value.list_hive_databases.return_value = []
+        mock_explorer_cls.return_value.classify_hive_tables.return_value = []
+
         results = run(dbutils, spark)
 
-        assert len(results) == 10
+        # 10 core UC checks + 3 Hive/external-metastore checks = 13
+        assert len(results) == 13
         assert all(r["status"] in ("PASS", "WARN") for r in results)
         assert sum(1 for r in results if r["status"] == "FAIL") == 0
 

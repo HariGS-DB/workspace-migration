@@ -1,20 +1,332 @@
 {
+  "datasets": [
+    {
+      "name": "latest_status",
+      "displayName": "Latest Migration Status",
+      "queryLines": [
+        "SELECT * FROM (\n",
+        "  SELECT *,\n",
+        "    ROW_NUMBER() OVER (PARTITION BY object_name, object_type ORDER BY migrated_at DESC) AS rn\n",
+        "  FROM migration_tracking.cp_migration.migration_status\n",
+        ") WHERE rn = 1"
+      ]
+    },
+    {
+      "name": "status_summary",
+      "displayName": "Status Summary",
+      "queryLines": [
+        "SELECT status, COUNT(*) AS n\n",
+        "FROM (\n",
+        "  SELECT status,\n",
+        "    ROW_NUMBER() OVER (PARTITION BY object_name, object_type ORDER BY migrated_at DESC) AS rn\n",
+        "  FROM migration_tracking.cp_migration.migration_status\n",
+        ") WHERE rn = 1\n",
+        "GROUP BY status\n",
+        "ORDER BY n DESC"
+      ]
+    },
+    {
+      "name": "object_type_breakdown",
+      "displayName": "By Object Type",
+      "queryLines": [
+        "SELECT object_type, status, COUNT(*) AS n\n",
+        "FROM (\n",
+        "  SELECT object_type, status,\n",
+        "    ROW_NUMBER() OVER (PARTITION BY object_name, object_type ORDER BY migrated_at DESC) AS rn\n",
+        "  FROM migration_tracking.cp_migration.migration_status\n",
+        ") WHERE rn = 1\n",
+        "GROUP BY object_type, status\n",
+        "ORDER BY object_type, n DESC"
+      ]
+    },
+    {
+      "name": "recent_activity",
+      "displayName": "Recent Migrations",
+      "queryLines": [
+        "SELECT migrated_at, object_type, object_name, status, error_message, duration_seconds\n",
+        "FROM migration_tracking.cp_migration.migration_status\n",
+        "ORDER BY migrated_at DESC\n",
+        "LIMIT 200"
+      ]
+    },
+    {
+      "name": "failures",
+      "displayName": "Failures",
+      "queryLines": [
+        "SELECT object_name, object_type, status, error_message, migrated_at\n",
+        "FROM (\n",
+        "  SELECT *,\n",
+        "    ROW_NUMBER() OVER (PARTITION BY object_name, object_type ORDER BY migrated_at DESC) AS rn\n",
+        "  FROM migration_tracking.cp_migration.migration_status\n",
+        ") WHERE rn = 1 AND status IN ('failed', 'validation_failed')"
+      ]
+    },
+    {
+      "name": "row_count_validation",
+      "displayName": "Row Count Validation",
+      "queryLines": [
+        "SELECT object_name, object_type, source_row_count, target_row_count,\n",
+        "  CASE WHEN source_row_count = target_row_count THEN 'match' ELSE 'mismatch' END AS row_count_check,\n",
+        "  migrated_at\n",
+        "FROM (\n",
+        "  SELECT *,\n",
+        "    ROW_NUMBER() OVER (PARTITION BY object_name, object_type ORDER BY migrated_at DESC) AS rn\n",
+        "  FROM migration_tracking.cp_migration.migration_status\n",
+        ") WHERE rn = 1 AND source_row_count IS NOT NULL AND target_row_count IS NOT NULL\n",
+        "ORDER BY row_count_check DESC, object_name"
+      ]
+    },
+    {
+      "name": "pre_check_latest",
+      "displayName": "Latest Pre-Check Results",
+      "queryLines": [
+        "SELECT check_name, status, message, action_required, checked_at FROM (\n",
+        "  SELECT *,\n",
+        "    ROW_NUMBER() OVER (PARTITION BY check_name ORDER BY checked_at DESC) AS rn\n",
+        "  FROM migration_tracking.cp_migration.pre_check_results\n",
+        ") WHERE rn = 1\n",
+        "ORDER BY CASE status WHEN 'FAIL' THEN 0 WHEN 'WARN' THEN 1 ELSE 2 END, check_name"
+      ]
+    },
+    {
+      "name": "discovery_counts",
+      "displayName": "Discovery Inventory",
+      "queryLines": [
+        "SELECT object_type, COUNT(*) AS count\n",
+        "FROM migration_tracking.cp_migration.discovery_inventory\n",
+        "GROUP BY object_type\n",
+        "ORDER BY count DESC"
+      ]
+    }
+  ],
   "pages": [
     {
-      "name": "Overview",
-      "displayName": "Migration Overview"
+      "name": "overview",
+      "displayName": "Overview",
+      "layout": [
+        {
+          "widget": {
+            "name": "overview_header",
+            "textbox_spec": "# Migration Overview\n\nHigh-level view of UC migration progress. Status reflects the latest known state per object (deduplicated by object_name + object_type)."
+          },
+          "position": {"x": 0, "y": 0, "width": 6, "height": 2}
+        },
+        {
+          "widget": {
+            "name": "status_summary_widget",
+            "queries": [{
+              "name": "main_query",
+              "query": {
+                "datasetName": "status_summary",
+                "fields": [{"name": "status", "expression": "`status`"}, {"name": "n", "expression": "`n`"}],
+                "disaggregated": true
+              }
+            }],
+            "spec": {
+              "version": 3,
+              "widgetType": "bar",
+              "encodings": {
+                "x": {"fieldName": "status", "displayName": "Status", "scale": {"type": "categorical"}},
+                "y": {"fieldName": "n", "displayName": "Count", "scale": {"type": "quantitative"}}
+              },
+              "frame": {"title": "Status breakdown", "showTitle": true}
+            }
+          },
+          "position": {"x": 0, "y": 2, "width": 3, "height": 5}
+        },
+        {
+          "widget": {
+            "name": "discovery_counts_widget",
+            "queries": [{
+              "name": "main_query",
+              "query": {
+                "datasetName": "discovery_counts",
+                "fields": [{"name": "object_type", "expression": "`object_type`"}, {"name": "count", "expression": "`count`"}],
+                "disaggregated": true
+              }
+            }],
+            "spec": {
+              "version": 3,
+              "widgetType": "bar",
+              "encodings": {
+                "x": {"fieldName": "object_type", "displayName": "Object Type", "scale": {"type": "categorical"}},
+                "y": {"fieldName": "count", "displayName": "Count", "scale": {"type": "quantitative"}}
+              },
+              "frame": {"title": "Discovered objects by type", "showTitle": true}
+            }
+          },
+          "position": {"x": 3, "y": 2, "width": 3, "height": 5}
+        },
+        {
+          "widget": {
+            "name": "object_type_breakdown_widget",
+            "queries": [{
+              "name": "main_query",
+              "query": {
+                "datasetName": "object_type_breakdown",
+                "fields": [
+                  {"name": "object_type", "expression": "`object_type`"},
+                  {"name": "status", "expression": "`status`"},
+                  {"name": "n", "expression": "`n`"}
+                ],
+                "disaggregated": true
+              }
+            }],
+            "spec": {
+              "version": 3,
+              "widgetType": "bar",
+              "encodings": {
+                "x": {"fieldName": "object_type", "displayName": "Object Type", "scale": {"type": "categorical"}},
+                "y": {"fieldName": "n", "displayName": "Count", "scale": {"type": "quantitative"}},
+                "color": {"fieldName": "status", "displayName": "Status", "scale": {"type": "categorical"}}
+              },
+              "frame": {"title": "Migration status per object type", "showTitle": true}
+            }
+          },
+          "position": {"x": 0, "y": 7, "width": 6, "height": 5}
+        }
+      ]
     },
     {
-      "name": "Detail",
-      "displayName": "Migration Detail"
+      "name": "detail",
+      "displayName": "Detail",
+      "layout": [
+        {
+          "widget": {
+            "name": "detail_header",
+            "textbox_spec": "# Migration Detail\n\nRecent migration activity. Use column filters to drill into specific object types or failure reasons."
+          },
+          "position": {"x": 0, "y": 0, "width": 6, "height": 2}
+        },
+        {
+          "widget": {
+            "name": "recent_activity_widget",
+            "queries": [{
+              "name": "main_query",
+              "query": {
+                "datasetName": "recent_activity",
+                "fields": [
+                  {"name": "migrated_at", "expression": "`migrated_at`"},
+                  {"name": "object_type", "expression": "`object_type`"},
+                  {"name": "object_name", "expression": "`object_name`"},
+                  {"name": "status", "expression": "`status`"},
+                  {"name": "error_message", "expression": "`error_message`"},
+                  {"name": "duration_seconds", "expression": "`duration_seconds`"}
+                ],
+                "disaggregated": true
+              }
+            }],
+            "spec": {
+              "version": 1,
+              "widgetType": "table",
+              "frame": {"title": "Recent activity (200 most recent)", "showTitle": true}
+            }
+          },
+          "position": {"x": 0, "y": 2, "width": 6, "height": 10}
+        }
+      ]
     },
     {
-      "name": "Validation",
-      "displayName": "Validation Results"
+      "name": "validation",
+      "displayName": "Validation",
+      "layout": [
+        {
+          "widget": {
+            "name": "validation_header",
+            "textbox_spec": "# Validation Results\n\nRow count validation and failure list. Any row-count mismatch should be investigated before cutover."
+          },
+          "position": {"x": 0, "y": 0, "width": 6, "height": 2}
+        },
+        {
+          "widget": {
+            "name": "row_count_widget",
+            "queries": [{
+              "name": "main_query",
+              "query": {
+                "datasetName": "row_count_validation",
+                "fields": [
+                  {"name": "object_name", "expression": "`object_name`"},
+                  {"name": "object_type", "expression": "`object_type`"},
+                  {"name": "source_row_count", "expression": "`source_row_count`"},
+                  {"name": "target_row_count", "expression": "`target_row_count`"},
+                  {"name": "row_count_check", "expression": "`row_count_check`"},
+                  {"name": "migrated_at", "expression": "`migrated_at`"}
+                ],
+                "disaggregated": true
+              }
+            }],
+            "spec": {
+              "version": 1,
+              "widgetType": "table",
+              "frame": {"title": "Row count validation", "showTitle": true}
+            }
+          },
+          "position": {"x": 0, "y": 2, "width": 6, "height": 6}
+        },
+        {
+          "widget": {
+            "name": "failures_widget",
+            "queries": [{
+              "name": "main_query",
+              "query": {
+                "datasetName": "failures",
+                "fields": [
+                  {"name": "object_name", "expression": "`object_name`"},
+                  {"name": "object_type", "expression": "`object_type`"},
+                  {"name": "status", "expression": "`status`"},
+                  {"name": "error_message", "expression": "`error_message`"},
+                  {"name": "migrated_at", "expression": "`migrated_at`"}
+                ],
+                "disaggregated": true
+              }
+            }],
+            "spec": {
+              "version": 1,
+              "widgetType": "table",
+              "frame": {"title": "Failures", "showTitle": true}
+            }
+          },
+          "position": {"x": 0, "y": 8, "width": 6, "height": 6}
+        }
+      ]
     },
     {
-      "name": "PreChecks",
-      "displayName": "Pre-Check Results"
+      "name": "pre_checks",
+      "displayName": "Pre-Checks",
+      "layout": [
+        {
+          "widget": {
+            "name": "pre_check_header",
+            "textbox_spec": "# Pre-Check Results\n\nLatest pre-check results. Any FAIL blocks migration; WARN statuses should be reviewed."
+          },
+          "position": {"x": 0, "y": 0, "width": 6, "height": 2}
+        },
+        {
+          "widget": {
+            "name": "pre_check_widget",
+            "queries": [{
+              "name": "main_query",
+              "query": {
+                "datasetName": "pre_check_latest",
+                "fields": [
+                  {"name": "check_name", "expression": "`check_name`"},
+                  {"name": "status", "expression": "`status`"},
+                  {"name": "message", "expression": "`message`"},
+                  {"name": "action_required", "expression": "`action_required`"},
+                  {"name": "checked_at", "expression": "`checked_at`"}
+                ],
+                "disaggregated": true
+              }
+            }],
+            "spec": {
+              "version": 1,
+              "widgetType": "table",
+              "frame": {"title": "Pre-check results", "showTitle": true}
+            }
+          },
+          "position": {"x": 0, "y": 2, "width": 6, "height": 10}
+        }
+      ]
     }
   ]
 }
