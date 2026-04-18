@@ -79,13 +79,13 @@ spark.sql(  # noqa: F821
 # COMMAND ----------
 
 # Grant the migration SPN permissions to read the source catalog
-dbutils.widgets.text("spn_client_id", "")  # noqa: F821
-spn_client_id = dbutils.widgets.get("spn_client_id")  # noqa: F821
-if spn_client_id:
+from common.config import MigrationConfig  # noqa: E402
+config = MigrationConfig.from_workspace_file()
+if config.spn_client_id:
     spark.sql(  # noqa: F821
-        f"GRANT USE CATALOG, USE SCHEMA, SELECT, EXECUTE, READ VOLUME ON CATALOG integration_test_src TO `{spn_client_id}`"
+        f"GRANT USE CATALOG, USE SCHEMA, SELECT, EXECUTE, READ VOLUME ON CATALOG integration_test_src TO `{config.spn_client_id}`"
     )
-    print(f"Granted migration SPN {spn_client_id} perms on integration_test_src.")
+    print(f"Granted migration SPN {config.spn_client_id} perms on integration_test_src.")
 
 # COMMAND ----------
 

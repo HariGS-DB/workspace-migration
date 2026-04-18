@@ -137,12 +137,13 @@ def migrate_volume(
 
 def run(dbutils, spark) -> None:
     """Entry point when running as a Databricks notebook."""
-    config = MigrationConfig.from_job_params(dbutils)
+    config = MigrationConfig.from_workspace_file()
     auth = AuthManager(config, dbutils)
     spark_session = spark
     tracker = TrackingManager(spark_session, config)
 
-    # Parse batch from widget
+    # Parse batch from for_each_task input widget
+    dbutils.widgets.text("batch", "[]")
     batch_json = dbutils.widgets.get("batch")
     batch: list[dict] = json.loads(batch_json)
     logger.info("Received batch of %d volumes.", len(batch))
