@@ -14,8 +14,11 @@ class TestPreCheck:
             "spn_secret_key": "key",
             "catalog_filter": "",
             "schema_filter": "",
+            "tracking_catalog": "migration_tracking",
+            "tracking_schema": "cp_migration",
             "dry_run": "false",
-        }[key]
+            "batch_size": "50",
+        }.get(key, "")
         dbutils.secrets.get.return_value = "fake-secret"
         return dbutils
 

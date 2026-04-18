@@ -100,6 +100,88 @@ class TestCatalogUtils:
         assert is_dlt is False
         assert pid is None
 
+    def test_detect_dlt_managed_on_view_returns_false(self, mock_spark):
+        """DESCRIBE DETAIL fails on views ([EXPECT_TABLE_NOT_VIEW...]).
+        detect_dlt_managed must swallow the error and return (False, None)
+        rather than propagate — views can't be DLT-managed.
+        """
+        mock_spark.sql.side_effect = Exception(
+            "[EXPECT_TABLE_NOT_VIEW.NO_ALTERNATIVE] 'DESCRIBE DETAIL' expects a table"
+        )
+        explorer = CatalogExplorer(mock_spark, MagicMock())
+
+        is_dlt, pid = explorer.detect_dlt_managed("`cat`.`sch`.`a_view`")
+        assert is_dlt is False
+        assert pid is None
+
+    # ------------------------------------------------------------------
+    # get_function_ddl
+    # ------------------------------------------------------------------
+
+    def test_get_function_ddl_builds_full_create_statement(self, mock_spark):
+        """Must return a complete CREATE OR REPLACE FUNCTION statement (not just
+        the body) — reconstructed from information_schema.routines + parameters.
+        """
+        routine_row = _row(
+            specific_name="double_amount_1234",
+            data_type="DOUBLE",
+            routine_body="SQL",
+            routine_definition="x * 2",
+            external_language=None,
+        )
+        param_rows = [_row(parameter_name="x", data_type="DOUBLE", ordinal_position=1)]
+
+        def sql_side_effect(query):
+            result = MagicMock()
+            if "information_schema`.`routines" in query:
+                result.first.return_value = routine_row
+            elif "information_schema`.`parameters" in query:
+                result.collect.return_value = param_rows
+            else:
+                result.first.return_value = None
+                result.collect.return_value = []
+            return result
+
+        mock_spark.sql.side_effect = sql_side_effect
+        explorer = CatalogExplorer(mock_spark, MagicMock())
+
+        ddl = explorer.get_function_ddl("`cat`.`sch`.`double_amount`")
+
+        assert ddl.upper().startswith("CREATE OR REPLACE FUNCTION"), (
+            f"Expected full CREATE OR REPLACE FUNCTION statement, got: {ddl!r}"
+        )
+        assert "double_amount" in ddl
+        assert "RETURNS DOUBLE" in ddl.upper()
+        assert "x DOUBLE" in ddl  # parameter signature
+        assert "x * 2" in ddl  # body
+
+    # ------------------------------------------------------------------
+    # get_create_statement (for views)
+    # ------------------------------------------------------------------
+
+    def test_get_create_statement_for_view_uses_information_schema(self, mock_spark):
+        """Must return a well-formed CREATE OR REPLACE VIEW that includes the
+        full catalog.schema.table path — SHOW CREATE TABLE output occasionally
+        produces references with an empty catalog, which breaks replay on target.
+        """
+        view_row = _row(view_definition="SELECT * FROM `cat`.`sch`.`tbl` WHERE amount > 100")
+
+        def sql_side_effect(query):
+            result = MagicMock()
+            if "information_schema`.`views" in query:
+                result.first.return_value = view_row
+            else:
+                result.first.return_value = _row(createtab_stmt="IGNORED")
+            return result
+
+        mock_spark.sql.side_effect = sql_side_effect
+        explorer = CatalogExplorer(mock_spark, MagicMock())
+
+        ddl = explorer.get_create_statement("`cat`.`sch`.`my_view`")
+        assert ddl.upper().startswith("CREATE OR REPLACE VIEW"), ddl
+        assert "`cat`.`sch`.`my_view`" in ddl
+        assert "SELECT * FROM" in ddl
+
     # ------------------------------------------------------------------
     # resolve_view_dependency_order
     # ------------------------------------------------------------------

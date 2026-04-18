@@ -26,8 +26,11 @@ class TestMigrationConfig:
             "spn_secret_key": "spn-secret",
             "catalog_filter": "",
             "schema_filter": "",
+            "tracking_catalog": "migration_tracking",
+            "tracking_schema": "cp_migration",
             "dry_run": "true",
-        }[key]
+            "batch_size": "50",
+        }.get(key, "")
 
         config = MigrationConfig.from_job_params(dbutils)
 
