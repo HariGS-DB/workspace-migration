@@ -1,6 +1,16 @@
 # Databricks notebook source
 
 # COMMAND ----------
+
+# Bootstrap: put the bundle's `src/` dir on sys.path so `from common...` imports resolve
+import sys  # noqa: E402
+_ctx = dbutils.notebook.entry_point.getDbutils().notebook().getContext()  # noqa: F821
+_nb = _ctx.notebookPath().get()
+_src = "/Workspace" + _nb.split("/files/")[0] + "/files/src"
+if _src not in sys.path:
+    sys.path.insert(0, _src)
+
+# COMMAND ----------
 # Grants Worker: replays catalog and schema grants from source to target.
 # Skips OWNER grants (those must be set separately).
 
@@ -134,7 +144,6 @@ def run(dbutils, spark) -> None:
 
     wh_id = find_warehouse(auth)
 
-    # COMMAND ----------
     # Process catalog grants
 
     all_results: list[dict] = []
@@ -159,7 +168,6 @@ def run(dbutils, spark) -> None:
                 }
             )
 
-    # COMMAND ----------
     # Process schema grants
 
     for schema_fqn in sorted(schemas):
@@ -180,7 +188,6 @@ def run(dbutils, spark) -> None:
                 }
             )
 
-    # COMMAND ----------
     # Record final statuses
 
     if all_results:

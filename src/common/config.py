@@ -22,7 +22,23 @@ class MigrationConfig:
     @classmethod
     def from_job_params(cls, dbutils: object) -> MigrationConfig:
         """Build a MigrationConfig from Databricks job widgets."""
-        get = dbutils.widgets.get  # type: ignore[attr-defined]
+        w = dbutils.widgets  # type: ignore[attr-defined]
+        defaults = {
+            "source_workspace_url": "",
+            "target_workspace_url": "",
+            "spn_client_id": "",
+            "spn_secret_scope": "migration",
+            "spn_secret_key": "spn-secret",
+            "catalog_filter": "",
+            "schema_filter": "",
+            "tracking_catalog": "migration_tracking",
+            "tracking_schema": "cp_migration",
+            "dry_run": "false",
+            "batch_size": "50",
+        }
+        for name, default in defaults.items():
+            w.text(name, default)
+        get = w.get
 
         raw_catalog = get("catalog_filter")
         catalog_filter = [c.strip() for c in raw_catalog.split(",") if c.strip()] if raw_catalog else []
@@ -40,5 +56,8 @@ class MigrationConfig:
             spn_secret_key=get("spn_secret_key"),
             catalog_filter=catalog_filter,
             schema_filter=schema_filter,
+            tracking_catalog=get("tracking_catalog"),
+            tracking_schema=get("tracking_schema"),
             dry_run=dry_run,
+            batch_size=int(get("batch_size")),
         )

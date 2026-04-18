@@ -1,6 +1,16 @@
 # Databricks notebook source
 
 # COMMAND ----------
+
+# Bootstrap: put the bundle's `src/` dir on sys.path so `from common...` imports resolve
+import sys  # noqa: E402
+_ctx = dbutils.notebook.entry_point.getDbutils().notebook().getContext()  # noqa: F821
+_nb = _ctx.notebookPath().get()
+_src = "/Workspace" + _nb.split("/files/")[0] + "/files/src"
+if _src not in sys.path:
+    sys.path.insert(0, _src)
+
+# COMMAND ----------
 # Views Worker: migrates views from source to target workspace,
 # respecting dependency order via topological sort.
 
@@ -142,7 +152,6 @@ def run(dbutils, spark) -> None:
 
     wh_id = find_warehouse(auth)
 
-    # COMMAND ----------
     # Process views in dependency order (sequential to respect ordering)
 
     results: list[dict] = []
@@ -166,7 +175,6 @@ def run(dbutils, spark) -> None:
         results.append(res)
         logger.info("View %s -> %s", res["object_name"], res["status"])
 
-    # COMMAND ----------
     # Record final statuses
 
     tracker.append_migration_status(results)

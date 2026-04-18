@@ -6,11 +6,3 @@ resources:
         - task_key: pre_check
           notebook_task:
             notebook_path: ../src/pre_check/pre_check.py
-          job_cluster_key: migration_cluster
-      job_clusters:
-        - job_cluster_key: migration_cluster
-          new_cluster:
-            spark_version: "15.4.x-scala2.12"
-            node_type_id: "Standard_D4ds_v5"
-            num_workers: 0
-            data_security_mode: "SINGLE_USER"

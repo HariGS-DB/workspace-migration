@@ -2,6 +2,16 @@
 
 # COMMAND ----------
 
+# Bootstrap: put the bundle's `src/` dir on sys.path so `from common...` imports resolve
+import sys  # noqa: E402
+_ctx = dbutils.notebook.entry_point.getDbutils().notebook().getContext()  # noqa: F821
+_nb = _ctx.notebookPath().get()
+_src = "/Workspace" + _nb.split("/files/")[0] + "/files/src"
+if _src not in sys.path:
+    sys.path.insert(0, _src)
+
+# COMMAND ----------
+
 # Discovery: scan source workspace catalogs/schemas and build a full inventory of UC objects.
 
 import contextlib
@@ -33,11 +43,9 @@ def run(dbutils, spark):  # noqa: D103
     tracker = TrackingManager(spark, config)
     explorer = CatalogExplorer(spark, auth)
 
-    # COMMAND ----------
 
     tracker.init_tracking_tables()
 
-    # COMMAND ----------
 
     inventory: list[dict] = []
     dlt_count = 0
@@ -45,7 +53,6 @@ def run(dbutils, spark):  # noqa: D103
     catalogs = explorer.list_catalogs(filter_list=config.catalog_filter or None)
     print(f"Discovered {len(catalogs)} catalog(s): {catalogs}")
 
-    # COMMAND ----------
 
     for catalog in catalogs:
         schemas = explorer.list_schemas(catalog)
@@ -54,7 +61,7 @@ def run(dbutils, spark):  # noqa: D103
         print(f"  Catalog '{catalog}': {len(schemas)} schema(s)")
 
         for schema in schemas:
-            now = datetime.now(tz=timezone.utc).isoformat()
+            now = datetime.now(tz=timezone.utc)
 
             # --- Tables and views ---
             tables = explorer.classify_tables(catalog, schema)
@@ -62,9 +69,12 @@ def run(dbutils, spark):  # noqa: D103
                 fqn = tbl["fqn"]
                 obj_type = tbl["object_type"]
 
-                is_dlt, pipeline_id = explorer.detect_dlt_managed(fqn)
-                if is_dlt:
-                    dlt_count += 1
+                if obj_type == "view":
+                    is_dlt, pipeline_id = False, None
+                else:
+                    is_dlt, pipeline_id = explorer.detect_dlt_managed(fqn)
+                    if is_dlt:
+                        dlt_count += 1
 
                 row_count = 0
                 size_bytes = 0
@@ -134,18 +144,31 @@ def run(dbutils, spark):  # noqa: D103
                     }
                 )
 
-    # COMMAND ----------
 
     print(f"\nTotal objects discovered: {len(inventory)}")
 
     if inventory:
-        df = spark.createDataFrame(inventory)
+        from pyspark.sql.types import (
+            BooleanType, LongType, StringType, StructField, StructType, TimestampType,
+        )
+        schema = StructType([
+            StructField("object_name", StringType(), True),
+            StructField("object_type", StringType(), True),
+            StructField("catalog_name", StringType(), True),
+            StructField("schema_name", StringType(), True),
+            StructField("row_count", LongType(), True),
+            StructField("size_bytes", LongType(), True),
+            StructField("is_dlt_managed", BooleanType(), True),
+            StructField("pipeline_id", StringType(), True),
+            StructField("create_statement", StringType(), True),
+            StructField("discovered_at", TimestampType(), True),
+        ])
+        df = spark.createDataFrame(inventory, schema=schema)
         tracker.write_discovery_inventory(df)
         print("Discovery inventory written to tracking table.")
     else:
         print("WARNING: No objects discovered. Check catalog/schema filters.")
 
-    # COMMAND ----------
 
     # Print summary by object type
     type_counts = Counter(obj["object_type"] for obj in inventory)

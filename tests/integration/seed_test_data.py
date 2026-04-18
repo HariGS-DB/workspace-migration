@@ -2,6 +2,16 @@
 
 # COMMAND ----------
 
+# Bootstrap: put the bundle's `src/` dir on sys.path so `from common...` imports resolve
+import sys  # noqa: E402
+_ctx = dbutils.notebook.entry_point.getDbutils().notebook().getContext()  # noqa: F821
+_nb = _ctx.notebookPath().get()
+_src = "/Workspace" + _nb.split("/files/")[0] + "/files/src"
+if _src not in sys.path:
+    sys.path.insert(0, _src)
+
+# COMMAND ----------
+
 # Seed test data: create a small source catalog with tables, views, functions, and volumes
 # for integration testing of the migration tool.
 
@@ -62,6 +72,17 @@ spark.sql(  # noqa: F821
     CREATE VOLUME IF NOT EXISTS integration_test_src.test_schema.test_volume
     """
 )
+
+# COMMAND ----------
+
+# Grant the migration SPN permissions to read the source catalog
+dbutils.widgets.text("spn_client_id", "")  # noqa: F821
+spn_client_id = dbutils.widgets.get("spn_client_id")  # noqa: F821
+if spn_client_id:
+    spark.sql(  # noqa: F821
+        f"GRANT USE CATALOG, USE SCHEMA, SELECT, EXECUTE, READ VOLUME ON CATALOG integration_test_src TO `{spn_client_id}`"
+    )
+    print(f"Granted migration SPN {spn_client_id} perms on integration_test_src.")
 
 # COMMAND ----------
 
