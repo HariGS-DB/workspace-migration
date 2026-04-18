@@ -1,0 +1,9 @@
+resources:
+  jobs:
+    bootstrap:
+      name: "${var.job_prefix}-bootstrap"
+      description: "One-time: seed /Shared/cp_migration/config.yaml from template. Safe to re-run."
+      tasks:
+        - task_key: bootstrap
+          notebook_task:
+            notebook_path: ../scripts/bootstrap.py

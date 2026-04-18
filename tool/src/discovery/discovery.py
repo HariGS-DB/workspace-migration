@@ -41,7 +41,7 @@ def _is_notebook() -> bool:
 
 
 def run(dbutils, spark):  # noqa: D103
-    config = MigrationConfig.from_job_params(dbutils)
+    config = MigrationConfig.from_workspace_file()
     auth = AuthManager(config, dbutils)
     tracker = TrackingManager(spark, config)
     explorer = CatalogExplorer(spark, auth)

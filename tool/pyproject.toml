@@ -5,6 +5,7 @@ description = "DAB-packaged tool for migrating Unity Catalog data between Azure 
 requires-python = ">=3.10"
 dependencies = [
     "databricks-sdk>=0.30.0",
+    "pyyaml>=6.0.3",
 ]
 
 [project.optional-dependencies]

@@ -154,7 +154,7 @@ def clone_table(
 
 def run(dbutils, spark) -> None:
     """Entry point when running as a Databricks notebook."""
-    config = MigrationConfig.from_job_params(dbutils)
+    config = MigrationConfig.from_workspace_file()
     auth = AuthManager(config, dbutils)
     spark_session = spark
     tracker = TrackingManager(spark_session, config)
@@ -163,7 +163,8 @@ def run(dbutils, spark) -> None:
     target_explorer = CatalogExplorer(spark_session, auth)
     validator = Validator(source_explorer, target_explorer)
 
-    # Parse batch from widget
+    # Parse batch from for_each_task input widget
+    dbutils.widgets.text("batch", "[]")
     batch_json = dbutils.widgets.get("batch")
     batch: list[dict] = json.loads(batch_json)
     logger.info("Received batch of %d managed tables.", len(batch))
