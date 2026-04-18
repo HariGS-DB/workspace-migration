@@ -43,7 +43,14 @@ class TestTrackingManager:
         ]
         mgr.append_migration_status(records)
 
-        mock_spark.createDataFrame.assert_called_once_with(records)
+        # Verify createDataFrame was called, but don't lock in the exact args —
+        # the implementation now normalizes records and passes an explicit schema
+        # (both needed to avoid the `CANNOT_DETERMINE_TYPE` integration failure).
+        mock_spark.createDataFrame.assert_called_once()
+        assert "schema" in mock_spark.createDataFrame.call_args.kwargs, (
+            "createDataFrame must be called with an explicit schema kwarg to avoid "
+            "type inference failures on all-None columns"
+        )
         mock_df.withColumn.assert_called_once()
         assert mock_df.withColumn.call_args[0][0] == "migrated_at"
         mock_df.write.mode.assert_called_once_with("append")
