@@ -1,0 +1,133 @@
+# Databricks notebook source
+
+# COMMAND ----------
+
+from __future__ import annotations  # noqa: E402
+# Bootstrap: put the bundle's `src/` dir on sys.path so `from common...` imports resolve
+import sys  # noqa: E402
+try:
+    _ctx = dbutils.notebook.entry_point.getDbutils().notebook().getContext()  # noqa: F821
+    _nb = _ctx.notebookPath().get()
+    _src = "/Workspace" + _nb.split("/files/")[0] + "/files/src"
+    if _src not in sys.path:
+        sys.path.insert(0, _src)
+except NameError:
+    pass
+
+# COMMAND ----------
+# Hive Orchestrator: read hive_discovery_inventory, emit per-category batches
+# as task values for downstream workers. Also sets up the target catalog
+# (hive_target_catalog) so workers don't race to CREATE CATALOG.
+
+import json
+import logging
+
+from common.auth import AuthManager
+from common.config import MigrationConfig
+from common.sql_utils import execute_and_poll, find_warehouse
+from common.tracking import TrackingManager
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("hive_orchestrator")
+
+
+def _is_notebook() -> bool:
+    try:
+        _ = dbutils  # type: ignore[name-defined] # noqa: F821
+        return True
+    except NameError:
+        return False
+
+
+# COMMAND ----------
+
+if _is_notebook():
+    config = MigrationConfig.from_workspace_file()
+    tracker = TrackingManager(spark, config)  # type: ignore[name-defined] # noqa: F821
+
+    inv_fqn = f"{config.tracking_catalog}.{config.tracking_schema}.hive_discovery_inventory"
+    completed_fqn = f"{config.tracking_catalog}.{config.tracking_schema}.migration_status"
+
+    # Subtract already-validated objects from the pending list (idempotent re-runs).
+    _pending_sql = f"""
+        SELECT i.object_name, i.object_type, i.catalog_name, i.schema_name,
+               i.data_category, i.table_type, i.provider, i.storage_location
+        FROM {inv_fqn} i
+        LEFT ANTI JOIN (
+          SELECT object_name, object_type
+          FROM (
+            SELECT object_name, object_type, status,
+              ROW_NUMBER() OVER (PARTITION BY object_name, object_type ORDER BY migrated_at DESC) AS rn
+            FROM {completed_fqn}
+          ) WHERE rn = 1 AND status = 'validated'
+        ) c
+          ON i.object_name = c.object_name AND i.object_type = c.object_type
+    """
+    inventory_rows = spark.sql(_pending_sql).collect()  # noqa: F821
+
+    # Create the target catalog + schemas on the TARGET workspace via its SQL
+    # warehouse (not on source's spark, which would create them in the wrong
+    # metastore). Downstream workers just need the objects to exist on target.
+    auth = AuthManager(config, dbutils)  # type: ignore[name-defined] # noqa: F821
+    wh_id = find_warehouse(auth)
+    target_schemas = {r.schema_name for r in inventory_rows if r.schema_name}
+
+    cat_sql = f"CREATE CATALOG IF NOT EXISTS `{config.hive_target_catalog}`"
+    res = execute_and_poll(auth, wh_id, cat_sql)
+    if res["state"] != "SUCCEEDED":
+        raise RuntimeError(f"Failed to create target catalog: {res.get('error')}")
+
+    for sch in target_schemas:
+        sch_sql = f"CREATE SCHEMA IF NOT EXISTS `{config.hive_target_catalog}`.`{sch}`"
+        res = execute_and_poll(auth, wh_id, sch_sql)
+        if res["state"] != "SUCCEEDED":
+            raise RuntimeError(f"Failed to create target schema {sch}: {res.get('error')}")
+
+    logger.info(
+        "Target catalog '%s' ready on target with %d schema(s).",
+        config.hive_target_catalog,
+        len(target_schemas),
+    )
+
+    # Partition by category for per-worker routing.
+    by_category: dict[str, list[dict]] = {}
+    for r in inventory_rows:
+        rec = {
+            "object_name": r.object_name,
+            "object_type": r.object_type,
+            "catalog_name": r.catalog_name,
+            "schema_name": r.schema_name,
+            "data_category": r.data_category,
+            "table_type": r.table_type,
+            "provider": r.provider,
+            "storage_location": r.storage_location,
+        }
+        by_category.setdefault(r.data_category, []).append(rec)
+
+    # Build batches per category (for_each_task consumes a JSON list).
+    batch_size = config.batch_size
+
+    def build_batches(objs: list[dict]) -> list[str]:
+        batches: list[str] = []
+        for i in range(0, len(objs), batch_size):
+            batches.append(json.dumps(objs[i : i + batch_size], default=str))
+        return batches
+
+    # Publish task values.
+    for cat in ("hive_external", "hive_managed_nondbfs", "hive_managed_dbfs_root"):
+        key = f"{cat}_batches"
+        batches = build_batches(by_category.get(cat, []))
+        dbutils.jobs.taskValues.set(key=key, value=json.dumps(batches))  # type: ignore[name-defined] # noqa: F821
+        logger.info("%s: %d batch(es) (%d objects)", key, len(batches), len(by_category.get(cat, [])))
+
+    # Views and functions are lists (not batched; workers handle topological ordering).
+    dbutils.jobs.taskValues.set(  # type: ignore[name-defined] # noqa: F821
+        key="hive_view_list",
+        value=json.dumps(by_category.get("hive_view", []), default=str),
+    )
+    dbutils.jobs.taskValues.set(  # type: ignore[name-defined] # noqa: F821
+        key="hive_function_list",
+        value=json.dumps(by_category.get("hive_function", []), default=str),
+    )
+
+    logger.info("Hive orchestrator complete.")

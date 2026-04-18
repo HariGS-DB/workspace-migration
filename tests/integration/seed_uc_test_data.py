@@ -15,17 +15,13 @@ except NameError:
 
 # COMMAND ----------
 
-# Seed test data: create a small source catalog with tables, views, functions, and volumes
-# for integration testing of the migration tool.
-
-# COMMAND ----------
+# Seed UC test data: create a small source catalog with table, view, function, volume.
 
 spark.sql("CREATE CATALOG IF NOT EXISTS integration_test_src")  # noqa: F821
 spark.sql("CREATE SCHEMA IF NOT EXISTS integration_test_src.test_schema")  # noqa: F821
 
 # COMMAND ----------
 
-# Managed table with sample data
 spark.sql(  # noqa: F821
     """
     CREATE OR REPLACE TABLE integration_test_src.test_schema.managed_orders (
@@ -36,7 +32,6 @@ spark.sql(  # noqa: F821
     ) USING DELTA
     """
 )
-
 spark.sql(  # noqa: F821
     """
     INSERT INTO integration_test_src.test_schema.managed_orders VALUES
@@ -47,7 +42,6 @@ spark.sql(  # noqa: F821
 
 # COMMAND ----------
 
-# View filtering high-value orders
 spark.sql(  # noqa: F821
     """
     CREATE OR REPLACE VIEW integration_test_src.test_schema.high_value_orders AS
@@ -58,7 +52,6 @@ spark.sql(  # noqa: F821
 
 # COMMAND ----------
 
-# SQL function
 spark.sql(  # noqa: F821
     """
     CREATE OR REPLACE FUNCTION integration_test_src.test_schema.double_amount(x DOUBLE)
@@ -69,16 +62,13 @@ spark.sql(  # noqa: F821
 
 # COMMAND ----------
 
-# Managed volume
 spark.sql(  # noqa: F821
-    """
-    CREATE VOLUME IF NOT EXISTS integration_test_src.test_schema.test_volume
-    """
+    "CREATE VOLUME IF NOT EXISTS integration_test_src.test_schema.test_volume"
 )
 
 # COMMAND ----------
 
-# Grant the migration SPN permissions to read the source catalog
+# Grant the migration SPN permissions to read the source catalog.
 from common.config import MigrationConfig  # noqa: E402
 config = MigrationConfig.from_workspace_file()
 if config.spn_client_id:
@@ -89,4 +79,4 @@ if config.spn_client_id:
 
 # COMMAND ----------
 
-print("Seed data created successfully.")
+print("UC seed data created successfully.")
