@@ -1,8 +1,0 @@
-resources:
-  jobs:
-    discovery:
-      name: "${var.job_prefix}-discovery"
-      tasks:
-        - task_key: discovery
-          notebook_task:
-            notebook_path: ../src/discovery/discovery.py
