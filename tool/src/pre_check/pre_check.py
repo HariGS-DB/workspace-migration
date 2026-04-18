@@ -2,6 +2,16 @@
 
 # COMMAND ----------
 
+# Bootstrap: put the bundle's `src/` dir on sys.path so `from common...` imports resolve
+import sys  # noqa: E402
+_ctx = dbutils.notebook.entry_point.getDbutils().notebook().getContext()  # noqa: F821
+_nb = _ctx.notebookPath().get()
+_src = "/Workspace" + _nb.split("/files/")[0] + "/files/src"
+if _src not in sys.path:
+    sys.path.insert(0, _src)
+
+# COMMAND ----------
+
 # Pre-Check: validate connectivity, permissions, and prerequisites before migration.
 
 from common.auth import AuthManager
@@ -29,11 +39,9 @@ def run(dbutils, spark):  # noqa: D103
     tracker = TrackingManager(spark, config)
     explorer = CatalogExplorer(spark, auth)
 
-    # COMMAND ----------
 
     tracker.init_tracking_tables()
 
-    # COMMAND ----------
 
     results: list[dict] = []
 
@@ -47,7 +55,6 @@ def run(dbutils, spark):  # noqa: D103
             }
         )
 
-    # COMMAND ----------
 
     # 1. check_source_auth
     try:
@@ -69,7 +76,6 @@ def run(dbutils, spark):  # noqa: D103
             "Verify SPN credentials and source workspace URL.",
         )
 
-    # COMMAND ----------
 
     # 2. check_target_auth
     try:
@@ -90,7 +96,6 @@ def run(dbutils, spark):  # noqa: D103
             "Verify SPN credentials and target workspace URL.",
         )
 
-    # COMMAND ----------
 
     # 3. check_source_metastore
     try:
@@ -104,7 +109,6 @@ def run(dbutils, spark):  # noqa: D103
             "Ensure the workspace is attached to a Unity Catalog metastore.",
         )
 
-    # COMMAND ----------
 
     # 4. check_target_metastore
     try:
@@ -118,7 +122,6 @@ def run(dbutils, spark):  # noqa: D103
             "Ensure target workspace has a UC metastore assigned.",
         )
 
-    # COMMAND ----------
 
     # 5. check_source_sharing
     try:
@@ -132,7 +135,6 @@ def run(dbutils, spark):  # noqa: D103
             "Delta Sharing may not be enabled on source workspace.",
         )
 
-    # COMMAND ----------
 
     # 6. check_target_sharing
     try:
@@ -146,7 +148,6 @@ def run(dbutils, spark):  # noqa: D103
             "Delta Sharing may not be enabled on target workspace.",
         )
 
-    # COMMAND ----------
 
     # 7. check_catalog_filter
     try:
@@ -180,7 +181,6 @@ def run(dbutils, spark):  # noqa: D103
             "Ensure SPN has catalog-level permissions on source.",
         )
 
-    # COMMAND ----------
 
     # 8. check_storage_credentials
     try:
@@ -198,7 +198,6 @@ def run(dbutils, spark):  # noqa: D103
             "SPN may lack permission to list storage credentials on target.",
         )
 
-    # COMMAND ----------
 
     # 9. check_external_locations
     try:
@@ -216,7 +215,6 @@ def run(dbutils, spark):  # noqa: D103
             "SPN may lack permission to list external locations on target.",
         )
 
-    # COMMAND ----------
 
     # 10. check_tracking_schema
     try:
@@ -234,12 +232,10 @@ def run(dbutils, spark):  # noqa: D103
             "Run init_tracking_tables or check tracking_catalog/tracking_schema params.",
         )
 
-    # COMMAND ----------
 
     # Persist results
     tracker.append_pre_check_results(results)
 
-    # COMMAND ----------
 
     # Print summary table
     print(f"\n{'Check':<30} {'Status':<8} {'Message'}")

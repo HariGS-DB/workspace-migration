@@ -1,19 +1,34 @@
 # Databricks notebook source
 
 # COMMAND ----------
+
+# Bootstrap: put the bundle's `src/` dir on sys.path so `from common...` imports resolve
+import sys  # noqa: E402
+_ctx = dbutils.notebook.entry_point.getDbutils().notebook().getContext()  # noqa: F821
+_nb = _ctx.notebookPath().get()
+_src = "/Workspace" + _nb.split("/files/")[0] + "/files/src"
+if _src not in sys.path:
+    sys.path.insert(0, _src)
+
+# COMMAND ----------
 # Setup Delta Sharing: create share, recipient, add tables, grant access,
 # and ensure target catalogs/schemas exist.
 
 import logging
 
 from databricks.sdk.service.sharing import (
+    AuthenticationType,
+    PermissionsChange,
     Privilege,
-    PrivilegeAssignment,
     SharedDataObject,
-    SharedDataObjectDataObjectType,
     SharedDataObjectUpdate,
     SharedDataObjectUpdateAction,
 )
+try:
+    from databricks.sdk.service.sharing import SharedDataObjectDataObjectType as _DataObjectType  # type: ignore
+    _TABLE_TYPE: object = _DataObjectType.TABLE
+except ImportError:
+    _TABLE_TYPE = "TABLE"
 
 from common.auth import AuthManager
 from common.config import MigrationConfig
@@ -81,7 +96,7 @@ def get_or_create_recipient(auth_mgr: AuthManager, metastore_id: str, *, dry_run
 
     recipient = source.recipients.create(
         name=recipient_name,
-        authentication_type="DATABRICKS",
+        authentication_type=AuthenticationType.DATABRICKS,
         data_recipient_global_metastore_id=metastore_id,
     )
     logger.info("Created recipient '%s'.", recipient.name)
@@ -99,9 +114,27 @@ def add_tables_to_share(
     *,
     dry_run: bool = False,
 ) -> None:
-    """Add tables to a delta share in batches of 100."""
+    """Add tables to a delta share in batches of 100 (removes stale entries first)."""
     source = auth_mgr.source_client
     batch_size = 100
+
+    # Remove any existing objects first so re-runs start from a clean slate and
+    # don't conflict with entries that used the old shared_as format.
+    try:
+        existing_share = source.shares.get(name=share_name, include_shared_data=True)
+        removals = [
+            SharedDataObjectUpdate(
+                action=SharedDataObjectUpdateAction.REMOVE,
+                data_object=SharedDataObject(name=o.name, data_object_type=o.data_object_type),
+            )
+            for o in (existing_share.objects or [])
+        ]
+        if removals and not dry_run:
+            source.shares.update(name=share_name, updates=removals)
+            logger.info("Removed %d stale object(s) from share '%s'.", len(removals), share_name)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Could not pre-clean share: %s", exc)
+    existing_names: set[str] = set()
 
     for i in range(0, len(tables), batch_size):
         batch = tables[i : i + batch_size]
@@ -113,14 +146,18 @@ def add_tables_to_share(
             if len(parts) != 3:
                 logger.warning("Skipping malformed FQN: %s", obj_name)
                 continue
-            shared_as = f"{parts[1]}.{parts[2]}"
+            clean_name = ".".join(parts)  # catalog.schema.table without backticks
+            if clean_name in existing_names:
+                continue
+            # NOTE: don't set shared_as — let Databricks expose the original catalog.schema.table
+            # structure in the consumer catalog. With shared_as as "schema.table", the UC
+            # share-consumer catalog returned an internal schema UUID error on DEEP CLONE.
             updates.append(
                 SharedDataObjectUpdate(
                     action=SharedDataObjectUpdateAction.ADD,
                     data_object=SharedDataObject(
-                        name=obj_name,
-                        data_object_type=SharedDataObjectDataObjectType.TABLE,
-                        shared_as=shared_as,
+                        name=clean_name,
+                        data_object_type=_TABLE_TYPE,
                     ),
                 )
             )
@@ -210,10 +247,10 @@ def run(dbutils, spark) -> None:  # noqa: ARG001
     # 1. Create or get the delta share on source
     share = get_or_create_share(auth, SHARE_NAME, dry_run=config.dry_run)
 
-    # 2. Get target metastore global_metastore_id
+    # 2. Get target metastore global_metastore_id (format: <cloud>:<region>:<uuid>)
     target_metastore = auth.target_client.metastores.summary()
-    target_metastore_id = target_metastore.metastore_id
-    logger.info("Target metastore ID: %s", target_metastore_id)
+    target_metastore_id = target_metastore.global_metastore_id
+    logger.info("Target global metastore ID: %s", target_metastore_id)
 
     # 3. Create or get recipient for target
     recipient_name = get_or_create_recipient(auth, target_metastore_id, dry_run=config.dry_run)
@@ -232,9 +269,9 @@ def run(dbutils, spark) -> None:  # noqa: ARG001
         auth.source_client.shares.update_permissions(
             name=SHARE_NAME,
             changes=[
-                PrivilegeAssignment(
+                PermissionsChange(
                     principal=recipient_name,
-                    privileges=[Privilege.SELECT],
+                    add=[Privilege.SELECT.value],
                 )
             ],
         )
@@ -243,7 +280,55 @@ def run(dbutils, spark) -> None:  # noqa: ARG001
     # 7. Ensure target catalogs and schemas exist
     ensure_target_catalogs_and_schemas(auth, pending_tables, dry_run=config.dry_run)
 
+    # 8. Create share-consumer catalog on target (reads from the share)
+    ensure_share_consumer_catalog(auth, SHARE_NAME, config.dry_run)
+
     logger.info("Delta sharing setup complete.")
+
+
+def ensure_share_consumer_catalog(auth_mgr: AuthManager, share_name: str, dry_run: bool) -> None:
+    """On target workspace, create a catalog that reads from the source share.
+
+    The catalog name is ``<share_name>_consumer``. It's required for workers to
+    DEEP CLONE shared tables on the target side.
+    """
+    consumer_catalog = f"{share_name}_consumer"
+    target = auth_mgr.target_client
+    source_metastore = auth_mgr.source_client.metastores.summary()
+    source_metastore_id = source_metastore.global_metastore_id
+
+    # Find the provider on target that matches the source metastore
+    providers = list(target.providers.list())
+    matching = [
+        p for p in providers
+        if getattr(p, "data_provider_global_metastore_id", None) == source_metastore_id
+    ]
+    if not matching:
+        names = [p.name for p in providers]
+        raise RuntimeError(
+            f"No target-side provider found for source metastore {source_metastore_id}. "
+            f"Available providers: {names}"
+        )
+    provider_name = matching[0].name
+    logger.info("Matched target provider '%s' for source metastore.", provider_name)
+
+    if dry_run:
+        logger.info("[DRY RUN] Would CREATE CATALOG %s USING SHARE %s.%s", consumer_catalog, provider_name, share_name)
+        return
+
+    # Recreate on every run to pick up any shared_as changes.
+    try:
+        target.catalogs.delete(consumer_catalog, force=True)
+        logger.info("Dropped existing share consumer catalog '%s'.", consumer_catalog)
+    except Exception:  # noqa: BLE001
+        pass
+
+    target.catalogs.create(
+        name=consumer_catalog,
+        provider_name=provider_name,
+        share_name=share_name,
+    )
+    logger.info("Created share consumer catalog '%s' from %s.%s", consumer_catalog, provider_name, share_name)
 
 
 # COMMAND ----------

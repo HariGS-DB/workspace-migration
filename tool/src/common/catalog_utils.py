@@ -65,8 +65,11 @@ class CatalogExplorer:
         return results
 
     def detect_dlt_managed(self, table_fqn: str) -> tuple[bool, str | None]:
-        """Check whether a table is managed by a DLT pipeline."""
-        row = self.spark.sql(f"DESCRIBE DETAIL {table_fqn}").first()  # type: ignore[attr-defined]
+        """Check whether a table is managed by a DLT pipeline. Safe to call on views (returns False)."""
+        try:
+            row = self.spark.sql(f"DESCRIBE DETAIL {table_fqn}").first()  # type: ignore[attr-defined]
+        except Exception:
+            return (False, None)
         properties: dict = row.properties if row.properties else {}
         pipeline_id = properties.get("pipelines.pipelineId")
         return (pipeline_id is not None, pipeline_id)
@@ -86,25 +89,73 @@ class CatalogExplorer:
     # ------------------------------------------------------------------
 
     def get_create_statement(self, object_fqn: str) -> str:
-        """Return the DDL string for a table or view."""
+        """Return a CREATE OR REPLACE VIEW/TABLE statement for the given object.
+
+        For views, prefer information_schema.views (view_definition) so we get
+        the original SQL body without any SHOW CREATE quirks.
+        """
+        parts = object_fqn.strip("`").split("`.`")
+        if len(parts) == 3:
+            catalog, schema, name = parts
+            try:
+                row = self.spark.sql(  # type: ignore[attr-defined]
+                    f"""
+                    SELECT view_definition
+                    FROM `{catalog}`.`information_schema`.`views`
+                    WHERE table_schema = '{schema}' AND table_name = '{name}'
+                    LIMIT 1
+                    """
+                ).first()
+                if row is not None and row.view_definition:
+                    return f"CREATE OR REPLACE VIEW `{catalog}`.`{schema}`.`{name}` AS {row.view_definition}"
+            except Exception:  # noqa: BLE001
+                pass  # fall through to SHOW CREATE
         row = self.spark.sql(f"SHOW CREATE TABLE {object_fqn}").first()  # type: ignore[attr-defined]
         return row.createtab_stmt  # type: ignore[union-attr]
 
     def get_function_ddl(self, function_fqn: str) -> str:
-        """Return the function body from DESCRIBE FUNCTION EXTENDED."""
-        rows = self.spark.sql(  # type: ignore[attr-defined]
-            f"DESCRIBE FUNCTION EXTENDED {function_fqn}"
+        """Return the full CREATE OR REPLACE FUNCTION statement.
+
+        Queries information_schema.routines + parameters to reconstruct the DDL,
+        since DESCRIBE FUNCTION only returns the body.
+        """
+        parts = function_fqn.strip("`").split("`.`")
+        if len(parts) != 3:
+            raise ValueError(f"Malformed function FQN: {function_fqn}")
+        catalog, schema, name = parts
+
+        routine = self.spark.sql(  # type: ignore[attr-defined]
+            f"""
+            SELECT specific_name, data_type, routine_body, routine_definition, external_language
+            FROM `{catalog}`.`information_schema`.`routines`
+            WHERE routine_schema = '{schema}' AND routine_name = '{name}'
+            LIMIT 1
+            """
+        ).first()
+        if routine is None:
+            raise ValueError(f"Function not found in information_schema: {function_fqn}")
+
+        params = self.spark.sql(  # type: ignore[attr-defined]
+            f"""
+            SELECT parameter_name, data_type, ordinal_position
+            FROM `{catalog}`.`information_schema`.`parameters`
+            WHERE specific_schema = '{schema}' AND specific_name = '{routine.specific_name}'
+              AND parameter_mode = 'IN'
+            ORDER BY ordinal_position
+            """
         ).collect()
-        body_lines: list[str] = []
-        capture = False
-        for row in rows:
-            text = row.function_desc
-            if text.startswith("Body:"):
-                capture = True
-                body_lines.append(text[len("Body:") :].strip())
-            elif capture:
-                body_lines.append(text)
-        return "\n".join(body_lines).strip()
+        param_sig = ", ".join(f"{p.parameter_name} {p.data_type}" for p in params)
+
+        body = (routine.routine_definition or "").strip()
+        lang_clause = ""
+        if routine.routine_body and routine.routine_body.upper() == "EXTERNAL" and routine.external_language:
+            lang_clause = f" LANGUAGE {routine.external_language}"
+
+        return (
+            f"CREATE OR REPLACE FUNCTION {function_fqn}({param_sig}) "
+            f"RETURNS {routine.data_type}{lang_clause} "
+            f"RETURN {body}"
+        )
 
     # ------------------------------------------------------------------
     # Functions & volumes
@@ -163,7 +214,12 @@ class CatalogExplorer:
                 f"AND view_schema = '{schema}' "
                 f"AND view_name = '{_name}'"
             )
-            rows = self.spark.sql(query).collect()  # type: ignore[attr-defined]
+            try:
+                rows = self.spark.sql(query).collect()  # type: ignore[attr-defined]
+            except Exception:
+                # information_schema.view_table_usage may be unavailable (e.g. shared catalog).
+                # Skip dependency resolution for this view; it will be migrated in input order.
+                rows = []
             for row in rows:
                 dep_fqn = f"`{row.table_catalog}`.`{row.table_schema}`.`{row.table_name}`"
                 if dep_fqn in view_set and dep_fqn != view:

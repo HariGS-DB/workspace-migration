@@ -73,8 +73,23 @@ class TrackingManager:
     def append_migration_status(self, records: list[dict]) -> None:
         """Append migration status records with a current timestamp."""
         from pyspark.sql.functions import current_timestamp
+        from pyspark.sql.types import DoubleType, LongType, StringType, StructField, StructType
 
-        df = self.spark.createDataFrame(records)
+        schema = StructType([
+            StructField("object_name", StringType(), True),
+            StructField("object_type", StringType(), True),
+            StructField("status", StringType(), True),
+            StructField("error_message", StringType(), True),
+            StructField("job_run_id", StringType(), True),
+            StructField("task_run_id", StringType(), True),
+            StructField("source_row_count", LongType(), True),
+            StructField("target_row_count", LongType(), True),
+            StructField("duration_seconds", DoubleType(), True),
+        ])
+        # Only keep known fields; coerce missing to None
+        field_names = [f.name for f in schema.fields]
+        normalized = [{k: r.get(k) for k in field_names} for r in records]
+        df = self.spark.createDataFrame(normalized, schema=schema)
         df = df.withColumn("migrated_at", current_timestamp())
         df.write.mode("append").saveAsTable(f"{self._fqn}.migration_status")
 

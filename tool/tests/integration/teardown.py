@@ -2,6 +2,16 @@
 
 # COMMAND ----------
 
+# Bootstrap: put the bundle's `src/` dir on sys.path so `from common...` imports resolve
+import sys  # noqa: E402
+_ctx = dbutils.notebook.entry_point.getDbutils().notebook().getContext()  # noqa: F821
+_nb = _ctx.notebookPath().get()
+_src = "/Workspace" + _nb.split("/files/")[0] + "/files/src"
+if _src not in sys.path:
+    sys.path.insert(0, _src)
+
+# COMMAND ----------
+
 # Teardown: clean up all integration test artifacts (catalogs, schemas, shares).
 
 from databricks.sdk import WorkspaceClient

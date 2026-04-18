@@ -1,6 +1,16 @@
 # Databricks notebook source
 
 # COMMAND ----------
+
+# Bootstrap: put the bundle's `src/` dir on sys.path so `from common...` imports resolve
+import sys  # noqa: E402
+_ctx = dbutils.notebook.entry_point.getDbutils().notebook().getContext()  # noqa: F821
+_nb = _ctx.notebookPath().get()
+_src = "/Workspace" + _nb.split("/files/")[0] + "/files/src"
+if _src not in sys.path:
+    sys.path.insert(0, _src)
+
+# COMMAND ----------
 # Managed Table Worker: deep-clones managed tables from delta share to target.
 
 from __future__ import annotations
@@ -64,7 +74,7 @@ def clone_table(
 
     _catalog, schema, table = parts
     target_fqn = obj_name  # same FQN on target
-    share_table_ref = f"{schema}.{table}"
+    consumer_catalog = f"{share_name}_consumer"
 
     # Record in-progress
     tracker.append_migration_status(
@@ -85,7 +95,7 @@ def clone_table(
 
     start = time.time()
 
-    sql = f"CREATE OR REPLACE TABLE {target_fqn} DEEP CLONE delta_sharing.`{share_name}`.`{share_table_ref}`"
+    sql = f"CREATE OR REPLACE TABLE {target_fqn} DEEP CLONE `{consumer_catalog}`.`{schema}`.`{table}`"
     logger.info("Executing DEEP CLONE for %s", obj_name)
 
     if config.dry_run:
@@ -158,7 +168,6 @@ def run(dbutils, spark) -> None:
 
     wh_id = find_warehouse(auth)
 
-    # COMMAND ----------
     # Process batch with thread pool
 
     results: list[dict] = []
@@ -192,7 +201,6 @@ def run(dbutils, spark) -> None:
             results.append(res)
             logger.info("Table %s -> %s", res["object_name"], res["status"])
 
-    # COMMAND ----------
     # Record final statuses
 
     tracker.append_migration_status(results)

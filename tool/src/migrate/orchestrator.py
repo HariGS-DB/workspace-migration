@@ -1,6 +1,16 @@
 # Databricks notebook source
 
 # COMMAND ----------
+
+# Bootstrap: put the bundle's `src/` dir on sys.path so `from common...` imports resolve
+import sys  # noqa: E402
+_ctx = dbutils.notebook.entry_point.getDbutils().notebook().getContext()  # noqa: F821
+_nb = _ctx.notebookPath().get()
+_src = "/Workspace" + _nb.split("/files/")[0] + "/files/src"
+if _src not in sys.path:
+    sys.path.insert(0, _src)
+
+# COMMAND ----------
 # Orchestrator: reads discovery inventory, builds batches per object type,
 # and publishes them as task values for downstream workers.
 
@@ -29,7 +39,7 @@ def build_batches(objects: list[dict], batch_size: int) -> list[str]:
     batches: list[str] = []
     for i in range(0, len(objects), batch_size):
         chunk = objects[i : i + batch_size]
-        batches.append(json.dumps(chunk))
+        batches.append(json.dumps(chunk, default=str))
     return batches
 
 
@@ -67,7 +77,7 @@ if _is_notebook():
     for obj_type in LIST_TYPES:
         pending = tracker.get_pending_objects(obj_type)
         logger.info("Pending %s: %d objects", obj_type, len(pending))
-        list_output[f"{obj_type}_list"] = json.dumps(pending)
+        list_output[f"{obj_type}_list"] = json.dumps(pending, default=str)
 
     # Publish task values for downstream workers
     for key, batches in batch_output.items():
