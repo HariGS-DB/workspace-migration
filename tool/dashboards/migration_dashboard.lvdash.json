@@ -1,0 +1,20 @@
+{
+  "pages": [
+    {
+      "name": "Overview",
+      "displayName": "Migration Overview"
+    },
+    {
+      "name": "Detail",
+      "displayName": "Migration Detail"
+    },
+    {
+      "name": "Validation",
+      "displayName": "Validation Results"
+    },
+    {
+      "name": "PreChecks",
+      "displayName": "Pre-Check Results"
+    }
+  ]
+}
