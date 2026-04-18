@@ -17,3 +17,12 @@ if "pyspark.sql.functions" not in sys.modules:
     _mock_funcs.when = MagicMock()  # type: ignore[attr-defined]
     _mock_funcs.sum = MagicMock()  # type: ignore[attr-defined]
     sys.modules["pyspark.sql.functions"] = _mock_funcs
+
+if "pyspark.sql.types" not in sys.modules:
+    _mock_types = ModuleType("pyspark.sql.types")
+    for _t in (
+        "BooleanType", "DoubleType", "LongType", "StringType", "TimestampType",
+        "StructField", "StructType",
+    ):
+        setattr(_mock_types, _t, MagicMock())
+    sys.modules["pyspark.sql.types"] = _mock_types

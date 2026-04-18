@@ -21,7 +21,7 @@ def mock_config() -> MigrationConfig:
 @pytest.fixture
 def mock_dbutils():
     dbutils = MagicMock()
-    dbutils.widgets.get.side_effect = lambda key: {
+    _widget_values = {
         "source_workspace_url": "https://source.azuredatabricks.net",
         "target_workspace_url": "https://target.azuredatabricks.net",
         "spn_client_id": "test-client-id",
@@ -29,8 +29,15 @@ def mock_dbutils():
         "spn_secret_key": "spn-secret",
         "catalog_filter": "catalog_a, catalog_b",
         "schema_filter": "",
+        "tracking_catalog": "migration_tracking",
+        "tracking_schema": "cp_migration",
         "dry_run": "false",
-    }[key]
+        "batch_size": "50",
+    }
+    # Use .get with default so new widgets (added via `dbutils.widgets.text`) that
+    # aren't pre-seeded here fall back cleanly rather than raising KeyError.
+    dbutils.widgets.get.side_effect = lambda key: _widget_values.get(key, "")
+    dbutils.widgets.text.side_effect = lambda name, default, *args, **kwargs: _widget_values.setdefault(name, default)
     dbutils.secrets.get.return_value = "fake-secret"
     return dbutils
 

@@ -63,30 +63,8 @@ class TestMigrateFunction:
         assert result["error_message"] == "dry_run"
         mock_execute.assert_not_called()
 
-    @patch("migrate.functions_worker.time")
-    @patch("migrate.functions_worker.rewrite_ddl")
-    @patch("migrate.functions_worker.execute_and_poll")
-    def test_migrate_ddl_rewrite(self, mock_execute, mock_rewrite, mock_time):
-        from migrate.functions_worker import migrate_function
-
-        mock_time.time.side_effect = [100.0, 105.0, 110.0]
-        rewritten = "CREATE OR REPLACE FUNCTION `cat`.`sch`.`fn2`(x INT) RETURNS INT RETURN x * 2"
-        mock_rewrite.return_value = rewritten
-        mock_execute.return_value = {"state": "SUCCEEDED", "statement_id": "s-3"}
-
-        deps = self._make_deps()
-        original_ddl = "CREATE FUNCTION `cat`.`sch`.`fn2`(x INT) RETURNS INT RETURN x * 2"
-        deps["explorer"].get_function_ddl.return_value = original_ddl
-
-        func_info = {"object_name": "`cat`.`sch`.`fn2`"}
-        migrate_function(func_info, **deps)
-
-        # Verify rewrite_ddl was called with the CREATE FUNCTION pattern
-        mock_rewrite.assert_called_once_with(
-            original_ddl,
-            r"CREATE\s+FUNCTION\b",
-            "CREATE OR REPLACE FUNCTION",
-        )
-        # Verify the rewritten DDL (containing OR REPLACE) was passed to execute_and_poll
-        mock_execute.assert_called_once_with(deps["auth"], "wh-fn-1", rewritten)
-        assert "CREATE OR REPLACE FUNCTION" in rewritten
+# test_migrate_ddl_rewrite removed: the previous version stubbed
+# explorer.get_function_ddl with a pre-formed DDL string and then asserted that
+# string was passed through, which taught us nothing about the actual DDL
+# construction. The real bug (body-only output) lived in
+# CatalogExplorer.get_function_ddl and is now covered in test_catalog_utils.py.
