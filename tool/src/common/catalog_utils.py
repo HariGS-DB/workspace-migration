@@ -7,6 +7,17 @@ from common.auth import AuthManager
 SYSTEM_CATALOGS = frozenset({"system", "hive_metastore", "__databricks_internal", "samples"})
 EXCLUDED_SCHEMAS = frozenset({"default", "information_schema"})
 
+HIVE_CATALOG = "hive_metastore"
+
+# Categories returned by CatalogExplorer.categorize_hive_table — drive which worker
+# handles each table in Phase 2.
+HIVE_CATEGORIES = frozenset({
+    "hive_view",
+    "hive_external",
+    "hive_managed_dbfs_root",
+    "hive_managed_nondbfs",
+})
+
 _TABLE_TYPE_MAP = {
     "MANAGED": "managed_table",
     "EXTERNAL": "external_table",
@@ -263,3 +274,125 @@ class CatalogExplorer:
             }
             for row in rows
         ]
+
+    # ------------------------------------------------------------------
+    # Legacy Hive Metastore (Phase 2)
+    # ------------------------------------------------------------------
+
+    def list_hive_databases(self) -> list[str]:
+        """Return non-default databases under hive_metastore."""
+        rows = self.spark.sql(f"SHOW DATABASES IN {HIVE_CATALOG}").collect()  # type: ignore[attr-defined]
+        # The first column can be `databaseName` or `namespace` depending on DBR.
+        return [
+            getattr(row, "databaseName", None) or getattr(row, "namespace", None)
+            for row in rows
+            if (getattr(row, "databaseName", None) or getattr(row, "namespace", None)) not in EXCLUDED_SCHEMAS
+        ]
+
+    def _describe_hive_table(self, database: str, table: str) -> dict:
+        """Parse ``DESCRIBE EXTENDED hive_metastore.db.t`` into a summary dict.
+
+        Returns a dict with: ``table_type`` (MANAGED/EXTERNAL/VIEW),
+        ``storage_location`` (raw), ``provider`` (delta/parquet/...),
+        ``comment`` if present.
+        """
+        rows = self.spark.sql(  # type: ignore[attr-defined]
+            f"DESCRIBE EXTENDED `{HIVE_CATALOG}`.`{database}`.`{table}`"
+        ).collect()
+        info: dict = {}
+        in_detail = False
+        for row in rows:
+            col = (row.col_name or "").strip()
+            data = (row.data_type or "").strip() if row.data_type is not None else ""
+            if col == "# Detailed Table Information":
+                in_detail = True
+                continue
+            if not in_detail:
+                continue
+            key = col.rstrip(":").lower().replace(" ", "_")
+            if not key:
+                continue
+            info[key] = data
+        return {
+            "table_type": info.get("type", "").upper(),
+            "storage_location": info.get("location", ""),
+            "provider": (info.get("provider") or "").lower(),
+            "comment": info.get("comment", ""),
+        }
+
+    def classify_hive_tables(self, database: str) -> list[dict]:
+        """List all tables in a Hive database and classify each into a migration category.
+
+        Returns records with: ``fqn``, ``object_type`` (hive_table / hive_view),
+        ``table_type``, ``storage_location``, ``provider``, ``data_category``
+        (hive_managed_dbfs_root / hive_managed_nondbfs / hive_external / hive_view).
+        """
+        rows = self.spark.sql(  # type: ignore[attr-defined]
+            f"SHOW TABLES IN `{HIVE_CATALOG}`.`{database}`"
+        ).collect()
+        results: list[dict] = []
+        for row in rows:
+            table_name = row.tableName
+            try:
+                details = self._describe_hive_table(database, table_name)
+            except Exception:  # noqa: BLE001
+                # Some tables (e.g. temp views from other sessions) may fail to describe.
+                continue
+            fqn = f"`{HIVE_CATALOG}`.`{database}`.`{table_name}`"
+            data_category = self.categorize_hive_table(details)
+            obj_type = "hive_view" if details["table_type"] == "VIEW" else "hive_table"
+            results.append({
+                "fqn": fqn,
+                "object_type": obj_type,
+                "table_type": details["table_type"],
+                "storage_location": details["storage_location"],
+                "provider": details["provider"],
+                "data_category": data_category,
+            })
+        return results
+
+    @staticmethod
+    def categorize_hive_table(details: dict) -> str:
+        """Map DESCRIBE output to a migration category.
+
+        Categories drive which Phase 2 worker handles the table.
+        """
+        table_type = (details.get("table_type") or "").upper()
+        location = (details.get("storage_location") or "").lower()
+
+        if table_type == "VIEW":
+            return "hive_view"
+        if table_type == "EXTERNAL":
+            return "hive_external"
+        if table_type == "MANAGED":
+            # DBFS root = /user/hive/warehouse/... or /user/... under dbfs:/
+            if location.startswith("dbfs:/user/hive/warehouse/") or location.startswith("dbfs:/user/spark-warehouse/"):
+                return "hive_managed_dbfs_root"
+            if location.startswith("dbfs:/mnt/") or location.startswith("abfss://") or location.startswith("s3://") or location.startswith("gs://") or location.startswith("wasbs://"):
+                return "hive_managed_nondbfs"
+            # Fallback: unknown dbfs path, treat as dbfs_root (safer — triggers data copy)
+            if location.startswith("dbfs:/"):
+                return "hive_managed_dbfs_root"
+            return "hive_managed_nondbfs"
+        # Unknown type (shouldn't happen for Hive) — classify as external to be safe.
+        return "hive_external"
+
+    def list_hive_functions(self, database: str) -> list[str]:
+        """Return user-defined functions in a Hive database (fully-qualified)."""
+        try:
+            rows = self.spark.sql(  # type: ignore[attr-defined]
+                f"SHOW USER FUNCTIONS IN `{HIVE_CATALOG}`.`{database}`"
+            ).collect()
+        except Exception:  # noqa: BLE001
+            return []
+        out = []
+        for row in rows:
+            # `function` column name varies by DBR version — probe common ones.
+            name = getattr(row, "function", None) or getattr(row, "name", None)
+            if not name:
+                continue
+            # Skip built-ins that leak into SHOW USER FUNCTIONS on some versions.
+            if "." not in name:
+                continue
+            out.append(f"`{HIVE_CATALOG}`.`{database}`.`{name.split('.')[-1]}`")
+        return out
