@@ -30,6 +30,9 @@ set -euo pipefail
 : "${MIGRATE_HIVE_DBFS_ROOT:=false}"
 : "${HIVE_DBFS_TARGET_PATH:=}"
 : "${HIVE_TARGET_CATALOG:=hive_upgraded}"
+: "${INCLUDE_UC:=true}"
+: "${INCLUDE_HIVE:=false}"
+: "${ICEBERG_STRATEGY:=ddl_replay}"
 
 # Script lives at tool/scripts/write_config.sh — write to tool/config.yaml.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -47,6 +50,10 @@ tracking_catalog: ${TRACKING_CATALOG}
 tracking_schema: ${TRACKING_SCHEMA}
 dry_run: ${DRY_RUN}
 batch_size: ${BATCH_SIZE}
+scope:
+  include_uc: ${INCLUDE_UC}
+  include_hive: ${INCLUDE_HIVE}
+iceberg_strategy: ${ICEBERG_STRATEGY}
 migrate_hive_dbfs_root: ${MIGRATE_HIVE_DBFS_ROOT}
 hive_dbfs_target_path: "${HIVE_DBFS_TARGET_PATH}"
 hive_target_catalog: ${HIVE_TARGET_CATALOG}
