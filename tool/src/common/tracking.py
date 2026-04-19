@@ -6,6 +6,77 @@ from common.config import MigrationConfig
 
 if TYPE_CHECKING:
     from pyspark.sql import DataFrame, SparkSession
+    from pyspark.sql.types import StructType
+
+
+def discovery_row(
+    *,
+    source_type: str,
+    object_type: str,
+    object_name: str,
+    catalog_name: str | None,
+    schema_name: str | None,
+    discovered_at,
+    row_count: int = 0,
+    size_bytes: int = 0,
+    is_dlt_managed: bool | None = None,
+    pipeline_id: str | None = None,
+    create_statement: str = "",
+    data_category: str | None = None,
+    table_type: str | None = None,
+    provider: str | None = None,
+    storage_location: str | None = None,
+    format: str | None = None,
+    metadata: dict | None = None,
+) -> dict:
+    """Build a unified discovery_inventory row. metadata is JSON-encoded into metadata_json."""
+    import json
+
+    return {
+        "object_name": object_name,
+        "object_type": object_type,
+        "source_type": source_type,
+        "catalog_name": catalog_name,
+        "schema_name": schema_name,
+        "row_count": row_count,
+        "size_bytes": size_bytes,
+        "is_dlt_managed": is_dlt_managed,
+        "pipeline_id": pipeline_id,
+        "create_statement": create_statement,
+        "data_category": data_category,
+        "table_type": table_type,
+        "provider": provider,
+        "storage_location": storage_location,
+        "format": format,
+        "metadata_json": json.dumps(metadata) if metadata else None,
+        "discovered_at": discovered_at,
+    }
+
+
+def discovery_schema() -> StructType:
+    """StructType used when writing to discovery_inventory."""
+    from pyspark.sql.types import (
+        BooleanType, LongType, StringType, StructField, StructType, TimestampType,
+    )
+    return StructType([
+        StructField("object_name", StringType(), True),
+        StructField("object_type", StringType(), True),
+        StructField("source_type", StringType(), True),
+        StructField("catalog_name", StringType(), True),
+        StructField("schema_name", StringType(), True),
+        StructField("row_count", LongType(), True),
+        StructField("size_bytes", LongType(), True),
+        StructField("is_dlt_managed", BooleanType(), True),
+        StructField("pipeline_id", StringType(), True),
+        StructField("create_statement", StringType(), True),
+        StructField("data_category", StringType(), True),
+        StructField("table_type", StringType(), True),
+        StructField("provider", StringType(), True),
+        StructField("storage_location", StringType(), True),
+        StructField("format", StringType(), True),
+        StructField("metadata_json", StringType(), True),
+        StructField("discovered_at", TimestampType(), True),
+    ])
 
 
 class TrackingManager:
@@ -30,6 +101,7 @@ class TrackingManager:
             CREATE TABLE IF NOT EXISTS {self._fqn}.discovery_inventory (
                 object_name STRING,
                 object_type STRING,
+                source_type STRING,
                 catalog_name STRING,
                 schema_name STRING,
                 row_count LONG,
@@ -37,6 +109,12 @@ class TrackingManager:
                 is_dlt_managed BOOLEAN,
                 pipeline_id STRING,
                 create_statement STRING,
+                data_category STRING,
+                table_type STRING,
+                provider STRING,
+                storage_location STRING,
+                format STRING,
+                metadata_json STRING,
                 discovered_at TIMESTAMP
             ) USING DELTA
         """)
@@ -68,7 +146,9 @@ class TrackingManager:
 
     def write_discovery_inventory(self, df: DataFrame) -> None:
         """Overwrite the discovery inventory table with the given DataFrame."""
-        df.write.mode("overwrite").saveAsTable(f"{self._fqn}.discovery_inventory")
+        df.write.mode("overwrite").option("mergeSchema", "true").saveAsTable(
+            f"{self._fqn}.discovery_inventory"
+        )
 
     def append_migration_status(self, records: list[dict]) -> None:
         """Append migration status records with a current timestamp."""

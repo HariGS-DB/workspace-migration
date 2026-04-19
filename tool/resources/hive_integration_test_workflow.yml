@@ -14,15 +14,15 @@ resources:
           notebook_task:
             notebook_path: ../src/pre_check/pre_check.py
 
-        - task_key: hive_discovery
+        - task_key: discovery
           depends_on:
             - task_key: pre_check
           notebook_task:
-            notebook_path: ../src/discovery/hive_discovery.py
+            notebook_path: ../src/discovery/discovery.py
 
         - task_key: hive_migrate
           depends_on:
-            - task_key: hive_discovery
+            - task_key: discovery
           run_job_task:
             job_id: ${resources.jobs.hive_migrate.id}
 
@@ -36,7 +36,7 @@ resources:
           depends_on:
             - task_key: seed_hive
             - task_key: pre_check
-            - task_key: hive_discovery
+            - task_key: discovery
             - task_key: hive_migrate
             - task_key: test_hive
           run_if: ALL_DONE

@@ -2,7 +2,7 @@ resources:
   jobs:
     hive_migrate:
       name: "${var.job_prefix}-hive-migrate"
-      description: "Migrate legacy hive_metastore tables/views/functions to UC on target. Run AFTER hive_discovery."
+      description: "Migrate legacy hive_metastore tables/views/functions to UC on target. Run AFTER discovery with scope.include_hive=true."
       tasks:
         - task_key: hive_orchestrator
           notebook_task:

@@ -8,7 +8,7 @@ This document describes what the customer needs to reconfigure on the target wor
 
 ## Discovery report
 
-Run the `hive_discovery` workflow after deploying the migration tool. A new section in the migration dashboard ("External Hive Metastore" page — not yet wired into the Lakeview JSON; query the tracking tables directly for now) lists:
+Run the `discovery` workflow with `scope.include_hive: true` after deploying the migration tool. A new section in the migration dashboard ("External Hive Metastore" page — not yet wired into the Lakeview JSON; query the tracking tables directly for now) lists:
 
 - Clusters whose `spark_conf` contains `javax.jdo.option.ConnectionURL` (or the hadoop-prefixed variant `spark.hadoop.javax.jdo.option.ConnectionURL`)
 - Clusters referencing init scripts that set up external metastore connectivity

@@ -15,7 +15,7 @@ except NameError:
     pass
 
 # COMMAND ----------
-# Hive Orchestrator: read hive_discovery_inventory, emit per-category batches
+# Hive Orchestrator: read discovery_inventory (source_type='hive'), emit per-category batches
 # as task values for downstream workers. Also sets up the target catalog
 # (hive_target_catalog) so workers don't race to CREATE CATALOG.
 
@@ -45,7 +45,7 @@ if _is_notebook():
     config = MigrationConfig.from_workspace_file()
     tracker = TrackingManager(spark, config)  # type: ignore[name-defined] # noqa: F821
 
-    inv_fqn = f"{config.tracking_catalog}.{config.tracking_schema}.hive_discovery_inventory"
+    inv_fqn = f"{config.tracking_catalog}.{config.tracking_schema}.discovery_inventory"
     completed_fqn = f"{config.tracking_catalog}.{config.tracking_schema}.migration_status"
 
     # Subtract already-validated objects from the pending list (idempotent re-runs).
@@ -62,6 +62,7 @@ if _is_notebook():
           ) WHERE rn = 1 AND status = 'validated'
         ) c
           ON i.object_name = c.object_name AND i.object_type = c.object_type
+        WHERE i.source_type = 'hive'
     """
     inventory_rows = spark.sql(_pending_sql).collect()  # noqa: F821
 
