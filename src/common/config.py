@@ -3,8 +3,6 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 
-DEFAULT_CONFIG_PATH = "/Workspace/Shared/cp_migration/config.yaml"
-
 REQUIRED_FIELDS: tuple[str, ...] = (
     "source_workspace_url",
     "target_workspace_url",
@@ -33,6 +31,46 @@ def _coerce_bool(raw: object) -> bool:
     return str(raw).strip().lower() in ("true", "1", "yes")
 
 
+
+def _resolve_bundle_config_path() -> str:
+    """Resolve config.yaml path from the running notebook's own workspace path.
+
+    config.yaml is synced by DAB into the bundle's ``files/`` directory on
+    every deploy, so it sits at ``${workspace.file_path}/config.yaml``. We
+    derive that path by splitting the running notebook's own workspace path
+    on ``/files/`` (the same trick the sys.path bootstrap at the top of each
+    notebook uses) and re-joining under the ``/Workspace`` FUSE mount.
+
+    Raises:
+        RuntimeError: when not running under a Databricks notebook context
+            (no ``dbutils`` available). Callers should pass an explicit path
+            to :meth:`MigrationConfig.from_workspace_file` in that case.
+    """
+    dbutils = None
+    try:
+        import IPython  # type: ignore[import-not-found]
+
+        ip = IPython.get_ipython()
+        if ip is not None:
+            dbutils = ip.user_ns.get("dbutils")
+    except Exception:  # noqa: BLE001
+        dbutils = None
+
+    if dbutils is None:
+        msg = (
+            "Cannot auto-resolve config.yaml path: no dbutils available. "
+            "Pass an explicit path to MigrationConfig.from_workspace_file()."
+        )
+        raise RuntimeError(msg)
+
+    ctx = dbutils.notebook.entry_point.getDbutils().notebook().getContext()
+    nb_path = ctx.notebookPath().get()
+    # nb_path looks like /Shared/cp_migration/<target>/files/<...>/notebook.
+    # The config lives at <bundle_root>/files/config.yaml on the FUSE mount.
+    bundle_root = nb_path.split("/files/")[0]
+    return f"/Workspace{bundle_root}/files/config.yaml"
+
+
 @dataclass
 class MigrationConfig:
     """Configuration for a Unity Catalog migration run."""
@@ -55,8 +93,18 @@ class MigrationConfig:
     hive_target_catalog: str = "hive_upgraded"
 
     @classmethod
-    def from_workspace_file(cls, path: str = DEFAULT_CONFIG_PATH) -> MigrationConfig:
+    def from_workspace_file(cls, path: str | None = None) -> MigrationConfig:
         """Load migration config from a YAML file at a workspace path.
+
+        When ``path`` is ``None`` (the default for workflow notebooks), resolve
+        the config.yaml shipped alongside the current bundle deployment at
+        ``${workspace.file_path}/config.yaml``. The path is discovered from
+        the running notebook's own workspace location — the same trick the
+        sys.path bootstrap at the top of each notebook uses — so the config
+        file travels with the bundle and every ``databricks bundle deploy``
+        re-syncs it from the local checkout.
+
+        Tests and ad-hoc callers can pass an explicit ``path``.
 
         On Databricks, ``/Workspace/...`` paths resolve to local FUSE-mounted
         files that are readable with ``open()``. Required fields are validated;
@@ -64,16 +112,17 @@ class MigrationConfig:
         """
         import yaml
 
-        content = Path(path).read_text()
+        resolved = path if path is not None else _resolve_bundle_config_path()
+        content = Path(resolved).read_text()
         raw = yaml.safe_load(content) or {}
         if not isinstance(raw, dict):
-            msg = f"Config file at {path} must be a YAML mapping, got {type(raw).__name__}"
+            msg = f"Config file at {resolved} must be a YAML mapping, got {type(raw).__name__}"
             raise ValueError(msg)
 
         missing = [k for k in REQUIRED_FIELDS if not raw.get(k)]
         if missing:
             msg = (
-                f"Required config fields missing or empty in {path}: {missing}. "
+                f"Required config fields missing or empty in {resolved}: {missing}. "
                 f"Edit the file and re-run."
             )
             raise ValueError(msg)
