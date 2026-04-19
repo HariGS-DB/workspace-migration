@@ -202,9 +202,14 @@ class CatalogExplorer:
         return [f"`{catalog}`.`{schema}`.`{row.routine_name}`" for row in rows]
 
     def list_volumes(self, catalog: str, schema: str) -> list[dict]:
-        """List volumes in a schema via information_schema.volumes."""
+        """List volumes in a schema via information_schema.volumes.
+
+        Includes ``storage_location`` for both managed and external volumes
+        so the volume_worker can register EXTERNAL targets at the same path
+        and can locate source bytes for MANAGED volume copies.
+        """
         query = (
-            f"SELECT volume_name, volume_type "
+            f"SELECT volume_name, volume_type, storage_location "
             f"FROM `{catalog}`.`information_schema`.`volumes` "
             f"WHERE volume_schema = '{schema}'"
         )
@@ -213,6 +218,7 @@ class CatalogExplorer:
             {
                 "fqn": f"`{catalog}`.`{schema}`.`{row.volume_name}`",
                 "volume_type": row.volume_type,
+                "storage_location": row.storage_location,
             }
             for row in rows
         ]
