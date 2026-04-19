@@ -64,7 +64,7 @@ if _is_notebook():
     tracker = TrackingManager(spark_session, config)
 
     # Read discovery inventory and collect pending objects per type
-    BATCHED_TYPES = ("managed_table", "external_table", "volume")
+    BATCHED_TYPES = ("managed_table", "external_table", "volume", "mv", "st")
     LIST_TYPES = ("function", "view")
 
     batch_output: dict[str, list[str]] = {}

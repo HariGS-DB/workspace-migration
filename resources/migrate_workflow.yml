@@ -64,10 +64,36 @@ resources:
           notebook_task:
             notebook_path: ../src/migrate/views_worker.py
 
+        - task_key: migrate_mv_st
+          depends_on:
+            - task_key: migrate_views
+          for_each_task:
+            inputs: "{{tasks.orchestrator.values.mv_batches}}"
+            task:
+              task_key: mv_batch
+              notebook_task:
+                notebook_path: ../src/migrate/mv_st_worker.py
+                base_parameters:
+                  batch: "{{input}}"
+
+        - task_key: migrate_st
+          depends_on:
+            - task_key: migrate_views
+          for_each_task:
+            inputs: "{{tasks.orchestrator.values.st_batches}}"
+            task:
+              task_key: st_batch
+              notebook_task:
+                notebook_path: ../src/migrate/mv_st_worker.py
+                base_parameters:
+                  batch: "{{input}}"
+
         - task_key: migrate_grants
           depends_on:
             - task_key: migrate_views
             - task_key: migrate_volumes
+            - task_key: migrate_mv_st
+            - task_key: migrate_st
           notebook_task:
             notebook_path: ../src/migrate/grants_worker.py
 

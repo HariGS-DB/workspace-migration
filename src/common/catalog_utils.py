@@ -22,6 +22,8 @@ _TABLE_TYPE_MAP = {
     "MANAGED": "managed_table",
     "EXTERNAL": "external_table",
     "VIEW": "view",
+    "MATERIALIZED_VIEW": "mv",
+    "STREAMING_TABLE": "st",
 }
 
 

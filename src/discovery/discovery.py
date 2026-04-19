@@ -69,6 +69,12 @@ def _discover_uc(config, explorer, now) -> tuple[list[dict], int]:
                     is_dlt, pipeline_id = False, None
                 else:
                     is_dlt, pipeline_id = explorer.detect_dlt_managed(fqn)
+                    # MVs / STs always have a pipeline_id (auto-provisioned or
+                    # DLT-defined). Only flag as DLT-managed if the underlying
+                    # pipeline is user-owned (non-empty spec.libraries). That
+                    # distinction is deferred to mv_st_worker.
+                    if obj_type in ("mv", "st"):
+                        is_dlt = False  # distinguish later via pipelines.get()
                     if is_dlt:
                         dlt_count += 1
 
@@ -77,7 +83,10 @@ def _discover_uc(config, explorer, now) -> tuple[list[dict], int]:
                 create_stmt = ""
                 table_format: str | None = None
 
-                if obj_type != "view":
+                # MV / ST row counts via SELECT COUNT(*) can be expensive or
+                # block on auto-refresh; skip them and let the target do its
+                # own validation after REFRESH.
+                if obj_type not in ("view", "mv", "st"):
                     with contextlib.suppress(Exception):
                         row_count = explorer.get_table_row_count(fqn)
                     with contextlib.suppress(Exception):
