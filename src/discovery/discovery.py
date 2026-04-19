@@ -124,6 +124,8 @@ def _discover_uc(config, explorer, now) -> tuple[list[dict], int]:
                     catalog_name=catalog,
                     schema_name=schema,
                     discovered_at=now,
+                    table_type=vol.get("volume_type"),  # MANAGED or EXTERNAL
+                    storage_location=vol.get("storage_location"),
                 ))
 
     return rows, dlt_count
