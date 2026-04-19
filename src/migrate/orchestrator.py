@@ -15,8 +15,9 @@ except NameError:
     pass  # not running under a Databricks notebook (e.g. pytest)
 
 # COMMAND ----------
-# Orchestrator: reads discovery inventory, builds batches per object type,
-# and publishes them as task values for downstream workers.
+# UC Orchestrator: reads discovery inventory (source_type='uc'), builds
+# batches per object type, and publishes them as task values for downstream
+# workers. Skipped when config.scope.include_uc is false.
 
 import json
 import logging
@@ -46,7 +47,6 @@ def build_batches(objects: list[dict], batch_size: int) -> list[str]:
 
 
 # COMMAND ----------
-# Notebook execution — guarded so build_batches can be imported in tests.
 
 
 def _is_notebook() -> bool:
@@ -58,36 +58,63 @@ def _is_notebook() -> bool:
         return False
 
 
+# Keys published by this orchestrator — declared up top so we can emit empty
+# task values when scope.include_uc is false (downstream for_each tasks
+# consume these and would block otherwise).
+_BATCH_KEYS = (
+    "managed_table_batches",
+    "external_table_batches",
+    "volume_batches",
+    "mv_batches",
+    "st_batches",
+)
+_LIST_KEYS = ("function_list", "view_list")
+
+
+def _publish_empty_task_values(dbutils) -> None:
+    for key in _BATCH_KEYS:
+        dbutils.jobs.taskValues.set(key=key, value=json.dumps([]))
+    for key in _LIST_KEYS:
+        dbutils.jobs.taskValues.set(key=key, value=json.dumps([]))
+
+
+# COMMAND ----------
+# Notebook execution
+
 if _is_notebook():
     config = MigrationConfig.from_workspace_file()  # type: ignore[name-defined] # noqa: F821
-    spark_session = spark  # type: ignore[name-defined] # noqa: F821
-    tracker = TrackingManager(spark_session, config)
+    if not config.include_uc:
+        logger.info("Skipping UC orchestrator: scope.include_uc=false.")
+        _publish_empty_task_values(dbutils)  # type: ignore[name-defined] # noqa: F821
+    else:
+        spark_session = spark  # type: ignore[name-defined] # noqa: F821
+        tracker = TrackingManager(spark_session, config)
 
-    # Read discovery inventory and collect pending objects per type
-    BATCHED_TYPES = ("managed_table", "external_table", "volume", "mv", "st")
-    LIST_TYPES = ("function", "view")
+        # Read discovery inventory and collect pending objects per type
+        BATCHED_TYPES = ("managed_table", "external_table", "volume", "mv", "st")
+        LIST_TYPES = ("function", "view")
 
-    batch_output: dict[str, list[str]] = {}
-    list_output: dict[str, str] = {}
+        batch_output: dict[str, list[str]] = {}
+        list_output: dict[str, str] = {}
 
-    for obj_type in BATCHED_TYPES:
-        pending = tracker.get_pending_objects(obj_type)
-        logger.info("Pending %s: %d objects", obj_type, len(pending))
-        batches = build_batches(pending, config.batch_size)
-        batch_output[f"{obj_type}_batches"] = batches
+        for obj_type in BATCHED_TYPES:
+            pending = tracker.get_pending_objects(obj_type)
+            logger.info("Pending %s: %d objects", obj_type, len(pending))
+            batches = build_batches(pending, config.batch_size)
+            batch_output[f"{obj_type}_batches"] = batches
 
-    for obj_type in LIST_TYPES:
-        pending = tracker.get_pending_objects(obj_type)
-        logger.info("Pending %s: %d objects", obj_type, len(pending))
-        list_output[f"{obj_type}_list"] = json.dumps(pending, default=str)
+        for obj_type in LIST_TYPES:
+            pending = tracker.get_pending_objects(obj_type)
+            logger.info("Pending %s: %d objects", obj_type, len(pending))
+            list_output[f"{obj_type}_list"] = json.dumps(pending, default=str)
 
-    # Publish task values for downstream workers
-    for key, batches in batch_output.items():
-        dbutils.jobs.taskValues.set(key=key, value=json.dumps(batches))  # type: ignore[name-defined] # noqa: F821
-        logger.info("Published %s: %d batches", key, len(batches))
+        # Publish task values for downstream workers
+        for key, batches in batch_output.items():
+            dbutils.jobs.taskValues.set(key=key, value=json.dumps(batches))  # type: ignore[name-defined] # noqa: F821
+            logger.info("Published %s: %d batches", key, len(batches))
 
-    for key, value in list_output.items():
-        dbutils.jobs.taskValues.set(key=key, value=value)  # type: ignore[name-defined] # noqa: F821
-        logger.info("Published %s", key)
+        for key, value in list_output.items():
+            dbutils.jobs.taskValues.set(key=key, value=value)  # type: ignore[name-defined] # noqa: F821
+            logger.info("Published %s", key)
 
-    logger.info("Orchestrator complete.")
+        logger.info("Orchestrator complete.")

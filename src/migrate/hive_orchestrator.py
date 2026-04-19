@@ -43,6 +43,19 @@ def _is_notebook() -> bool:
 
 if _is_notebook():
     config = MigrationConfig.from_workspace_file()
+
+    if not config.include_hive:
+        logger.info("Skipping Hive orchestrator: scope.include_hive=false.")
+        # Publish empty batches so downstream for_each tasks don't block.
+        for _cat in ("hive_external", "hive_managed_nondbfs", "hive_managed_dbfs_root"):
+            dbutils.jobs.taskValues.set(key=f"{_cat}_batches", value=json.dumps([]))  # type: ignore[name-defined] # noqa: F821
+        dbutils.jobs.taskValues.set(key="hive_view_list", value=json.dumps([]))  # type: ignore[name-defined] # noqa: F821
+        dbutils.jobs.taskValues.set(key="hive_function_list", value=json.dumps([]))  # type: ignore[name-defined] # noqa: F821
+        # Short-circuit the rest of the notebook — use sys.exit so downstream
+        # cells don't execute. Non-notebook imports fall through harmlessly
+        # because _is_notebook() returned False above.
+        sys.exit(0)
+
     tracker = TrackingManager(spark, config)  # type: ignore[name-defined] # noqa: F821
 
     inv_fqn = f"{config.tracking_catalog}.{config.tracking_schema}.discovery_inventory"

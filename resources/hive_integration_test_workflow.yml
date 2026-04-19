@@ -20,15 +20,15 @@ resources:
           notebook_task:
             notebook_path: ../src/discovery/discovery.py
 
-        - task_key: hive_migrate
+        - task_key: migrate
           depends_on:
             - task_key: discovery
           run_job_task:
-            job_id: ${resources.jobs.hive_migrate.id}
+            job_id: ${resources.jobs.migrate.id}
 
         - task_key: test_hive
           depends_on:
-            - task_key: hive_migrate
+            - task_key: migrate
           notebook_task:
             notebook_path: ../tests/integration/test_hive_end_to_end.py
 
@@ -37,7 +37,7 @@ resources:
             - task_key: seed_hive
             - task_key: pre_check
             - task_key: discovery
-            - task_key: hive_migrate
+            - task_key: migrate
             - task_key: test_hive
           run_if: ALL_DONE
           notebook_task:
