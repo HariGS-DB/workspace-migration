@@ -174,6 +174,106 @@ dbutils.jobs.taskValues.set(  # type: ignore[name-defined]  # noqa: F821
 
 # COMMAND ----------
 
+# --- Phase 3 governance fixtures ---
+
+# Task 28 — Tags on a table and on a column
+_has_tag = False
+try:
+    spark.sql(  # noqa: F821
+        "ALTER TABLE integration_test_src.test_schema.managed_orders "
+        "SET TAGS ('env' = 'test', 'phase' = '3')"
+    )
+    spark.sql(  # noqa: F821
+        "ALTER TABLE integration_test_src.test_schema.managed_orders "
+        "ALTER COLUMN customer_id SET TAGS ('pii' = 'true')"
+    )
+    _has_tag = True
+    print("Applied tags to managed_orders (table + column).")
+except Exception as _exc:  # noqa: BLE001
+    print(f"Skipped tag seed (unsupported on this runtime): {_exc}")
+dbutils.jobs.taskValues.set(  # type: ignore[name-defined]  # noqa: F821
+    key="has_tag", value="true" if _has_tag else "false"
+)
+
+# COMMAND ----------
+
+# Task 29 — Row filter function + ALTER TABLE SET ROW FILTER
+_has_row_filter = False
+try:
+    spark.sql(  # noqa: F821
+        """
+        CREATE OR REPLACE FUNCTION integration_test_src.test_schema.region_filter(region STRING)
+        RETURNS BOOLEAN
+        RETURN region = 'US' OR is_account_group_member('admins')
+        """
+    )
+    # Row filters need a column to filter on — add one and populate
+    spark.sql(  # noqa: F821
+        "ALTER TABLE integration_test_src.test_schema.managed_orders "
+        "ADD COLUMN IF NOT EXISTS region STRING"
+    )
+    spark.sql(  # noqa: F821
+        "UPDATE integration_test_src.test_schema.managed_orders SET region = 'US' WHERE order_id = 1"
+    )
+    spark.sql(  # noqa: F821
+        "UPDATE integration_test_src.test_schema.managed_orders SET region = 'UK' WHERE order_id = 2"
+    )
+    spark.sql(  # noqa: F821
+        "ALTER TABLE integration_test_src.test_schema.managed_orders "
+        "SET ROW FILTER integration_test_src.test_schema.region_filter ON (region)"
+    )
+    _has_row_filter = True
+    print("Applied row filter region_filter on managed_orders.region.")
+except Exception as _exc:  # noqa: BLE001
+    print(f"Skipped row filter seed: {_exc}")
+dbutils.jobs.taskValues.set(  # type: ignore[name-defined]  # noqa: F821
+    key="has_row_filter", value="true" if _has_row_filter else "false"
+)
+
+# COMMAND ----------
+
+# Task 30 — Column mask function + ALTER COLUMN SET MASK
+_has_column_mask = False
+try:
+    spark.sql(  # noqa: F821
+        """
+        CREATE OR REPLACE FUNCTION integration_test_src.test_schema.mask_customer(cid INT)
+        RETURNS INT
+        RETURN CASE WHEN is_account_group_member('admins') THEN cid ELSE -1 END
+        """
+    )
+    spark.sql(  # noqa: F821
+        "ALTER TABLE integration_test_src.test_schema.managed_orders "
+        "ALTER COLUMN customer_id SET MASK integration_test_src.test_schema.mask_customer"
+    )
+    _has_column_mask = True
+    print("Applied column mask mask_customer on managed_orders.customer_id.")
+except Exception as _exc:  # noqa: BLE001
+    print(f"Skipped column mask seed: {_exc}")
+dbutils.jobs.taskValues.set(  # type: ignore[name-defined]  # noqa: F821
+    key="has_column_mask", value="true" if _has_column_mask else "false"
+)
+
+# COMMAND ----------
+
+# Task 32 — Comments on catalog/schema/table
+try:
+    spark.sql(  # noqa: F821
+        "COMMENT ON CATALOG integration_test_src IS 'Phase 3 integration test catalog'"
+    )
+    spark.sql(  # noqa: F821
+        "COMMENT ON SCHEMA integration_test_src.test_schema IS 'Phase 3 test schema'"
+    )
+    spark.sql(  # noqa: F821
+        "COMMENT ON TABLE integration_test_src.test_schema.managed_orders "
+        "IS 'Orders fixture — carries tags, row filter, and column mask'"
+    )
+    print("Applied comments on catalog/schema/table.")
+except Exception as _exc:  # noqa: BLE001
+    print(f"Skipped comments seed: {_exc}")
+
+# COMMAND ----------
+
 # Grant the migration SPN permissions to read the source catalog.
 from common.config import MigrationConfig  # noqa: E402
 config = MigrationConfig.from_workspace_file()
