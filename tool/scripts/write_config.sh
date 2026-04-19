@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
-# Write /Workspace/Shared/cp_migration/config.yaml from env vars.
-# Used by CI / integration tests to seed the config file before running the
-# bundle workflows. Humans use the bootstrap workflow + Databricks UI instead.
+# Write tool/config.yaml from env vars.
+# Used by CI / integration tests to seed the bundle config before running
+# ``databricks bundle deploy`` — DAB then syncs config.yaml onto the
+# workspace alongside the rest of the bundle files. Humans edit
+# tool/config.yaml directly in their fork and redeploy.
 #
 # Required env vars:
 #   SOURCE_WORKSPACE_URL, TARGET_WORKSPACE_URL, SPN_CLIENT_ID
@@ -11,7 +13,6 @@
 #   TRACKING_CATALOG=migration_tracking, TRACKING_SCHEMA=cp_migration
 #   DRY_RUN=false, BATCH_SIZE=50
 #   MIGRATE_HIVE_DBFS_ROOT=false, HIVE_DBFS_TARGET_PATH=, HIVE_TARGET_CATALOG=hive_upgraded
-#   PROFILE=source-migration (Databricks CLI profile used to upload the file)
 set -euo pipefail
 
 : "${SOURCE_WORKSPACE_URL:?required}"
@@ -29,12 +30,12 @@ set -euo pipefail
 : "${MIGRATE_HIVE_DBFS_ROOT:=false}"
 : "${HIVE_DBFS_TARGET_PATH:=}"
 : "${HIVE_TARGET_CATALOG:=hive_upgraded}"
-: "${PROFILE:=source-migration}"
 
-TMPFILE=$(mktemp -t cp_migration_config).yaml
-trap 'rm -f "$TMPFILE"' EXIT
+# Script lives at tool/scripts/write_config.sh — write to tool/config.yaml.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CONFIG_PATH="${SCRIPT_DIR}/../config.yaml"
 
-cat > "$TMPFILE" <<EOF
+cat > "${CONFIG_PATH}" <<EOF
 source_workspace_url: ${SOURCE_WORKSPACE_URL}
 target_workspace_url: ${TARGET_WORKSPACE_URL}
 spn_client_id: ${SPN_CLIENT_ID}
@@ -51,6 +52,4 @@ hive_dbfs_target_path: "${HIVE_DBFS_TARGET_PATH}"
 hive_target_catalog: ${HIVE_TARGET_CATALOG}
 EOF
 
-databricks workspace mkdirs /Shared/cp_migration -p "$PROFILE" >/dev/null || true
-databricks workspace import --format=AUTO --overwrite --file="$TMPFILE" /Shared/cp_migration/config.yaml -p "$PROFILE"
-echo "✅ Wrote /Workspace/Shared/cp_migration/config.yaml (profile=$PROFILE)"
+echo "Wrote ${CONFIG_PATH} — run 'databricks bundle deploy' to sync to the workspace."

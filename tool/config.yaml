@@ -1,14 +1,14 @@
 # ------------------------------------------------------------
-# Migration configuration template.
+# Migration configuration.
 #
-# Copied to /Workspace/Shared/cp_migration/config.yaml by the
-# `bootstrap` workflow on first deploy. Edit this file in the
-# Databricks UI (Workspace → Shared → cp_migration → config.yaml)
-# and re-run the migration workflows. Changes are picked up on
-# each run.
+# Edit this file locally and run ``databricks bundle deploy`` —
+# DAB will sync it to ``${workspace.file_path}/config.yaml`` on
+# the workspace, which is where the migration workflows read from.
+#
+# See config.example.yaml for a fully-commented reference.
 #
 # Secret values (the SPN client secret itself) stay in the
-# Databricks Secret Scope named by `spn_secret_scope` below.
+# Databricks Secret Scope named by ``spn_secret_scope`` below.
 # This file only references the scope/key; it never stores the
 # secret value directly.
 # ------------------------------------------------------------
