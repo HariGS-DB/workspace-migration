@@ -1,8 +1,14 @@
 from __future__ import annotations
 
+import contextlib
 from collections import defaultdict, deque
 
 from common.auth import AuthManager
+
+
+# Small alias for per-table try/except blocks in governance discovery —
+# absence of a given tag table / REST endpoint shouldn't abort discovery.
+_suppress = lambda: contextlib.suppress(Exception)  # noqa: E731
 
 SYSTEM_CATALOGS = frozenset({"system", "hive_metastore", "__databricks_internal", "samples"})
 EXCLUDED_SCHEMAS = frozenset({"default", "information_schema"})
@@ -237,6 +243,339 @@ class CatalogExplorer:
             }
             for row in rows
         ]
+
+    # ------------------------------------------------------------------
+    # Phase 3: governance objects
+    #
+    # Each helper returns a list of dicts. Discovery wraps each dict into a
+    # discovery_inventory row with the appropriate object_type; per-type
+    # fields that don't fit the normalized columns go into metadata_json.
+    # REST-based helpers (policies, monitors, online_tables) wrap API calls
+    # in try/except so discovery keeps running on workspaces where a
+    # preview feature is not enabled.
+    # ------------------------------------------------------------------
+
+    def list_tags(self, catalog: str, schema: str) -> list[dict]:
+        """List tags on all securables in a schema via system.information_schema.
+
+        Aggregates catalog/schema/table/column/volume tags into a single
+        normalized shape so tags_worker can replay them with one dispatch.
+        """
+        results: list[dict] = []
+
+        # Catalog tags: only returned once per catalog (de-dup'd by caller)
+        with _suppress():
+            rows = self.spark.sql(  # type: ignore[attr-defined]
+                f"SELECT catalog_name, tag_name, tag_value "
+                f"FROM system.information_schema.catalog_tags "
+                f"WHERE catalog_name = '{catalog}'"
+            ).collect()
+            for r in rows:
+                results.append({
+                    "securable_type": "CATALOG",
+                    "securable_fqn": f"`{catalog}`",
+                    "tag_name": r.tag_name,
+                    "tag_value": r.tag_value,
+                })
+
+        with _suppress():
+            rows = self.spark.sql(  # type: ignore[attr-defined]
+                f"SELECT schema_name, tag_name, tag_value "
+                f"FROM system.information_schema.schema_tags "
+                f"WHERE catalog_name = '{catalog}' AND schema_name = '{schema}'"
+            ).collect()
+            for r in rows:
+                results.append({
+                    "securable_type": "SCHEMA",
+                    "securable_fqn": f"`{catalog}`.`{schema}`",
+                    "tag_name": r.tag_name,
+                    "tag_value": r.tag_value,
+                })
+
+        with _suppress():
+            rows = self.spark.sql(  # type: ignore[attr-defined]
+                f"SELECT table_name, tag_name, tag_value "
+                f"FROM system.information_schema.table_tags "
+                f"WHERE catalog_name = '{catalog}' AND schema_name = '{schema}'"
+            ).collect()
+            for r in rows:
+                results.append({
+                    "securable_type": "TABLE",
+                    "securable_fqn": f"`{catalog}`.`{schema}`.`{r.table_name}`",
+                    "tag_name": r.tag_name,
+                    "tag_value": r.tag_value,
+                })
+
+        with _suppress():
+            rows = self.spark.sql(  # type: ignore[attr-defined]
+                f"SELECT table_name, column_name, tag_name, tag_value "
+                f"FROM system.information_schema.column_tags "
+                f"WHERE catalog_name = '{catalog}' AND schema_name = '{schema}'"
+            ).collect()
+            for r in rows:
+                results.append({
+                    "securable_type": "COLUMN",
+                    "securable_fqn": f"`{catalog}`.`{schema}`.`{r.table_name}`",
+                    "column_name": r.column_name,
+                    "tag_name": r.tag_name,
+                    "tag_value": r.tag_value,
+                })
+
+        with _suppress():
+            rows = self.spark.sql(  # type: ignore[attr-defined]
+                f"SELECT volume_name, tag_name, tag_value "
+                f"FROM system.information_schema.volume_tags "
+                f"WHERE catalog_name = '{catalog}' AND schema_name = '{schema}'"
+            ).collect()
+            for r in rows:
+                results.append({
+                    "securable_type": "VOLUME",
+                    "securable_fqn": f"`{catalog}`.`{schema}`.`{r.volume_name}`",
+                    "tag_name": r.tag_name,
+                    "tag_value": r.tag_value,
+                })
+
+        return results
+
+    def list_row_filters(self, catalog: str, schema: str) -> list[dict]:
+        """Row filters applied to tables via ALTER TABLE ... SET ROW FILTER."""
+        results: list[dict] = []
+        with _suppress():
+            rows = self.spark.sql(  # type: ignore[attr-defined]
+                f"SELECT table_name, row_filter_name, row_filter_input_columns "
+                f"FROM `{catalog}`.`information_schema`.`tables` "
+                f"WHERE table_schema = '{schema}' AND row_filter_name IS NOT NULL"
+            ).collect()
+            for r in rows:
+                results.append({
+                    "table_fqn": f"`{catalog}`.`{schema}`.`{r.table_name}`",
+                    "filter_function_fqn": r.row_filter_name,
+                    "filter_columns": list(r.row_filter_input_columns)
+                    if r.row_filter_input_columns else [],
+                })
+        return results
+
+    def list_column_masks(self, catalog: str, schema: str) -> list[dict]:
+        """Column masks applied via ALTER TABLE ... ALTER COLUMN ... SET MASK."""
+        results: list[dict] = []
+        with _suppress():
+            rows = self.spark.sql(  # type: ignore[attr-defined]
+                f"SELECT table_name, column_name, mask_name, mask_using_columns "
+                f"FROM `{catalog}`.`information_schema`.`columns` "
+                f"WHERE table_schema = '{schema}' AND mask_name IS NOT NULL"
+            ).collect()
+            for r in rows:
+                results.append({
+                    "table_fqn": f"`{catalog}`.`{schema}`.`{r.table_name}`",
+                    "column_name": r.column_name,
+                    "mask_function_fqn": r.mask_name,
+                    "mask_using_columns": list(r.mask_using_columns)
+                    if r.mask_using_columns else [],
+                })
+        return results
+
+    def list_policies(self) -> list[dict]:
+        """ABAC policies via REST ``/api/2.1/unity-catalog/policies``.
+
+        Workspace-level — call once per discovery run. Returns empty list on
+        404 (preview not enabled) so discovery continues. Each record
+        carries the full policy JSON in ``definition`` so the policies
+        worker can POST it back on target.
+        """
+        results: list[dict] = []
+        try:
+            client = self.auth_manager.source_client.api_client  # type: ignore[attr-defined]
+            resp = client.do("GET", "/api/2.1/unity-catalog/policies")
+            for p in resp.get("policies", []) if isinstance(resp, dict) else []:
+                results.append({
+                    "policy_name": p.get("name"),
+                    "securable_fqn": p.get("on_securable_fullname"),
+                    "definition": p,
+                })
+        except Exception:  # noqa: BLE001
+            # REST endpoint may not exist on this workspace / version
+            return []
+        return results
+
+    def list_monitors(self, table_fqns: list[str]) -> list[dict]:
+        """Lakehouse monitors via REST per-table GET.
+
+        Iterates over the given table FQNs (batched by caller); 404s are
+        skipped (table has no monitor).
+        """
+        results: list[dict] = []
+        client = self.auth_manager.source_client.api_client  # type: ignore[attr-defined]
+        for fqn in table_fqns:
+            clean = fqn.replace("`", "")
+            try:
+                resp = client.do(
+                    "GET", f"/api/2.1/unity-catalog/tables/{clean}/monitor"
+                )
+                if isinstance(resp, dict) and resp.get("table_name"):
+                    results.append({
+                        "table_fqn": fqn,
+                        "definition": resp,
+                    })
+            except Exception:  # noqa: BLE001
+                continue  # no monitor (404) or transient error
+        return results
+
+    def list_registered_models(self, catalog: str, schema: str) -> list[dict]:
+        """Registered models in a schema via SDK ``registered_models.list``.
+
+        Returns one record per model with its versions inline — artifact
+        copy happens in the models worker, this helper just captures the
+        metadata.
+        """
+        results: list[dict] = []
+        try:
+            client = self.auth_manager.source_client  # type: ignore[attr-defined]
+            for m in client.registered_models.list(
+                catalog_name=catalog, schema_name=schema
+            ):
+                versions = []
+                with _suppress():
+                    for v in client.model_versions.list(full_name=m.full_name):
+                        versions.append({
+                            "version": v.version,
+                            "source": v.source,
+                            "storage_location": getattr(v, "storage_location", None),
+                            "status": str(getattr(v, "status", "")),
+                            "aliases": [a.alias_name for a in (v.aliases or [])],
+                        })
+                results.append({
+                    "model_fqn": m.full_name,
+                    "owner": getattr(m, "owner", None),
+                    "storage_location": getattr(m, "storage_location", None),
+                    "comment": getattr(m, "comment", None),
+                    "versions": versions,
+                })
+        except Exception:  # noqa: BLE001
+            return []
+        return results
+
+    def list_connections(self) -> list[dict]:
+        """UC connections via SDK. Workspace-level.
+
+        Passwords in ``options`` are not returned by the GET API — worker
+        will record a partial status and surface the list of credentials
+        the customer must re-enter.
+        """
+        results: list[dict] = []
+        try:
+            client = self.auth_manager.source_client  # type: ignore[attr-defined]
+            for c in client.connections.list():
+                results.append({
+                    "connection_name": c.name,
+                    "connection_type": str(getattr(c, "connection_type", "")),
+                    "options": dict(getattr(c, "options", {}) or {}),
+                    "comment": getattr(c, "comment", None),
+                })
+        except Exception:  # noqa: BLE001
+            return []
+        return results
+
+    def list_foreign_catalogs(self) -> list[dict]:
+        """Foreign catalogs — federated catalogs backed by a UC connection."""
+        results: list[dict] = []
+        try:
+            client = self.auth_manager.source_client  # type: ignore[attr-defined]
+            for c in client.catalogs.list(include_browse=True):
+                ctype = str(getattr(c, "catalog_type", ""))
+                if "FOREIGN" in ctype.upper():
+                    results.append({
+                        "catalog_name": c.name,
+                        "connection_name": getattr(c, "connection_name", None),
+                        "options": dict(getattr(c, "options", {}) or {}),
+                        "comment": getattr(c, "comment", None),
+                    })
+        except Exception:  # noqa: BLE001
+            return []
+        return results
+
+    def list_online_tables(self) -> list[dict]:
+        """Online tables via REST ``/api/2.0/online-tables``.
+
+        Workspace-level. Returns empty list if preview is not enabled.
+        """
+        results: list[dict] = []
+        try:
+            client = self.auth_manager.source_client.api_client  # type: ignore[attr-defined]
+            resp = client.do("GET", "/api/2.0/online-tables")
+            for t in resp.get("online_tables", []) if isinstance(resp, dict) else []:
+                results.append({
+                    "online_table_fqn": t.get("name"),
+                    "source_table_fqn": (t.get("spec") or {}).get("source_table_full_name"),
+                    "definition": t,
+                })
+        except Exception:  # noqa: BLE001
+            return []
+        return results
+
+    def list_shares(self, exclude_names: frozenset[str] = frozenset()) -> list[dict]:
+        """Delta shares owned by the source workspace.
+
+        Excludes the migration's own internal share ``cp_migration_share``
+        (callers pass it via ``exclude_names``).
+        """
+        results: list[dict] = []
+        try:
+            client = self.auth_manager.source_client  # type: ignore[attr-defined]
+            for s in client.shares.list():
+                if s.name in exclude_names:
+                    continue
+                objects = []
+                with _suppress():
+                    full = client.shares.get(name=s.name, include_shared_data=True)
+                    for o in (full.objects or []):
+                        objects.append({
+                            "name": o.name,
+                            "data_object_type": str(o.data_object_type),
+                            "shared_as": getattr(o, "shared_as", None),
+                        })
+                results.append({
+                    "share_name": s.name,
+                    "comment": getattr(s, "comment", None),
+                    "objects": objects,
+                })
+        except Exception:  # noqa: BLE001
+            return []
+        return results
+
+    def list_recipients(self, exclude_prefix: str = "cp_migration_recipient_") -> list[dict]:
+        """Delta Sharing recipients; skips our internal cp_migration_recipient_*."""
+        results: list[dict] = []
+        try:
+            client = self.auth_manager.source_client  # type: ignore[attr-defined]
+            for r in client.recipients.list():
+                if r.name and r.name.startswith(exclude_prefix):
+                    continue
+                results.append({
+                    "recipient_name": r.name,
+                    "authentication_type": str(getattr(r, "authentication_type", "")),
+                    "global_metastore_id": getattr(
+                        r, "data_recipient_global_metastore_id", None
+                    ),
+                    "comment": getattr(r, "comment", None),
+                })
+        except Exception:  # noqa: BLE001
+            return []
+        return results
+
+    def list_providers(self) -> list[dict]:
+        """Delta Sharing providers (the source's subscribed providers)."""
+        results: list[dict] = []
+        try:
+            client = self.auth_manager.source_client  # type: ignore[attr-defined]
+            for p in client.providers.list():
+                results.append({
+                    "provider_name": p.name,
+                    "authentication_type": str(getattr(p, "authentication_type", "")),
+                    "comment": getattr(p, "comment", None),
+                })
+        except Exception:  # noqa: BLE001
+            return []
+        return results
 
     # ------------------------------------------------------------------
     # View dependency ordering
