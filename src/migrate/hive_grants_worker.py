@@ -208,7 +208,8 @@ def run(dbutils, spark) -> None:
     # 2. Per-object grants - iterate hive discovery inventory
     inv = spark.sql(
         f"SELECT object_name, object_type, catalog_name, schema_name "
-        f"FROM {config.tracking_catalog}.{config.tracking_schema}.hive_discovery_inventory"
+        f"FROM {config.tracking_catalog}.{config.tracking_schema}.discovery_inventory "
+        f"WHERE source_type = 'hive'"
     ).collect()
 
     logger.info("Processing grants for %d hive inventory records.", len(inv))

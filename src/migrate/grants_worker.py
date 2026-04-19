@@ -127,7 +127,8 @@ def run(dbutils, spark) -> None:
     # Read discovery inventory for catalogs and schemas
     inventory_df = spark_session.sql(
         f"SELECT DISTINCT catalog_name, schema_name "
-        f"FROM {config.tracking_catalog}.{config.tracking_schema}.discovery_inventory"
+        f"FROM {config.tracking_catalog}.{config.tracking_schema}.discovery_inventory "
+        f"WHERE source_type = 'uc'"
     )
     inventory_rows = inventory_df.collect()
 

@@ -48,6 +48,10 @@ class MigrationConfig:
     tracking_schema: str = "cp_migration"
     dry_run: bool = False
     batch_size: int = 50
+    # Scope: which source metastore domains to discover/migrate. Default is UC
+    # only — Hive enablement is opt-in.
+    include_uc: bool = True
+    include_hive: bool = False
     # Hive (Phase 2) — unused in Phase 1 notebooks but fields exist so the
     # dataclass matches the full config file schema.
     migrate_hive_dbfs_root: bool = False
@@ -90,6 +94,8 @@ class MigrationConfig:
             tracking_schema=str(raw.get("tracking_schema", "cp_migration")),
             dry_run=_coerce_bool(raw.get("dry_run")),
             batch_size=int(raw.get("batch_size", 50)),
+            include_uc=_coerce_bool((raw.get("scope") or {}).get("include_uc", True)),
+            include_hive=_coerce_bool((raw.get("scope") or {}).get("include_hive", False)),
             migrate_hive_dbfs_root=_coerce_bool(raw.get("migrate_hive_dbfs_root")),
             hive_dbfs_target_path=str(raw.get("hive_dbfs_target_path", "")),
             hive_target_catalog=str(raw.get("hive_target_catalog", "hive_upgraded")),
