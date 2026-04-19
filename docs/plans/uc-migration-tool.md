@@ -516,6 +516,165 @@ summary (shared)
 
 ---
 
+# Phase 2.5: Data Completeness
+
+**Goal:** Close data-loss and format-coverage gaps surfaced by the 2026-04-18 gap analysis before Phase 3's governance extensions land. Four targeted fixes plus an integration test: managed volume data copy, Iceberg managed tables, Python UDFs, and non-DLT materialized views / streaming tables.
+
+**Scope decisions (2026-04-19):**
+
+In scope:
+- SQL-created materialized views and streaming tables via DDL replay
+- Iceberg managed tables via DDL replay + re-ingest (Option A)
+- Managed volumes preserved as MANAGED on target with file-level copy
+
+Out of scope (handled by pipeline migration, a separate tool):
+- DLT-defined materialized views / streaming tables
+- User-owned Lakeflow/DLT pipelines and any table where `pipelines.get(pipeline_id).spec.libraries` is non-empty
+
+**Distinguishing SQL-created vs DLT-defined MV/ST:** call `w.pipelines.get(pipeline_id)` for each MV/ST; if `spec.libraries` is empty it was auto-provisioned by the CREATE statement (SQL-created, in scope); if populated it points at user notebooks in a DLT pipeline (out of scope).
+
+---
+
+## Task 2.5.A: Managed Volume — MANAGED→MANAGED file copy
+
+**Files:**
+- Modify: `src/migrate/volume_worker.py`
+- Create: `src/migrate/_volume_copy.py` (target-side copy notebook)
+- Modify: `src/common/tracking.py` — add `bytes_copied`, `file_count`, `copy_duration_s`, `volume_type_source`, `volume_type_target` columns to `migration_status`
+- Modify: `src/pre_check/checks.py` — volume size + share capability checks
+- Modify: `src/migrate/setup_sharing.py` — include volumes in `cp_migration_share`
+
+**Current bug (Phase 1):** `volume_worker.py:19` creates empty managed volumes on target — customer's files are never copied → silent data loss.
+
+- [ ] For EXTERNAL volumes: keep existing DDL replay (create EXTERNAL on target at the same `storage_location`, no data movement)
+- [ ] For MANAGED volumes, preserve type on target with file copy via Delta Share:
+  - [ ] Source: `ALTER SHARE cp_migration_share ADD VOLUME <source_fqn>`
+  - [ ] Target: `CREATE VOLUME <target_fqn>` (managed; UC allocates new storage path)
+  - [ ] Submit target-side job that runs `_volume_copy.py` notebook with `src = /Volumes/<provider>.<source_cat>.<schema>.<vol>/` and `dst = /Volumes/<target_fqn_parts>/`
+  - [ ] Notebook recurses with `dbutils.fs.cp(src, dst, recurse=True)` and emits `bytes,files` via `dbutils.notebook.exit`
+  - [ ] Record `bytes_copied`, `file_count`, `copy_duration_s` in `migration_status`
+  - [ ] Source: `ALTER SHARE cp_migration_share REMOVE VOLUME <source_fqn>` in finally block
+- [ ] Pre-checks:
+  - [ ] `check_volume_sizes` — sum file sizes per managed volume; warn > 1 TB, fail if aggregate exceeds `config.volume_copy_max_tb` (default 10)
+  - [ ] `check_target_storage_quota` — compare estimated bytes vs target UC-managed storage quota if exposed
+  - [ ] `check_share_supports_volumes` — verify metastore version supports `ALTER SHARE ADD VOLUME`
+- [ ] Unit tests: branch logic (managed vs external), tracking column population, share add/remove idempotency
+- [ ] Commit
+
+---
+
+## Task 2.5.B: Iceberg Managed Tables — DDL replay + re-ingest (Option A)
+
+**Files:**
+- Modify: `src/migrate/managed_table_worker.py`
+- Modify: `src/discovery/discovery.py` — capture `format` per managed table via `DESCRIBE DETAIL`
+- Modify: `src/common/tracking.py` — add `format` column to `discovery_inventory`
+- Modify: `src/pre_check/checks.py` — Iceberg warning + explicit opt-in gate
+
+**Current bug (Phase 1):** `managed_table_worker.py:100` uses `CREATE OR REPLACE TABLE ... DEEP CLONE` which is Delta-specific. Iceberg managed tables break or silently produce corrupt target state.
+
+- [ ] Add `format` STRING column to `discovery_inventory` schema
+- [ ] In `discovery.py`: for every managed table, call `DESCRIBE DETAIL <fqn>` and record the `format` column (`delta` / `iceberg` / `parquet` / etc.)
+- [ ] In `managed_table_worker`, branch on `format`:
+  - [ ] `delta` → existing `DEEP CLONE` path (unchanged)
+  - [ ] `iceberg` → Option A DDL-replay path:
+    - [ ] `SHOW CREATE TABLE <source_fqn>` to capture Iceberg DDL (partition spec + properties)
+    - [ ] Rewrite source FQNs → target FQNs
+    - [ ] Execute `CREATE TABLE` on target (empty Iceberg table)
+    - [ ] `INSERT INTO <target_fqn> SELECT * FROM <consumer_catalog>.<schema>.<table>` via `cp_migration_share`
+    - [ ] Record status `iceberg_ddl_replay` with `snapshot_history_lost=true` in metadata
+  - [ ] Any other format → record `skipped_unsupported_format`, continue
+- [ ] Pre-check `check_iceberg_tables`:
+  - [ ] Count Iceberg managed tables
+  - [ ] Surface warning: "N Iceberg managed tables will be migrated via DDL replay + re-ingest. Snapshot history, time travel, row-level position/equality deletes, and Iceberg branches/tags are NOT preserved on target."
+  - [ ] Require explicit opt-in: block unless `config.iceberg_strategy: ddl_replay` is set
+- [ ] Unit tests: format-dispatch branching in worker; `DESCRIBE DETAIL` fixture handling in discovery
+- [ ] Commit
+
+---
+
+## Task 2.5.C: Python UDFs in functions_worker
+
+**Files:**
+- Modify: `src/migrate/functions_worker.py`
+- Modify: `src/common/catalog_utils.py` — extend function metadata extraction to detect language
+
+**Current bug (Phase 1):** `functions_worker` only replays SQL DDL via `CREATE FUNCTION`. Python UDFs (`CREATE FUNCTION ... LANGUAGE PYTHON`) need handler source + environment spec; today's `get_function_ddl` does not reconstruct these, so Python UDFs land as broken SQL stubs on target.
+
+- [ ] In `catalog_utils.list_functions()`: detect language via `information_schema.routines.external_language` (`SQL` vs `PYTHON`) — include in returned records
+- [ ] SQL UDFs → existing path (unchanged)
+- [ ] Python UDFs:
+  - [ ] Fetch handler source via `DESCRIBE FUNCTION EXTENDED <fqn>` — body contains the handler literal
+  - [ ] Fetch parameter types + return type from `information_schema.routines` and `information_schema.routine_columns`
+  - [ ] Fetch environment spec (package list, runtime version) from routine metadata where present
+  - [ ] Reconstruct: `CREATE FUNCTION <target_fqn>(args) RETURNS <type> LANGUAGE PYTHON [ENVIRONMENT (...)] AS $$ <handler> $$`
+  - [ ] Execute on target via `execute_and_poll`
+  - [ ] Record status `python_udf_replayed` with handler byte count in metadata
+- [ ] Unit tests: one fixture per language (SQL regression + Python new)
+- [ ] Commit
+
+---
+
+## Task 2.5.D: Non-DLT Materialized View + Streaming Table worker
+
+**Files:**
+- Create: `src/migrate/mv_st_worker.py`
+- Modify: `src/common/catalog_utils.py` — extend `_TABLE_TYPE_MAP` / `classify_tables`
+- Modify: `src/discovery/discovery.py` — capture `pipeline_id` per MV/ST
+- Modify: `src/migrate/orchestrator.py` — dispatch MV/ST to new worker after views
+- Modify: `resources/migrate_workflow.yml` — add `mv_st_worker` task
+- Modify: `src/pre_check/checks.py` — pipeline-owned skip + streaming-state-reset warnings
+
+**Current bug (Phase 1):** `_TABLE_TYPE_MAP` has no entry for `MATERIALIZED_VIEW` or `STREAMING_TABLE` — raw strings leak through `classify_tables` and orphan in tracking with no worker handling them.
+
+- [ ] Extend `_TABLE_TYPE_MAP` — `MATERIALIZED_VIEW → "mv"`, `STREAMING_TABLE → "st"`
+- [ ] In `discovery.py`: for every MV/ST, capture `pipeline_id` from `DESCRIBE DETAIL` into the discovery row
+- [ ] New `mv_st_worker.py`:
+  - [ ] For each MV/ST: `w.pipelines.get(pipeline_id)` on source
+  - [ ] If `spec.libraries` is empty → SQL-created (in scope):
+    - [ ] `SHOW CREATE TABLE <source_fqn>` to capture MV/ST DDL
+    - [ ] Rewrite FQNs to target
+    - [ ] Execute on target — target auto-provisions its own system pipeline
+    - [ ] `REFRESH MATERIALIZED VIEW <target_fqn>` / `REFRESH STREAMING TABLE <target_fqn>` to trigger first refresh
+    - [ ] Record status `mv_ddl_replayed` / `st_ddl_replayed`
+  - [ ] If `spec.libraries` populated → DLT-defined (out of scope):
+    - [ ] Record status `skipped_by_pipeline_migration` with `pipeline_id` in metadata
+- [ ] New pre-check `check_pipeline_owned_objects`:
+  - [ ] Count DLT-defined MVs, STs, and tables (any object with non-empty `spec.libraries`)
+  - [ ] Emit warning: "N objects are owned by user-defined Lakeflow/DLT pipelines. Migrate these via the pipeline migration tool; this tool will skip them."
+- [ ] New pre-check `check_streaming_table_state_reset`:
+  - [ ] For SQL-created streaming tables in scope:
+  - [ ] Emit warning: "N streaming tables will be recreated on target. Source state (Kafka offsets, Auto Loader checkpoints, Delta CDF cursors) does NOT transfer — target restarts from the source's current position; historical rows may be reprocessed or missed depending on source type."
+- [ ] Add `mv_st_worker` task to `migrate_workflow.yml` after the `views` task (MV/ST may reference views)
+- [ ] Unit tests: `classify_tables` dispatch + worker branching on `spec.libraries`
+- [ ] Commit
+
+---
+
+## Task 2.5.E: Phase 2.5 Integration Test
+
+**Files:**
+- Modify: `tests/integration/seed_uc_test_data.py` — add new fixtures
+- Modify: `tests/integration/test_uc_end_to_end.py` — add per-worker assertions
+
+- [ ] Seed fixtures on source:
+  - [ ] One Iceberg managed table (if supported in test workspace)
+  - [ ] One Python UDF with simple handler
+  - [ ] One SQL-created materialized view
+  - [ ] One SQL-created streaming table over a test Delta source
+  - [ ] One managed volume with a small sample file
+- [ ] Run full migrate workflow end-to-end
+- [ ] Assertions on target:
+  - [ ] Iceberg table row count matches source; `format = 'iceberg'` in `DESCRIBE DETAIL`
+  - [ ] Python UDF callable; returns expected value for a known input
+  - [ ] MV exists; first `REFRESH` completed without error
+  - [ ] ST exists; state-reset warning surfaced in summary
+  - [ ] Managed volume files present with matching byte counts
+- [ ] Verify tracking has status rows for all new workers and no orphaned `object_type='UNKNOWN'` rows
+- [ ] Commit
+
+---
+
 # Phase 3: Extended UC Object Coverage
 
 **Goal:** Extend the tool from the core UC object types (catalogs, schemas, managed/external tables, volumes, views, functions, grants) to the full UC governance surface — tags, ABAC policies, row filters, column masks, monitors, registered models, connections, foreign catalogs, online tables, Delta Sharing objects, and comments/table properties.
@@ -684,8 +843,12 @@ Two-phase: (a) model metadata via SDK, (b) artifact copy via `dbutils.fs.cp` or 
 - [ ] For each version:
   - [ ] Copy model artifacts from source-metastore storage to target-metastore storage (ABFSS → ABFSS)
   - [ ] Register the version via `target_client.model_versions.create` pointing at the new source URI
-  - [ ] Copy tags and aliases on the version
+  - [ ] Copy tags on the version
 - [ ] Handle model signatures, requirements files, logged metrics
+- [ ] Replay **model aliases** (added 2026-04-19):
+  - [ ] Enumerate via `source_client.registered_models.get(name=fqn).aliases`
+  - [ ] On target after versions are registered: `ALTER MODEL <target_fqn> SET ALIAS <alias> FOR VERSION <version>` (or equivalent SDK call)
+  - [ ] Integration test: create alias on source fixture, assert present on target pointing at the same version number
 - [ ] Record per-version status
 - [ ] Commit
 
@@ -726,10 +889,18 @@ Online tables are serving-layer projections of UC tables. Creation triggers a fu
 
 This migrates the customer's **own** Delta Sharing configuration (their shares/recipients/providers) — separate from the migration's internal `cp_migration_share` which is set up by `setup_sharing.py`.
 
-- [ ] For each share (excluding `cp_migration_share`): recreate on target via `target_client.shares.create`, then add objects via `target_client.shares.update`
+- [ ] For each share (excluding `cp_migration_share`): recreate on target via `target_client.shares.create`
+- [ ] For each share, replay **all** content types (amendment 2026-04-19 — not just tables):
+  - [ ] `ALTER SHARE <share> ADD TABLE <fqn>` for tables
+  - [ ] `ALTER SHARE <share> ADD VIEW <fqn>` for views
+  - [ ] `ALTER SHARE <share> ADD VOLUME <fqn>` for volumes
+  - [ ] `ALTER SHARE <share> ADD SCHEMA <fqn>` for schema-level shares (recipient gets full schema including nested objects)
+  - [ ] `ALTER SHARE <share> ADD CATALOG <fqn>` for catalog-level shares
+  - [ ] Exclude anything in `cp_migration_share` (internal to this tool)
 - [ ] For each recipient: `target_client.recipients.create` — record that activation tokens will be new, customer must redistribute
 - [ ] For each provider: `target_client.providers.create` pointing at the same provider URL
 - [ ] Record status + surface "new activation tokens" in notes
+- [ ] Test fixture covers all five share-content types (table, view, volume, schema, catalog)
 - [ ] Commit
 
 ---
