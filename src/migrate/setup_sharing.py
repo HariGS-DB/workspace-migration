@@ -243,6 +243,9 @@ def ensure_target_catalogs_and_schemas(
 def run(dbutils, spark) -> None:  # noqa: ARG001
     """Entry point when running as a Databricks notebook."""
     config = MigrationConfig.from_workspace_file()
+    if not config.include_uc:
+        logger.info("Skipping setup_sharing: scope.include_uc=false.")
+        return
     auth = AuthManager(config, dbutils)
     spark_session = spark
     tracker = TrackingManager(spark_session, config)

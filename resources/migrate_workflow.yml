@@ -2,7 +2,10 @@ resources:
   jobs:
     migrate:
       name: "${var.job_prefix}-migrate"
+      description: "Unified migrate workflow. UC tasks run when scope.include_uc=true; Hive tasks when scope.include_hive=true. Each worker gates internally."
       tasks:
+        # --- UC migration chain ---
+
         - task_key: setup_sharing
           notebook_task:
             notebook_path: ../src/migrate/setup_sharing.py
@@ -71,8 +74,76 @@ resources:
           notebook_task:
             notebook_path: ../src/migrate/grants_worker.py
 
+        # --- Hive migration chain (runs in parallel with UC chain) ---
+
+        - task_key: hive_orchestrator
+          notebook_task:
+            notebook_path: ../src/migrate/hive_orchestrator.py
+
+        - task_key: migrate_hive_external_tables
+          depends_on:
+            - task_key: hive_orchestrator
+          for_each_task:
+            inputs: "{{tasks.hive_orchestrator.values.hive_external_batches}}"
+            task:
+              task_key: hive_external_batch
+              notebook_task:
+                notebook_path: ../src/migrate/hive_external_worker.py
+                base_parameters:
+                  batch: "{{input}}"
+
+        - task_key: migrate_hive_managed_nondbfs
+          depends_on:
+            - task_key: hive_orchestrator
+          for_each_task:
+            inputs: "{{tasks.hive_orchestrator.values.hive_managed_nondbfs_batches}}"
+            task:
+              task_key: hive_managed_nondbfs_batch
+              notebook_task:
+                notebook_path: ../src/migrate/hive_managed_nondbfs_worker.py
+                base_parameters:
+                  batch: "{{input}}"
+
+        - task_key: migrate_hive_managed_dbfs
+          depends_on:
+            - task_key: hive_orchestrator
+          for_each_task:
+            inputs: "{{tasks.hive_orchestrator.values.hive_managed_dbfs_root_batches}}"
+            task:
+              task_key: hive_managed_dbfs_batch
+              notebook_task:
+                notebook_path: ../src/migrate/hive_managed_dbfs_worker.py
+                base_parameters:
+                  batch: "{{input}}"
+
+        - task_key: migrate_hive_functions
+          depends_on:
+            - task_key: migrate_hive_external_tables
+            - task_key: migrate_hive_managed_nondbfs
+            - task_key: migrate_hive_managed_dbfs
+          notebook_task:
+            notebook_path: ../src/migrate/hive_functions_worker.py
+
+        - task_key: migrate_hive_views
+          depends_on:
+            - task_key: migrate_hive_external_tables
+            - task_key: migrate_hive_managed_nondbfs
+            - task_key: migrate_hive_managed_dbfs
+            - task_key: migrate_hive_functions
+          notebook_task:
+            notebook_path: ../src/migrate/hive_views_worker.py
+
+        - task_key: migrate_hive_grants
+          depends_on:
+            - task_key: migrate_hive_views
+          notebook_task:
+            notebook_path: ../src/migrate/hive_grants_worker.py
+
+        # --- Final summary (waits on both chains) ---
+
         - task_key: summary
           depends_on:
             - task_key: migrate_grants
+            - task_key: migrate_hive_grants
           notebook_task:
             notebook_path: ../src/migrate/summary.py
