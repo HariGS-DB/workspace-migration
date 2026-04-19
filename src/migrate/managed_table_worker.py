@@ -77,6 +77,7 @@ def clone_table(
     _catalog, schema, table = parts
     target_fqn = obj_name  # same FQN on target
     consumer_catalog = f"{share_name}_consumer"
+    fmt = (table_info.get("format") or "delta").lower()
 
     # Record in-progress
     tracker.append_migration_status(
@@ -97,6 +98,103 @@ def clone_table(
 
     start = time.time()
 
+    # --- Iceberg (UC-managed native Iceberg) — Option A: DDL replay + re-ingest ---
+    if fmt == "iceberg":
+        if config.iceberg_strategy != "ddl_replay":
+            duration = time.time() - start
+            logger.warning(
+                "Skipping Iceberg table %s — set config.iceberg_strategy='ddl_replay' to opt in.",
+                obj_name,
+            )
+            return {
+                "object_name": obj_name,
+                "object_type": "managed_table",
+                "status": "skipped",
+                "error_message": (
+                    "Iceberg migration not enabled. Set iceberg_strategy='ddl_replay' "
+                    "in config to opt into Option A (loses snapshot history, time travel, "
+                    "branches/tags — target gets a fresh compacted state)."
+                ),
+                "duration_seconds": duration,
+            }
+
+        create_stmt = table_info.get("create_statement") or ""
+        if not create_stmt:
+            return {
+                "object_name": obj_name,
+                "object_type": "managed_table",
+                "status": "failed",
+                "error_message": "Iceberg DDL replay requires create_statement in discovery row",
+                "duration_seconds": time.time() - start,
+            }
+
+        insert_sql = (
+            f"INSERT INTO {target_fqn} "
+            f"SELECT * FROM `{consumer_catalog}`.`{schema}`.`{table}`"
+        )
+
+        if config.dry_run:
+            duration = time.time() - start
+            logger.info("[DRY RUN] Would execute: %s", create_stmt)
+            logger.info("[DRY RUN] Would execute: %s", insert_sql)
+            return {
+                "object_name": obj_name,
+                "object_type": "managed_table",
+                "status": "skipped",
+                "error_message": "dry_run",
+                "duration_seconds": duration,
+            }
+
+        logger.info("Creating Iceberg table on target via DDL: %s", obj_name)
+        res = execute_and_poll(auth, wh_id, create_stmt)
+        if res["state"] != "SUCCEEDED":
+            return {
+                "object_name": obj_name,
+                "object_type": "managed_table",
+                "status": "failed",
+                "error_message": f"Iceberg CREATE failed: {res.get('error', res['state'])}",
+                "duration_seconds": time.time() - start,
+            }
+
+        logger.info("Re-ingesting Iceberg table data via share: %s", obj_name)
+        res = execute_and_poll(auth, wh_id, insert_sql)
+        if res["state"] != "SUCCEEDED":
+            return {
+                "object_name": obj_name,
+                "object_type": "managed_table",
+                "status": "failed",
+                "error_message": f"Iceberg INSERT failed: {res.get('error', res['state'])}",
+                "duration_seconds": time.time() - start,
+            }
+
+        duration = time.time() - start
+        # Validate row count for Iceberg too
+        try:
+            validation = validator.validate_row_count(obj_name, target_fqn)
+            status = "validated" if validation["match"] else "validation_failed"
+            err = None if validation["match"] else (
+                f"Row count mismatch: source={validation['source_count']}, "
+                f"target={validation['target_count']}"
+            )
+            return {
+                "object_name": obj_name,
+                "object_type": "managed_table",
+                "status": status,
+                "error_message": err,
+                "source_row_count": validation["source_count"],
+                "target_row_count": validation["target_count"],
+                "duration_seconds": duration,
+            }
+        except Exception as exc:  # noqa: BLE001
+            return {
+                "object_name": obj_name,
+                "object_type": "managed_table",
+                "status": "validation_failed",
+                "error_message": f"Iceberg validation error: {exc}",
+                "duration_seconds": duration,
+            }
+
+    # --- Delta (default) — existing DEEP CLONE path ---
     sql = f"CREATE OR REPLACE TABLE {target_fqn} DEEP CLONE `{consumer_catalog}`.`{schema}`.`{table}`"
     logger.info("Executing DEEP CLONE for %s", obj_name)
 

@@ -61,7 +61,13 @@ def _is_notebook() -> bool:
 # Keys published by this orchestrator — declared up top so we can emit empty
 # task values when scope.include_uc is false (downstream for_each tasks
 # consume these and would block otherwise).
-_BATCH_KEYS = ("managed_table_batches", "external_table_batches", "volume_batches")
+_BATCH_KEYS = (
+    "managed_table_batches",
+    "external_table_batches",
+    "volume_batches",
+    "mv_batches",
+    "st_batches",
+)
 _LIST_KEYS = ("function_list", "view_list")
 
 
@@ -85,7 +91,7 @@ if _is_notebook():
         tracker = TrackingManager(spark_session, config)
 
         # Read discovery inventory and collect pending objects per type
-        BATCHED_TYPES = ("managed_table", "external_table", "volume")
+        BATCHED_TYPES = ("managed_table", "external_table", "volume", "mv", "st")
         LIST_TYPES = ("function", "view")
 
         batch_output: dict[str, list[str]] = {}

@@ -22,6 +22,8 @@ _TABLE_TYPE_MAP = {
     "MANAGED": "managed_table",
     "EXTERNAL": "external_table",
     "VIEW": "view",
+    "MATERIALIZED_VIEW": "mv",
+    "STREAMING_TABLE": "st",
 }
 
 
@@ -95,6 +97,19 @@ class CatalogExplorer:
         row = self.spark.sql(f"DESCRIBE DETAIL {table_fqn}").first()  # type: ignore[attr-defined]
         return row.sizeInBytes  # type: ignore[union-attr]
 
+    def get_table_format(self, table_fqn: str) -> str | None:
+        """Return the table format from DESCRIBE DETAIL (e.g. 'delta', 'iceberg').
+
+        Returns None on any error — callers treat a missing format as delta
+        for backward compatibility with pre-Iceberg-support tools.
+        """
+        try:
+            row = self.spark.sql(f"DESCRIBE DETAIL {table_fqn}").first()  # type: ignore[attr-defined]
+        except Exception:  # noqa: BLE001
+            return None
+        fmt = getattr(row, "format", None)
+        return fmt.lower() if isinstance(fmt, str) else None
+
     # ------------------------------------------------------------------
     # DDL / create statements
     # ------------------------------------------------------------------
@@ -129,6 +144,9 @@ class CatalogExplorer:
 
         Queries information_schema.routines + parameters to reconstruct the DDL,
         since DESCRIBE FUNCTION only returns the body.
+
+        Supports SQL UDFs and Python UDFs. Python UDFs are wrapped with
+        ``AS $$...$$`` instead of ``RETURN ...`` (which is SQL-UDF syntax).
         """
         parts = function_fqn.strip("`").split("`.`")
         if len(parts) != 3:
@@ -158,13 +176,31 @@ class CatalogExplorer:
         param_sig = ", ".join(f"{p.parameter_name} {p.data_type}" for p in params)
 
         body = (routine.routine_definition or "").strip()
-        lang_clause = ""
-        if routine.routine_body and routine.routine_body.upper() == "EXTERNAL" and routine.external_language:
-            lang_clause = f" LANGUAGE {routine.external_language}"
+        is_external = (routine.routine_body or "").upper() == "EXTERNAL"
+        language = (routine.external_language or "").upper() if routine.external_language else ""
 
+        # Python UDF: LANGUAGE PYTHON + AS $$...$$ body wrapper
+        if is_external and language == "PYTHON":
+            return (
+                f"CREATE OR REPLACE FUNCTION {function_fqn}({param_sig}) "
+                f"RETURNS {routine.data_type} "
+                f"LANGUAGE PYTHON "
+                f"AS $$\n{body}\n$$"
+            )
+
+        # Other external languages (rare): LANGUAGE X + AS $$...$$ for safety
+        if is_external and language:
+            return (
+                f"CREATE OR REPLACE FUNCTION {function_fqn}({param_sig}) "
+                f"RETURNS {routine.data_type} "
+                f"LANGUAGE {language} "
+                f"AS $$\n{body}\n$$"
+            )
+
+        # SQL UDF — existing path
         return (
             f"CREATE OR REPLACE FUNCTION {function_fqn}({param_sig}) "
-            f"RETURNS {routine.data_type}{lang_clause} "
+            f"RETURNS {routine.data_type} "
             f"RETURN {body}"
         )
 
@@ -181,9 +217,14 @@ class CatalogExplorer:
         return [f"`{catalog}`.`{schema}`.`{row.routine_name}`" for row in rows]
 
     def list_volumes(self, catalog: str, schema: str) -> list[dict]:
-        """List volumes in a schema via information_schema.volumes."""
+        """List volumes in a schema via information_schema.volumes.
+
+        Includes ``storage_location`` for both managed and external volumes
+        so the volume_worker can register EXTERNAL targets at the same path
+        and can locate source bytes for MANAGED volume copies.
+        """
         query = (
-            f"SELECT volume_name, volume_type "
+            f"SELECT volume_name, volume_type, storage_location "
             f"FROM `{catalog}`.`information_schema`.`volumes` "
             f"WHERE volume_schema = '{schema}'"
         )
@@ -192,6 +233,7 @@ class CatalogExplorer:
             {
                 "fqn": f"`{catalog}`.`{schema}`.`{row.volume_name}`",
                 "volume_type": row.volume_type,
+                "storage_location": row.storage_location,
             }
             for row in rows
         ]

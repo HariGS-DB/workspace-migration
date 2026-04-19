@@ -69,18 +69,30 @@ def _discover_uc(config, explorer, now) -> tuple[list[dict], int]:
                     is_dlt, pipeline_id = False, None
                 else:
                     is_dlt, pipeline_id = explorer.detect_dlt_managed(fqn)
+                    # MVs / STs always have a pipeline_id (auto-provisioned or
+                    # DLT-defined). Only flag as DLT-managed if the underlying
+                    # pipeline is user-owned (non-empty spec.libraries). That
+                    # distinction is deferred to mv_st_worker.
+                    if obj_type in ("mv", "st"):
+                        is_dlt = False  # distinguish later via pipelines.get()
                     if is_dlt:
                         dlt_count += 1
 
                 row_count = 0
                 size_bytes = 0
                 create_stmt = ""
+                table_format: str | None = None
 
-                if obj_type != "view":
+                # MV / ST row counts via SELECT COUNT(*) can be expensive or
+                # block on auto-refresh; skip them and let the target do its
+                # own validation after REFRESH.
+                if obj_type not in ("view", "mv", "st"):
                     with contextlib.suppress(Exception):
                         row_count = explorer.get_table_row_count(fqn)
                     with contextlib.suppress(Exception):
                         size_bytes = explorer.get_table_size_bytes(fqn)
+                    with contextlib.suppress(Exception):
+                        table_format = explorer.get_table_format(fqn)
 
                 with contextlib.suppress(Exception):
                     create_stmt = explorer.get_create_statement(fqn)
@@ -97,6 +109,7 @@ def _discover_uc(config, explorer, now) -> tuple[list[dict], int]:
                     is_dlt_managed=is_dlt,
                     pipeline_id=pipeline_id,
                     create_statement=create_stmt,
+                    format=table_format,
                 ))
 
             # --- Functions ---
@@ -124,6 +137,8 @@ def _discover_uc(config, explorer, now) -> tuple[list[dict], int]:
                     catalog_name=catalog,
                     schema_name=schema,
                     discovered_at=now,
+                    table_type=vol.get("volume_type"),  # MANAGED or EXTERNAL
+                    storage_location=vol.get("storage_location"),
                 ))
 
     return rows, dlt_count
