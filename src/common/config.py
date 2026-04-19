@@ -90,6 +90,12 @@ class MigrationConfig:
     # only — Hive enablement is opt-in.
     include_uc: bool = True
     include_hive: bool = False
+    # Iceberg (Phase 2.5) — set to "ddl_replay" to opt into Option A for
+    # UC-managed Iceberg tables (DDL replay + re-ingest via cp_migration_share).
+    # Leaving this empty blocks Iceberg migration so customers have to
+    # explicitly acknowledge the trade-off (lost snapshot history / time
+    # travel / branches + tags).
+    iceberg_strategy: str = ""
     # Hive (Phase 2) — unused in Phase 1 notebooks but fields exist so the
     # dataclass matches the full config file schema.
     migrate_hive_dbfs_root: bool = False
@@ -145,6 +151,7 @@ class MigrationConfig:
             batch_size=int(raw.get("batch_size", 50)),
             include_uc=_coerce_bool((raw.get("scope") or {}).get("include_uc", True)),
             include_hive=_coerce_bool((raw.get("scope") or {}).get("include_hive", False)),
+            iceberg_strategy=str(raw.get("iceberg_strategy", "")),
             migrate_hive_dbfs_root=_coerce_bool(raw.get("migrate_hive_dbfs_root")),
             hive_dbfs_target_path=str(raw.get("hive_dbfs_target_path", "")),
             hive_target_catalog=str(raw.get("hive_target_catalog", "hive_upgraded")),

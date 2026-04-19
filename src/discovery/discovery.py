@@ -75,12 +75,15 @@ def _discover_uc(config, explorer, now) -> tuple[list[dict], int]:
                 row_count = 0
                 size_bytes = 0
                 create_stmt = ""
+                table_format: str | None = None
 
                 if obj_type != "view":
                     with contextlib.suppress(Exception):
                         row_count = explorer.get_table_row_count(fqn)
                     with contextlib.suppress(Exception):
                         size_bytes = explorer.get_table_size_bytes(fqn)
+                    with contextlib.suppress(Exception):
+                        table_format = explorer.get_table_format(fqn)
 
                 with contextlib.suppress(Exception):
                     create_stmt = explorer.get_create_statement(fqn)
@@ -97,6 +100,7 @@ def _discover_uc(config, explorer, now) -> tuple[list[dict], int]:
                     is_dlt_managed=is_dlt,
                     pipeline_id=pipeline_id,
                     create_statement=create_stmt,
+                    format=table_format,
                 ))
 
             # --- Functions ---

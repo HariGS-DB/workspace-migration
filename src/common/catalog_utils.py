@@ -95,6 +95,19 @@ class CatalogExplorer:
         row = self.spark.sql(f"DESCRIBE DETAIL {table_fqn}").first()  # type: ignore[attr-defined]
         return row.sizeInBytes  # type: ignore[union-attr]
 
+    def get_table_format(self, table_fqn: str) -> str | None:
+        """Return the table format from DESCRIBE DETAIL (e.g. 'delta', 'iceberg').
+
+        Returns None on any error — callers treat a missing format as delta
+        for backward compatibility with pre-Iceberg-support tools.
+        """
+        try:
+            row = self.spark.sql(f"DESCRIBE DETAIL {table_fqn}").first()  # type: ignore[attr-defined]
+        except Exception:  # noqa: BLE001
+            return None
+        fmt = getattr(row, "format", None)
+        return fmt.lower() if isinstance(fmt, str) else None
+
     # ------------------------------------------------------------------
     # DDL / create statements
     # ------------------------------------------------------------------
