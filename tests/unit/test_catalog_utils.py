@@ -154,6 +154,50 @@ class TestCatalogUtils:
         assert "RETURNS DOUBLE" in ddl.upper()
         assert "x DOUBLE" in ddl  # parameter signature
         assert "x * 2" in ddl  # body
+        # SQL UDF uses RETURN form (not AS $$)
+        assert "RETURN x * 2" in ddl
+        assert "$$" not in ddl
+
+    def test_get_function_ddl_python_udf_uses_dollar_quote(self, mock_spark):
+        """Python UDFs must be wrapped with ``LANGUAGE PYTHON AS $$...$$`` —
+        the SQL-UDF ``RETURN`` form fails to parse on target.
+        """
+        routine_row = _row(
+            specific_name="py_double_1234",
+            data_type="DOUBLE",
+            routine_body="EXTERNAL",
+            routine_definition="def handler(x):\n    return x * 2\nreturn handler(x)",
+            external_language="PYTHON",
+        )
+        param_rows = [_row(parameter_name="x", data_type="DOUBLE", ordinal_position=1)]
+
+        def sql_side_effect(query):
+            result = MagicMock()
+            if "information_schema`.`routines" in query:
+                result.first.return_value = routine_row
+            elif "information_schema`.`parameters" in query:
+                result.collect.return_value = param_rows
+            else:
+                result.first.return_value = None
+                result.collect.return_value = []
+            return result
+
+        mock_spark.sql.side_effect = sql_side_effect
+        explorer = CatalogExplorer(mock_spark, MagicMock())
+
+        ddl = explorer.get_function_ddl("`cat`.`sch`.`py_double`")
+
+        assert ddl.upper().startswith("CREATE OR REPLACE FUNCTION")
+        assert "LANGUAGE PYTHON" in ddl.upper()
+        assert "AS $$" in ddl
+        # Closing $$ present after the AS $$
+        _, after = ddl.split("AS $$", 1)
+        assert "$$" in after
+        assert "def handler" in ddl
+        assert "return handler(x)" in ddl
+        # Python UDF must NOT use the SQL RETURN form for the body
+        assert " RETURN def" not in ddl
+        assert " RETURN return" not in ddl
 
     # ------------------------------------------------------------------
     # get_create_statement (for views)

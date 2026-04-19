@@ -129,6 +129,9 @@ class CatalogExplorer:
 
         Queries information_schema.routines + parameters to reconstruct the DDL,
         since DESCRIBE FUNCTION only returns the body.
+
+        Supports SQL UDFs and Python UDFs. Python UDFs are wrapped with
+        ``AS $$...$$`` instead of ``RETURN ...`` (which is SQL-UDF syntax).
         """
         parts = function_fqn.strip("`").split("`.`")
         if len(parts) != 3:
@@ -158,13 +161,31 @@ class CatalogExplorer:
         param_sig = ", ".join(f"{p.parameter_name} {p.data_type}" for p in params)
 
         body = (routine.routine_definition or "").strip()
-        lang_clause = ""
-        if routine.routine_body and routine.routine_body.upper() == "EXTERNAL" and routine.external_language:
-            lang_clause = f" LANGUAGE {routine.external_language}"
+        is_external = (routine.routine_body or "").upper() == "EXTERNAL"
+        language = (routine.external_language or "").upper() if routine.external_language else ""
 
+        # Python UDF: LANGUAGE PYTHON + AS $$...$$ body wrapper
+        if is_external and language == "PYTHON":
+            return (
+                f"CREATE OR REPLACE FUNCTION {function_fqn}({param_sig}) "
+                f"RETURNS {routine.data_type} "
+                f"LANGUAGE PYTHON "
+                f"AS $$\n{body}\n$$"
+            )
+
+        # Other external languages (rare): LANGUAGE X + AS $$...$$ for safety
+        if is_external and language:
+            return (
+                f"CREATE OR REPLACE FUNCTION {function_fqn}({param_sig}) "
+                f"RETURNS {routine.data_type} "
+                f"LANGUAGE {language} "
+                f"AS $$\n{body}\n$$"
+            )
+
+        # SQL UDF — existing path
         return (
             f"CREATE OR REPLACE FUNCTION {function_fqn}({param_sig}) "
-            f"RETURNS {routine.data_type}{lang_clause} "
+            f"RETURNS {routine.data_type} "
             f"RETURN {body}"
         )
 
