@@ -44,10 +44,15 @@ def _is_notebook() -> bool:
 # COMMAND ----------
 
 
+_MIGRATION_SHARE = "cp_migration_share"
+_MIGRATION_RECIPIENT_PREFIX = "cp_migration_recipient_"
+
+
 def _discover_uc(config, explorer, now) -> tuple[list[dict], int]:
     """Discover UC objects. Returns (rows, dlt_count)."""
     rows: list[dict] = []
     dlt_count = 0
+    all_table_fqns: list[str] = []  # for workspace-level monitor enumeration
 
     catalogs = explorer.list_catalogs(filter_list=config.catalog_filter or None)
     print(f"[uc] Discovered {len(catalogs)} catalog(s): {catalogs}")
@@ -111,6 +116,8 @@ def _discover_uc(config, explorer, now) -> tuple[list[dict], int]:
                     create_statement=create_stmt,
                     format=table_format,
                 ))
+                if obj_type in ("managed_table", "external_table"):
+                    all_table_fqns.append(fqn)
 
             # --- Functions ---
             for func_fqn in explorer.list_functions(catalog, schema):
@@ -140,6 +147,146 @@ def _discover_uc(config, explorer, now) -> tuple[list[dict], int]:
                     table_type=vol.get("volume_type"),  # MANAGED or EXTERNAL
                     storage_location=vol.get("storage_location"),
                 ))
+
+            # --- Phase 3 governance: per-schema objects ---
+            for tag in explorer.list_tags(catalog, schema):
+                rows.append(discovery_row(
+                    source_type="uc",
+                    object_type="tag",
+                    object_name=(
+                        f"{tag['securable_fqn']}:{tag.get('column_name','')}:"
+                        f"{tag['tag_name']}"
+                    ).rstrip(":"),
+                    catalog_name=catalog,
+                    schema_name=schema,
+                    discovered_at=now,
+                    metadata=tag,
+                ))
+
+            for rf in explorer.list_row_filters(catalog, schema):
+                rows.append(discovery_row(
+                    source_type="uc",
+                    object_type="row_filter",
+                    object_name=rf["table_fqn"],
+                    catalog_name=catalog,
+                    schema_name=schema,
+                    discovered_at=now,
+                    metadata=rf,
+                ))
+
+            for cm in explorer.list_column_masks(catalog, schema):
+                rows.append(discovery_row(
+                    source_type="uc",
+                    object_type="column_mask",
+                    object_name=f"{cm['table_fqn']}.{cm['column_name']}",
+                    catalog_name=catalog,
+                    schema_name=schema,
+                    discovered_at=now,
+                    metadata=cm,
+                ))
+
+            for m in explorer.list_registered_models(catalog, schema):
+                rows.append(discovery_row(
+                    source_type="uc",
+                    object_type="registered_model",
+                    object_name=m["model_fqn"],
+                    catalog_name=catalog,
+                    schema_name=schema,
+                    discovered_at=now,
+                    storage_location=m.get("storage_location"),
+                    metadata=m,
+                ))
+
+    # --- Phase 3 governance: workspace-level objects ---
+    # Monitors are per-table; enumerate over every discovered table.
+    for mon in explorer.list_monitors(all_table_fqns):
+        rows.append(discovery_row(
+            source_type="uc",
+            object_type="monitor",
+            object_name=mon["table_fqn"],
+            catalog_name=None,
+            schema_name=None,
+            discovered_at=now,
+            metadata=mon,
+        ))
+
+    for p in explorer.list_policies():
+        rows.append(discovery_row(
+            source_type="uc",
+            object_type="policy",
+            object_name=p["policy_name"] or f"policy_{p.get('securable_fqn', '?')}",
+            catalog_name=None,
+            schema_name=None,
+            discovered_at=now,
+            metadata=p,
+        ))
+
+    for c in explorer.list_connections():
+        rows.append(discovery_row(
+            source_type="uc",
+            object_type="connection",
+            object_name=c["connection_name"],
+            catalog_name=None,
+            schema_name=None,
+            discovered_at=now,
+            metadata=c,
+        ))
+
+    for fc in explorer.list_foreign_catalogs():
+        rows.append(discovery_row(
+            source_type="uc",
+            object_type="foreign_catalog",
+            object_name=fc["catalog_name"],
+            catalog_name=fc["catalog_name"],
+            schema_name=None,
+            discovered_at=now,
+            metadata=fc,
+        ))
+
+    for ot in explorer.list_online_tables():
+        rows.append(discovery_row(
+            source_type="uc",
+            object_type="online_table",
+            object_name=ot["online_table_fqn"],
+            catalog_name=None,
+            schema_name=None,
+            discovered_at=now,
+            metadata=ot,
+        ))
+
+    exclude_shares = frozenset({_MIGRATION_SHARE})
+    for s in explorer.list_shares(exclude_names=exclude_shares):
+        rows.append(discovery_row(
+            source_type="uc",
+            object_type="share",
+            object_name=s["share_name"],
+            catalog_name=None,
+            schema_name=None,
+            discovered_at=now,
+            metadata=s,
+        ))
+
+    for r in explorer.list_recipients(exclude_prefix=_MIGRATION_RECIPIENT_PREFIX):
+        rows.append(discovery_row(
+            source_type="uc",
+            object_type="recipient",
+            object_name=r["recipient_name"],
+            catalog_name=None,
+            schema_name=None,
+            discovered_at=now,
+            metadata=r,
+        ))
+
+    for p in explorer.list_providers():
+        rows.append(discovery_row(
+            source_type="uc",
+            object_type="provider",
+            object_name=p["provider_name"],
+            catalog_name=None,
+            schema_name=None,
+            discovered_at=now,
+            metadata=p,
+        ))
 
     return rows, dlt_count
 
