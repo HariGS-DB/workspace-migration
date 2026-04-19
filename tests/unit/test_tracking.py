@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from unittest.mock import MagicMock
 
-from common.tracking import TrackingManager
+from common.tracking import TrackingManager, discovery_row, discovery_schema
 
 
 class TestTrackingManager:
@@ -20,6 +21,12 @@ class TestTrackingManager:
         assert any(f"CREATE TABLE IF NOT EXISTS {fqn}.discovery_inventory" in s for s in sql_calls)
         assert any(f"CREATE TABLE IF NOT EXISTS {fqn}.migration_status" in s for s in sql_calls)
         assert any(f"CREATE TABLE IF NOT EXISTS {fqn}.pre_check_results" in s for s in sql_calls)
+
+        # Unified discovery_inventory includes source_type and metadata_json columns
+        discovery_ddl = next(s for s in sql_calls if "discovery_inventory" in s)
+        assert "source_type STRING" in discovery_ddl
+        assert "metadata_json STRING" in discovery_ddl
+        assert "format STRING" in discovery_ddl
 
     def test_append_migration_status(self, mock_spark, mock_config):
         mgr = TrackingManager(mock_spark, mock_config)
@@ -85,3 +92,67 @@ class TestTrackingManager:
         # Verify the result is a list of dicts from collect()
         assert len(result) == 1
         assert result[0]["object_name"] == "catalog.schema.table1"
+
+
+class TestDiscoveryRowHelpers:
+    """Tests for the module-level discovery_row() and discovery_schema() helpers."""
+
+    def test_discovery_row_uc(self):
+        now = datetime.now(tz=timezone.utc)
+        row = discovery_row(
+            source_type="uc",
+            object_type="managed_table",
+            object_name="cat.sch.t1",
+            catalog_name="cat",
+            schema_name="sch",
+            discovered_at=now,
+            row_count=10,
+            size_bytes=100,
+            is_dlt_managed=False,
+            pipeline_id=None,
+            create_statement="CREATE TABLE ...",
+        )
+        assert row["source_type"] == "uc"
+        assert row["object_type"] == "managed_table"
+        assert row["data_category"] is None
+        assert row["metadata_json"] is None
+
+    def test_discovery_row_hive(self):
+        now = datetime.now(tz=timezone.utc)
+        row = discovery_row(
+            source_type="hive",
+            object_type="hive_table",
+            object_name="hive_metastore.db.t",
+            catalog_name="hive_metastore",
+            schema_name="db",
+            discovered_at=now,
+            data_category="hive_external",
+            table_type="EXTERNAL",
+            provider="DELTA",
+            storage_location="abfss://...",
+        )
+        assert row["source_type"] == "hive"
+        assert row["is_dlt_managed"] is None
+        assert row["data_category"] == "hive_external"
+        assert row["storage_location"] == "abfss://..."
+
+    def test_discovery_row_metadata_json_encoded(self):
+        now = datetime.now(tz=timezone.utc)
+        row = discovery_row(
+            source_type="uc",
+            object_type="mv",
+            object_name="cat.sch.mv1",
+            catalog_name="cat",
+            schema_name="sch",
+            discovered_at=now,
+            metadata={"pipeline_id": "abc123", "is_sql_created": True},
+        )
+        import json
+        assert json.loads(row["metadata_json"]) == {"pipeline_id": "abc123", "is_sql_created": True}
+
+    def test_discovery_schema_is_callable(self):
+        # pyspark.sql.types is mocked in unit tests (see conftest.py); verify
+        # the function executes without error and returns the mocked StructType.
+        # Real schema-field coverage is exercised by the DDL assertion in
+        # test_init_tracking_tables_creates_schema above.
+        assert discovery_schema() is not None

@@ -17,10 +17,15 @@ class TestTrackingManagerConnect:
             # Create the 3 tracking tables
             sql(f"""
                 CREATE TABLE IF NOT EXISTS {test_catalog}.{schema}.discovery_inventory (
-                    object_name STRING, object_type STRING, catalog_name STRING,
-                    schema_name STRING, row_count LONG, size_bytes LONG,
+                    object_name STRING, object_type STRING, source_type STRING,
+                    catalog_name STRING, schema_name STRING,
+                    row_count LONG, size_bytes LONG,
                     is_dlt_managed BOOLEAN, pipeline_id STRING,
-                    create_statement STRING, discovered_at TIMESTAMP
+                    create_statement STRING,
+                    data_category STRING, table_type STRING,
+                    provider STRING, storage_location STRING,
+                    format STRING, metadata_json STRING,
+                    discovered_at TIMESTAMP
                 ) USING DELTA
             """)
             sql(f"""
