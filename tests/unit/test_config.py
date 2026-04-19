@@ -31,6 +31,25 @@ class TestMigrationConfig:
         assert config.migrate_hive_dbfs_root is False
         assert config.hive_dbfs_target_path == ""
         assert config.hive_target_catalog == "hive_upgraded"
+        # Scope defaults: UC only
+        assert config.include_uc is True
+        assert config.include_hive is False
+
+    def test_from_workspace_file_scope_block(self, tmp_path):
+        """The scope: block toggles include_uc / include_hive."""
+        path = _write(tmp_path, """
+source_workspace_url: https://src.azuredatabricks.net
+target_workspace_url: https://tgt.azuredatabricks.net
+spn_client_id: client-id
+spn_secret_scope: migration
+spn_secret_key: spn-secret
+scope:
+  include_uc: false
+  include_hive: true
+""")
+        config = MigrationConfig.from_workspace_file(str(path))
+        assert config.include_uc is False
+        assert config.include_hive is True
 
     def test_from_workspace_file_minimal(self, tmp_path):
         path = _write(tmp_path, """
