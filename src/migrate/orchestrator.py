@@ -68,7 +68,27 @@ _BATCH_KEYS = (
     "mv_batches",
     "st_batches",
 )
-_LIST_KEYS = ("function_list", "view_list")
+_LIST_KEYS = (
+    "function_list",
+    "view_list",
+    # Phase 3 Tier A
+    "tag_list",
+    "row_filter_list",
+    "column_mask_list",
+    "policy_list",
+    # Phase 3 Tier B
+    "comment_list",
+    # Phase 3 Tier C
+    "monitor_list",
+    "registered_model_list",
+    "connection_list",
+    "foreign_catalog_list",
+    # Phase 3 Tier D
+    "share_list",
+    "recipient_list",
+    "provider_list",
+    "online_table_list",
+)
 
 
 def _publish_empty_task_values(dbutils) -> None:
@@ -92,7 +112,16 @@ if _is_notebook():
 
         # Read discovery inventory and collect pending objects per type
         BATCHED_TYPES = ("managed_table", "external_table", "volume", "mv", "st")
-        LIST_TYPES = ("function", "view")
+        LIST_TYPES = (
+            "function", "view",
+            # Phase 3 governance object types — published even when counts
+            # are zero so downstream worker tasks always have a valid JSON
+            # payload to consume.
+            "tag", "row_filter", "column_mask", "policy",
+            "comment",
+            "monitor", "registered_model", "connection", "foreign_catalog",
+            "share", "recipient", "provider", "online_table",
+        )
 
         batch_output: dict[str, list[str]] = {}
         list_output: dict[str, str] = {}
