@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# Write tool/config.yaml from env vars.
+# Write config.yaml from env vars.
 # Used by CI / integration tests to seed the bundle config before running
 # ``databricks bundle deploy`` — DAB then syncs config.yaml onto the
 # workspace alongside the rest of the bundle files. Humans edit
-# tool/config.yaml directly in their fork and redeploy.
+# config.yaml directly in their fork and redeploy.
 #
 # Required env vars:
 #   SOURCE_WORKSPACE_URL, TARGET_WORKSPACE_URL, SPN_CLIENT_ID
@@ -34,7 +34,7 @@ set -euo pipefail
 : "${INCLUDE_HIVE:=false}"
 : "${ICEBERG_STRATEGY:=ddl_replay}"
 
-# Script lives at tool/scripts/write_config.sh — write to tool/config.yaml.
+# Script lives at scripts/write_config.sh — write to repo-root config.yaml.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CONFIG_PATH="${SCRIPT_DIR}/../config.yaml"
 

@@ -8,8 +8,8 @@ variables:
 workspace:
   # Deploy to a Shared workspace path so the bundle is visible to all migration
   # admins, not scoped to the deployer. config.yaml ships inside the bundle
-  # (tool/config.yaml) and is re-synced to ${workspace.file_path}/config.yaml
-  # on every ``databricks bundle deploy``. Edit the file locally and redeploy.
+  # and is re-synced to ${workspace.file_path}/config.yaml on every
+  # ``databricks bundle deploy``. Edit the file locally and redeploy.
   root_path: /Shared/cp_migration/${bundle.target}
 
 # Acknowledge the shared path; operators should tighten to a dedicated
