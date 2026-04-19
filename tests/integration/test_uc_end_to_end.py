@@ -220,9 +220,75 @@ else:
 
 # COMMAND ----------
 
+# COMMAND ----------
+# --- Phase 3 governance assertions ---
+# Each gated on a task value from the seed step; if the fixture was skipped
+# due to runtime/preview constraints, the corresponding assertion is skipped
+# with a clear message rather than failing.
+
+full_status = tracker.get_latest_migration_status()
+
+# Task 28 — tags: expect at least one 'tag' row with status='validated'
+has_tag = dbutils.jobs.taskValues.get(  # type: ignore[name-defined]  # noqa: F821
+    taskKey="seed_uc", key="has_tag", debugValue="false"
+)
+if str(has_tag).lower() == "true":
+    tag_rows = full_status.filter("object_type = 'tag' AND status = 'validated'").collect()
+    if not tag_rows:
+        error_messages.append("Phase 3 T28: no validated tag rows in migration_status.")
+    else:
+        print(f"Phase 3 T28 validated: {len(tag_rows)} tag row(s) on target.")
+else:
+    print("Phase 3 T28: tag fixture not seeded; skipping.")
+
+# Task 29 — row filter
+has_rf = dbutils.jobs.taskValues.get(  # type: ignore[name-defined]  # noqa: F821
+    taskKey="seed_uc", key="has_row_filter", debugValue="false"
+)
+if str(has_rf).lower() == "true":
+    rf_rows = full_status.filter(
+        "object_type = 'row_filter' AND status = 'validated'"
+    ).collect()
+    if not rf_rows:
+        error_messages.append("Phase 3 T29: row filter not replayed on target.")
+    else:
+        print(f"Phase 3 T29 validated: row filter applied on {rf_rows[0]['object_name']}.")
+else:
+    print("Phase 3 T29: row filter fixture not seeded; skipping.")
+
+# Task 30 — column mask
+has_cm = dbutils.jobs.taskValues.get(  # type: ignore[name-defined]  # noqa: F821
+    taskKey="seed_uc", key="has_column_mask", debugValue="false"
+)
+if str(has_cm).lower() == "true":
+    cm_rows = full_status.filter(
+        "object_type = 'column_mask' AND status = 'validated'"
+    ).collect()
+    if not cm_rows:
+        error_messages.append("Phase 3 T30: column mask not replayed on target.")
+    else:
+        print(f"Phase 3 T30 validated: column mask applied on {cm_rows[0]['object_name']}.")
+else:
+    print("Phase 3 T30: column mask fixture not seeded; skipping.")
+
+# Task 32 — comments: expect at least CATALOG + SCHEMA + TABLE comment rows
+comment_rows = full_status.filter(
+    "object_type = 'comment' AND status = 'validated'"
+).collect()
+if len(comment_rows) < 2:
+    # 2 minimum since TABLE comments on Delta may skip via DEEP CLONE path
+    error_messages.append(
+        f"Phase 3 T32: expected >= 2 comment rows (catalog + schema), "
+        f"got {len(comment_rows)}."
+    )
+else:
+    print(f"Phase 3 T32 validated: {len(comment_rows)} comment row(s) replayed.")
+
+# COMMAND ----------
+
 if error_messages:
     raise AssertionError(
         f"UC integration test failed with {len(error_messages)} error(s):\n"
         + "\n".join(error_messages)
     )
-print("UC integration tests passed (Phase 1/2 + Phase 2.5).")
+print("UC integration tests passed (Phase 1/2 + Phase 2.5 + Phase 3).")
