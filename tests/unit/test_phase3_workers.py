@@ -344,6 +344,74 @@ class TestSharingWorker:
         assert res["status"] == "validated"
         assert "already existed" in res["error_message"]
 
+    @patch("migrate.sharing_worker.time")
+    @patch("migrate.sharing_worker.execute_and_poll")
+    def test_share_partial_failure_marks_validation_failed(
+        self, mock_execute, mock_time,
+    ):
+        """If some ADD succeeds and some fails, share row should be
+        ``validation_failed`` so operators know to investigate without
+        halting the rest of the share pipeline."""
+        from migrate.sharing_worker import apply_share
+
+        mock_time.time.side_effect = [100.0, 105.0]
+        # First two ADDs succeed, third fails
+        mock_execute.side_effect = [
+            _ok(), _ok(),
+            {"state": "FAILED", "error": "UNAUTHORIZED", "statement_id": "s"},
+        ]
+        auth = MagicMock()
+        auth.target_client.shares.create.return_value = MagicMock()
+
+        res = apply_share(
+            {"share_name": "s1",
+             "objects": [
+                 {"name": "c.s.t1", "data_object_type": "TABLE"},
+                 {"name": "c.s.t2", "data_object_type": "TABLE"},
+                 {"name": "c.s.t3", "data_object_type": "TABLE"},
+             ]},
+            auth=auth, wh_id="wh", dry_run=False,
+        )
+        assert res["status"] == "validation_failed"
+        assert "UNAUTHORIZED" in res["error_message"]
+        assert "Added 2" in res["error_message"]
+
+    @patch("migrate.sharing_worker.time")
+    def test_provider_failure_surfaces_error(self, mock_time):
+        """Create-provider failure must produce status='failed' — we
+        don't silently treat API errors as success."""
+        from migrate.sharing_worker import apply_provider
+
+        mock_time.time.side_effect = [100.0, 101.0]
+        auth = MagicMock()
+        auth.target_client.providers.create.side_effect = Exception(
+            "INVALID_ACTIVATION_URL"
+        )
+
+        res = apply_provider(
+            {"provider_name": "p1",
+             "authentication_type": "TOKEN",
+             "recipient_profile_str": "http://..."},
+            auth=auth, dry_run=False,
+        )
+        assert res["status"] == "failed"
+        assert "INVALID_ACTIVATION_URL" in res["error_message"]
+
+    @patch("migrate.sharing_worker.time")
+    def test_share_dry_run_skips_api(self, mock_time):
+        """Dry run must NOT hit shares.create on target."""
+        from migrate.sharing_worker import apply_share
+
+        mock_time.time.side_effect = [100.0, 100.0]
+        auth = MagicMock()
+        res = apply_share(
+            {"share_name": "s1", "objects": []},
+            auth=auth, wh_id="wh", dry_run=True,
+        )
+        assert res["status"] == "skipped"
+        assert res["error_message"] == "dry_run"
+        auth.target_client.shares.create.assert_not_called()
+
 
 class TestPhase3WorkersIdempotency:
     """Cross-worker contract: each Phase 3 worker must tolerate its
