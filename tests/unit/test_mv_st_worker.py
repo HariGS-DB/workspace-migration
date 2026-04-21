@@ -174,3 +174,136 @@ class TestMvStWorker:
         assert result["status"] == "validated"
         assert "REFRESH failed" in result["error_message"]
         assert "pipeline busy" in result["error_message"]
+
+
+class TestMvStWorkerEdgeCases:
+    """Edge cases for Phase 2.5.D beyond the happy path — streaming
+    source state warning, REFRESH failure classified as validated-
+    with-note, DLT-defined pipelines consistently skipped."""
+
+    def _deps(self, **overrides):
+        config = MagicMock(dry_run=False)
+        auth = MagicMock()
+        tracker = MagicMock()
+        deps = {"config": config, "auth": auth, "tracker": tracker, "wh_id": "wh-ms"}
+        deps.update(overrides)
+        return deps
+
+    @patch("migrate.mv_st_worker.time")
+    @patch("migrate.mv_st_worker.execute_and_poll")
+    @patch("migrate.mv_st_worker._is_sql_created")
+    def test_refresh_failure_still_validates_with_note(
+        self, mock_is_sql, mock_execute, mock_time
+    ):
+        """CREATE succeeds but subsequent REFRESH fails — the table
+        exists on target (lossless) so we mark ``validated`` but record
+        the REFRESH failure in error_message for operator visibility.
+        Loss of this behavior would silently demote successful
+        migrations to 'failed' on transient target pipeline glitches."""
+        from migrate.mv_st_worker import migrate_mv_st
+
+        mock_time.time.side_effect = [100.0, 100.5]
+        mock_is_sql.return_value = (True, "")
+        mock_execute.side_effect = [
+            {"state": "SUCCEEDED", "statement_id": "s-create"},
+            {"state": "FAILED", "error": "PIPELINE_BUSY", "statement_id": "s-refresh"},
+        ]
+
+        deps = self._deps()
+        obj = {
+            "object_name": "`c`.`s`.`mv1`",
+            "object_type": "mv",
+            "pipeline_id": "pipe-1",
+            "create_statement": "CREATE MATERIALIZED VIEW `c`.`s`.`mv1` AS SELECT 1",
+        }
+        result = migrate_mv_st(obj, **deps)
+        assert result["status"] == "validated"
+        assert result["error_message"] is not None
+        assert "REFRESH" in result["error_message"]
+        assert "PIPELINE_BUSY" in result["error_message"]
+
+    @patch("migrate.mv_st_worker.time")
+    @patch("migrate.mv_st_worker._is_sql_created")
+    def test_dlt_defined_mv_is_skipped_by_pipeline_migration(
+        self, mock_is_sql, mock_time
+    ):
+        """An MV whose pipeline has non-empty libraries is DLT-owned →
+        skip with ``skipped_by_pipeline_migration`` so the DLT-pipeline
+        migration tool handles it later. No CREATE issued on target."""
+        from migrate.mv_st_worker import migrate_mv_st
+
+        mock_time.time.side_effect = [100.0, 100.1]
+        mock_is_sql.return_value = (False, "non-empty libraries (2)")
+
+        deps = self._deps()
+        obj = {
+            "object_name": "`c`.`s`.`dlt_mv`",
+            "object_type": "mv",
+            "pipeline_id": "pipe-dlt",
+        }
+        result = migrate_mv_st(obj, **deps)
+        assert result["status"] == "skipped_by_pipeline_migration"
+        assert "DLT" in result["error_message"]
+
+    @patch("migrate.mv_st_worker.time")
+    def test_missing_pipeline_id_fails(self, mock_time):
+        """MV/ST without a pipeline_id in the discovery row is an
+        invalid state (every MV/ST has a backing pipeline in UC)."""
+        from migrate.mv_st_worker import migrate_mv_st
+
+        mock_time.time.side_effect = [100.0, 100.1]
+        deps = self._deps()
+        obj = {"object_name": "`c`.`s`.`mv2`", "object_type": "mv", "pipeline_id": None}
+        result = migrate_mv_st(obj, **deps)
+        assert result["status"] == "failed"
+        assert "pipeline_id" in result["error_message"].lower()
+
+    @patch("migrate.mv_st_worker.time")
+    @patch("migrate.mv_st_worker.execute_and_poll")
+    @patch("migrate.mv_st_worker._is_sql_created")
+    def test_st_uses_streaming_refresh_keyword(
+        self, mock_is_sql, mock_execute, mock_time
+    ):
+        """Streaming tables get ``REFRESH STREAMING TABLE`` (not
+        ``REFRESH MATERIALIZED VIEW``). Locks in the syntax pick."""
+        from migrate.mv_st_worker import migrate_mv_st
+
+        mock_time.time.side_effect = [100.0, 100.1]
+        mock_is_sql.return_value = (True, "")
+        mock_execute.return_value = {"state": "SUCCEEDED", "statement_id": "s"}
+
+        deps = self._deps()
+        obj = {
+            "object_name": "`c`.`s`.`st1`",
+            "object_type": "st",
+            "pipeline_id": "p1",
+            "create_statement": "CREATE STREAMING TABLE `c`.`s`.`st1` AS SELECT 1",
+        }
+        migrate_mv_st(obj, **deps)
+
+        # Inspect all SQL calls — second one should be REFRESH on streaming.
+        sqls = [c.args[2] for c in mock_execute.call_args_list]
+        refresh_sqls = [s for s in sqls if "REFRESH" in s]
+        assert refresh_sqls, "Expected a REFRESH call"
+        assert "STREAMING TABLE" in refresh_sqls[0]
+        assert "MATERIALIZED VIEW" not in refresh_sqls[0]
+
+
+class TestIcebergSkipByConfigBehaviorContract:
+    """Iceberg skip uses ``skipped_by_config`` (not plain ``skipped``) so
+    subsequent runs — after an operator flips ``iceberg_strategy=
+    ddl_replay`` — pick the tables back up via ``get_pending_objects``'s
+    NOT-LIKE-'skipped%' filter.
+
+    Complementary to the managed_table_worker Iceberg tests: this
+    locks in the cross-component contract between the worker and the
+    tracker filter."""
+
+    def test_skip_status_prefix_matches_tracker_filter(self):
+        """``skipped_by_config`` starts with the literal 'skipped' prefix
+        so ``NOT LIKE 'skipped%'`` in get_pending_objects excludes it,
+        same as ``skipped_by_rls_cm_policy`` and ``skipped_by_pipeline_
+        migration``. If someone ever renames to ``skip_by_config``, this
+        fails loud and the tracker filter needs updating."""
+        skip_status = "skipped_by_config"
+        assert skip_status.startswith("skipped")

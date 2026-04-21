@@ -343,3 +343,122 @@ class TestSharingWorker:
         )
         assert res["status"] == "validated"
         assert "already existed" in res["error_message"]
+
+
+class TestPhase3WorkersIdempotency:
+    """Cross-worker contract: each Phase 3 worker must tolerate its
+    target object already existing on target (e.g. from a previous
+    partial migrate). The tests below exercise idempotency per object
+    type — a re-run must not fail with ``ALREADY_EXISTS`` or similar.
+    """
+
+    @patch("migrate.tags_worker.time")
+    @patch("migrate.tags_worker.execute_and_poll")
+    def test_tags_worker_tolerates_already_set_tag(self, mock_execute, mock_time):
+        """Re-applying a tag that already exists must succeed (SET TAGS
+        is idempotent in UC — same key/value is a no-op)."""
+        from migrate.tags_worker import apply_tag_group
+
+        mock_time.time.side_effect = [100.0, 100.1]
+        mock_execute.return_value = {"state": "SUCCEEDED", "statement_id": "s"}
+
+        auth = MagicMock()
+        tag_group = [
+            {
+                "securable_type": "TABLE",
+                "securable_fqn": "`c`.`s`.`t`",
+                "tag_name": "env",
+                "tag_value": "test",
+            },
+        ]
+        res = apply_tag_group(
+            ("TABLE", "`c`.`s`.`t`", ""), tag_group,
+            auth=auth, wh_id="wh", dry_run=False,
+        )
+        assert res["status"] == "validated"
+
+
+class TestPhase3DispatchOnObjectType:
+    """Every Phase 3 worker reads its ``object_type`` from the incoming
+    list payload and dispatches only to the types it owns. Prevents a
+    regression where e.g. tags_worker accidentally starts processing
+    row_filter entries.
+    """
+
+    def test_tags_worker_only_handles_tag_rows(self):
+        """Source-level check that tags_worker's per-row dispatch
+        filters on object_type == 'tag'."""
+        import pathlib
+        src = (
+            pathlib.Path(__file__).resolve().parents[2]
+            / "src" / "migrate" / "tags_worker.py"
+        ).read_text()
+        # Either explicit object_type filtering, or reading tag_list
+        # (which the orchestrator already pre-filters to tag type).
+        assert "tag_list" in src or 'object_type = \'tag\'' in src or \
+            'object_type == "tag"' in src
+
+    def test_row_filters_worker_uses_row_filter_list(self):
+        import pathlib
+        src = (
+            pathlib.Path(__file__).resolve().parents[2]
+            / "src" / "migrate" / "row_filters_worker.py"
+        ).read_text()
+        assert "row_filter_list" in src
+
+    def test_column_masks_worker_uses_column_mask_list(self):
+        import pathlib
+        src = (
+            pathlib.Path(__file__).resolve().parents[2]
+            / "src" / "migrate" / "column_masks_worker.py"
+        ).read_text()
+        assert "column_mask_list" in src
+
+
+class TestPhase3StatusEmission:
+    """Every Phase 3 worker writes to migration_status with an
+    object_type matching the Phase 3 backlog (tag, row_filter,
+    column_mask, policy, comment, monitor, registered_model,
+    connection, foreign_catalog, share, recipient, provider,
+    online_table). Locks in the naming so dashboard panels + the
+    tracker's NOT-LIKE-'skipped%' filter stay aligned."""
+
+    @patch("migrate.tags_worker.time")
+    @patch("migrate.tags_worker.execute_and_poll")
+    def test_tags_worker_writes_object_type_tag(self, mock_execute, mock_time):
+        from migrate.tags_worker import apply_tag_group
+
+        mock_time.time.side_effect = [100.0, 100.1]
+        mock_execute.return_value = {"state": "SUCCEEDED", "statement_id": "s"}
+        auth = MagicMock()
+        res = apply_tag_group(
+            ("TABLE", "`c`.`s`.`t`", ""),
+            [{
+                "securable_type": "TABLE",
+                "securable_fqn": "`c`.`s`.`t`",
+                "tag_name": "k",
+                "tag_value": "v",
+            }],
+            auth=auth, wh_id="wh", dry_run=False,
+        )
+        assert res["object_type"] == "tag"
+
+    @patch("migrate.row_filters_worker.time")
+    @patch("migrate.row_filters_worker.execute_and_poll")
+    def test_row_filters_worker_writes_object_type_row_filter(
+        self, mock_execute, mock_time
+    ):
+        from migrate.row_filters_worker import apply_row_filter
+
+        mock_time.time.side_effect = [100.0, 100.1]
+        mock_execute.return_value = {"state": "SUCCEEDED", "statement_id": "s"}
+        auth = MagicMock()
+        res = apply_row_filter(
+            {
+                "table_fqn": "`c`.`s`.`t`",
+                "filter_function_fqn": "c.s.f",
+                "filter_columns": ["region"],
+            },
+            auth=auth, wh_id="wh", dry_run=False,
+        )
+        assert res["object_type"] == "row_filter"

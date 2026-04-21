@@ -53,6 +53,19 @@ spark.sql(  # noqa: F821
     """
 )
 
+# --- View-over-view (Phase 1 integration 1.10) ---
+# View dependency ordering: ``recent_high_value`` references
+# ``high_value_orders``, which references ``managed_orders``. The
+# views worker must migrate them in topological order (leaves first)
+# so each view's upstream exists on target when it's CREATE'd.
+spark.sql(  # noqa: F821
+    """
+    CREATE OR REPLACE VIEW integration_test_src.test_schema.recent_high_value AS
+    SELECT * FROM integration_test_src.test_schema.high_value_orders
+    WHERE order_date > '2024-01-01'
+    """
+)
+
 # COMMAND ----------
 
 spark.sql(  # noqa: F821
@@ -67,6 +80,45 @@ spark.sql(  # noqa: F821
 
 spark.sql(  # noqa: F821
     "CREATE VOLUME IF NOT EXISTS integration_test_src.test_schema.test_volume"
+)
+
+# --- Partitioned external Delta table (Phase 1 integration 1.11) ---
+# Source-side PARTITIONED BY must survive DDL replay + arrive on target
+# with partition metadata intact. The unit test for the sanitizer +
+# rewrite_ddl locks in the DDL shape; this integration verifies the
+# round-trip on a live target.
+_partitioned_location = (
+    "abfss://external-data@stextsourcemig36cd38.dfs.core.windows.net/"
+    "partitioned_events"
+)
+_has_partitioned_external = False
+try:
+    spark.sql(  # noqa: F821
+        f"""
+        CREATE OR REPLACE TABLE integration_test_src.test_schema.partitioned_events (
+            event_id INT,
+            region STRING,
+            event_date DATE,
+            payload STRING
+        )
+        USING DELTA
+        PARTITIONED BY (region, event_date)
+        LOCATION '{_partitioned_location}'
+        """
+    )
+    spark.sql(  # noqa: F821
+        "INSERT OVERWRITE TABLE integration_test_src.test_schema.partitioned_events VALUES "
+        "(1, 'US', DATE'2024-01-15', 'a'), "
+        "(2, 'UK', DATE'2024-01-15', 'b'), "
+        "(3, 'US', DATE'2024-01-16', 'c')"
+    )
+    _has_partitioned_external = True
+    print("Created partitioned external table partitioned_events with 3 rows.")
+except Exception as _exc:  # noqa: BLE001
+    print(f"Skipped partitioned external seed: {_exc}")
+dbutils.jobs.taskValues.set(  # type: ignore[name-defined]  # noqa: F821
+    key="has_partitioned_external",
+    value="true" if _has_partitioned_external else "false",
 )
 
 # Seed a small file into the managed volume so Phase 2.5.A data-copy can be

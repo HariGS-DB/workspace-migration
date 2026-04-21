@@ -1,9 +1,41 @@
 from __future__ import annotations
 
 import contextlib
+import re
 from collections import defaultdict, deque
 
 from common.auth import AuthManager
+
+
+def _sql_in_literal(values: set[str]) -> str:
+    """Render a set of strings as a comma-separated SQL string literal list."""
+    if not values:
+        return "''"
+    escaped = [v.replace("'", "''") for v in values]
+    return ", ".join(f"'{v}'" for v in escaped)
+
+
+# Matches both quoted (`cat`.`schema`.`name`) and unquoted (cat.schema.name)
+# three-part references. Names can contain letters, digits, underscores.
+_QUOTED_REF = re.compile(r"`([^`]+)`\s*\.\s*`([^`]+)`\s*\.\s*`([^`]+)`")
+_UNQUOTED_REF = re.compile(r"\b([A-Za-z_][\w]*)\.([A-Za-z_][\w]*)\.([A-Za-z_][\w]*)\b")
+
+
+def _extract_three_part_refs(sql: str, view_set: set[str]) -> set[str]:
+    """Extract three-part FQN references from a view body, filtering to
+    those that appear in ``view_set``. Returns FQNs in backtick form
+    (`cat`.`schema`.`name`) to match ``views_worker`` input keys.
+    """
+    refs: set[str] = set()
+    for m in _QUOTED_REF.finditer(sql):
+        fqn = f"`{m.group(1)}`.`{m.group(2)}`.`{m.group(3)}`"
+        if fqn in view_set:
+            refs.add(fqn)
+    for m in _UNQUOTED_REF.finditer(sql):
+        fqn = f"`{m.group(1)}`.`{m.group(2)}`.`{m.group(3)}`"
+        if fqn in view_set:
+            refs.add(fqn)
+    return refs
 
 
 # Small alias for per-table try/except blocks in governance discovery —
@@ -677,7 +709,11 @@ class CatalogExplorer:
     def resolve_view_dependency_order(self, views: list[str]) -> list[str]:
         """Topological sort of views using Kahn's algorithm.
 
-        Dependencies come from ``information_schema.view_table_usage``.
+        Dependencies are extracted from ``information_schema.views.view_definition``
+        by regex-matching three-part names in the SQL body. Databricks UC does
+        NOT ship ``information_schema.view_table_usage`` as of Apr 2026, so we
+        parse the view body instead. The regex is intentionally conservative —
+        any dependency we miss is caught by the retry loop in views_worker.
         If cycles are detected, remaining views are appended at the end.
         """
         view_set = set(views)
@@ -686,30 +722,38 @@ class CatalogExplorer:
         in_degree: dict[str, int] = {v: 0 for v in views}
         dependents: dict[str, list[str]] = defaultdict(list)
 
+        # Group views by catalog so we issue one information_schema.views query
+        # per catalog rather than one per view.
+        by_catalog: dict[str, list[tuple[str, str, str]]] = defaultdict(list)
         for view in views:
             parts = view.strip("`").split("`.`")
             if len(parts) != 3:
                 continue
-            catalog, schema, _name = parts
+            catalog, schema, name = parts
+            by_catalog[catalog].append((schema, name, view))
+
+        for catalog, triples in by_catalog.items():
+            # view_definition is NULL unless the current user owns the view —
+            # that's acceptable: a non-owned view's deps we just can't see, so
+            # it gets in_degree=0 and the retry loop picks up the slack.
             query = (
-                f"SELECT view_catalog, view_schema, view_name, "
-                f"table_catalog, table_schema, table_name "
-                f"FROM `{catalog}`.`information_schema`.`view_table_usage` "
-                f"WHERE view_catalog = '{catalog}' "
-                f"AND view_schema = '{schema}' "
-                f"AND view_name = '{_name}'"
+                f"SELECT table_schema, table_name, view_definition "
+                f"FROM `{catalog}`.`information_schema`.`views` "
+                f"WHERE table_schema IN ({_sql_in_literal(set(s for s, _, _ in triples))})"
             )
             try:
                 rows = self.spark.sql(query).collect()  # type: ignore[attr-defined]
             except Exception:
-                # information_schema.view_table_usage may be unavailable (e.g. shared catalog).
-                # Skip dependency resolution for this view; it will be migrated in input order.
                 rows = []
-            for row in rows:
-                dep_fqn = f"`{row.table_catalog}`.`{row.table_schema}`.`{row.table_name}`"
-                if dep_fqn in view_set and dep_fqn != view:
-                    dependents[dep_fqn].append(view)
-                    in_degree[view] += 1
+            row_map = {(r.table_schema, r.table_name): (r.view_definition or "") for r in rows}
+            for schema, name, view in triples:
+                body = row_map.get((schema, name), "")
+                if not body:
+                    continue
+                for dep_fqn in _extract_three_part_refs(body, view_set):
+                    if dep_fqn != view:
+                        dependents[dep_fqn].append(view)
+                        in_degree[view] += 1
 
         # Kahn's algorithm
         queue: deque[str] = deque(v for v in views if in_degree[v] == 0)
