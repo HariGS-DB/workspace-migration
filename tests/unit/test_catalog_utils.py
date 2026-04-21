@@ -389,3 +389,168 @@ class TestStripFilterMaskClauses:
         ddl = "CREATE TABLE `c`.`s`.`t` (id INT) USING delta LOCATION 'abfss://...'"
         out = CatalogExplorer.strip_filter_mask_clauses(ddl)
         assert out == ddl
+
+
+class TestGetFunctionDdlComplexSignatures:
+    """CREATE FUNCTION reconstruction must handle complex parameter + return
+    types — arrays, structs, maps, multi-param signatures. The tool's
+    ``get_function_ddl`` reads information_schema which already flattens
+    these to their SQL type strings (``ARRAY<STRING>``, ``STRUCT<...>``),
+    but we lock in that the reconstruction doesn't drop them.
+    """
+
+    def _mock_function(self, mock_spark, *, routine_row, param_rows):
+        def sql_side_effect(query):
+            result = MagicMock()
+            if "information_schema`.`routines" in query:
+                result.first.return_value = routine_row
+            elif "information_schema`.`parameters" in query:
+                result.collect.return_value = param_rows
+            else:
+                result.first.return_value = None
+                result.collect.return_value = []
+            return result
+
+        mock_spark.sql.side_effect = sql_side_effect
+
+    def test_array_parameter_and_return(self, mock_spark):
+        """SQL UDF taking ``ARRAY<STRING>`` and returning ``ARRAY<STRING>``."""
+        self._mock_function(
+            mock_spark,
+            routine_row=_row(
+                specific_name="normalize_tags_1",
+                data_type="ARRAY<STRING>",
+                routine_body="SQL",
+                routine_definition="transform(x, v -> lower(v))",
+                external_language=None,
+            ),
+            param_rows=[
+                _row(parameter_name="x", data_type="ARRAY<STRING>", ordinal_position=1),
+            ],
+        )
+        explorer = CatalogExplorer(mock_spark, MagicMock())
+        ddl = explorer.get_function_ddl("`c`.`s`.`normalize_tags`")
+
+        assert "x ARRAY<STRING>" in ddl
+        assert "RETURNS ARRAY<STRING>" in ddl.upper()
+        assert "transform(x, v -> lower(v))" in ddl
+
+    def test_struct_parameter(self, mock_spark):
+        """SQL UDF taking ``STRUCT<id: INT, name: STRING>``."""
+        self._mock_function(
+            mock_spark,
+            routine_row=_row(
+                specific_name="fmt_person_1",
+                data_type="STRING",
+                routine_body="SQL",
+                routine_definition="concat(p.id, '-', p.name)",
+                external_language=None,
+            ),
+            param_rows=[
+                _row(
+                    parameter_name="p",
+                    data_type="STRUCT<id: INT, name: STRING>",
+                    ordinal_position=1,
+                ),
+            ],
+        )
+        explorer = CatalogExplorer(mock_spark, MagicMock())
+        ddl = explorer.get_function_ddl("`c`.`s`.`fmt_person`")
+
+        assert "p STRUCT<id: INT, name: STRING>" in ddl
+        assert "RETURNS STRING" in ddl.upper()
+
+    def test_map_parameter(self, mock_spark):
+        """SQL UDF taking ``MAP<STRING, INT>``."""
+        self._mock_function(
+            mock_spark,
+            routine_row=_row(
+                specific_name="sum_vals_1",
+                data_type="INT",
+                routine_body="SQL",
+                routine_definition="aggregate(map_values(m), 0, (a, v) -> a + v)",
+                external_language=None,
+            ),
+            param_rows=[
+                _row(parameter_name="m", data_type="MAP<STRING, INT>", ordinal_position=1),
+            ],
+        )
+        explorer = CatalogExplorer(mock_spark, MagicMock())
+        ddl = explorer.get_function_ddl("`c`.`s`.`sum_vals`")
+
+        assert "m MAP<STRING, INT>" in ddl
+        assert "RETURNS INT" in ddl.upper()
+
+    def test_multi_parameter_signature_preserves_order(self, mock_spark):
+        """Multiple parameters must appear in ordinal_position order —
+        information_schema ORDER BY already handles this on the query
+        side, and the DDL must concatenate them comma-separated without
+        dropping order."""
+        self._mock_function(
+            mock_spark,
+            routine_row=_row(
+                specific_name="calc_fee_1",
+                data_type="DOUBLE",
+                routine_body="SQL",
+                routine_definition="amount * rate + fixed",
+                external_language=None,
+            ),
+            param_rows=[
+                _row(parameter_name="amount", data_type="DOUBLE", ordinal_position=1),
+                _row(parameter_name="rate", data_type="DOUBLE", ordinal_position=2),
+                _row(parameter_name="fixed", data_type="DOUBLE", ordinal_position=3),
+            ],
+        )
+        explorer = CatalogExplorer(mock_spark, MagicMock())
+        ddl = explorer.get_function_ddl("`c`.`s`.`calc_fee`")
+
+        # Parameters in original order, comma-separated
+        assert "amount DOUBLE, rate DOUBLE, fixed DOUBLE" in ddl
+
+    def test_python_udf_with_array_return(self, mock_spark):
+        """Python UDF returning ``ARRAY<STRING>`` — uses ``AS $$...$$``
+        form (not ``RETURN``) and carries the Python body verbatim."""
+        body = "return [x.upper() for x in values]"
+        self._mock_function(
+            mock_spark,
+            routine_row=_row(
+                specific_name="upper_all_1",
+                data_type="ARRAY<STRING>",
+                routine_body="EXTERNAL",
+                routine_definition=body,
+                external_language="PYTHON",
+            ),
+            param_rows=[
+                _row(parameter_name="values", data_type="ARRAY<STRING>", ordinal_position=1),
+            ],
+        )
+        explorer = CatalogExplorer(mock_spark, MagicMock())
+        ddl = explorer.get_function_ddl("`c`.`s`.`upper_all`")
+
+        assert "LANGUAGE PYTHON" in ddl
+        assert "AS $$" in ddl
+        assert body in ddl
+        # SQL-UDF ``RETURN`` keyword must NOT appear for Python UDFs.
+        assert "RETURN return" not in ddl
+        # Return type preserved.
+        assert "RETURNS ARRAY<STRING>" in ddl.upper()
+
+    def test_zero_parameter_function(self, mock_spark):
+        """Parameterless SQL UDF — no parameters, empty sig."""
+        self._mock_function(
+            mock_spark,
+            routine_row=_row(
+                specific_name="current_time_1",
+                data_type="TIMESTAMP",
+                routine_body="SQL",
+                routine_definition="current_timestamp()",
+                external_language=None,
+            ),
+            param_rows=[],
+        )
+        explorer = CatalogExplorer(mock_spark, MagicMock())
+        ddl = explorer.get_function_ddl("`c`.`s`.`current_time`")
+        # Empty parameter signature — just `()`
+        assert "()" in ddl
+        assert "RETURNS TIMESTAMP" in ddl.upper()
+        assert "RETURN current_timestamp()" in ddl

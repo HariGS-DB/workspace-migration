@@ -247,3 +247,95 @@ class TestVolumeWorkerSdkTypes:
             f"environments[0] must be a JobEnvironment, got "
             f"{type(envs_arg[0]).__name__}"
         )
+
+
+class TestExternalVolumeCreationContract:
+    """External volume migration creates the volume on target at the same
+    storage location. The ACCESS path (target access connector permissions
+    on that LOCATION) is an infra-level concern — terraform configures
+    target external locations; the tool just CREATEs the volume pointer.
+
+    These tests lock in the contract so a future refactor can't silently
+    drop the IF NOT EXISTS clause or break the LOCATION clause shape.
+    """
+
+    def _make_deps(self, **overrides):
+        deps = {
+            "config": MagicMock(dry_run=False),
+            "auth": MagicMock(),
+            "tracker": MagicMock(),
+            "wh_id": "wh-v",
+            "source_spark": MagicMock(),
+            "notebook_uploaded": False,
+        }
+        deps.update(overrides)
+        return deps
+
+    @patch("migrate.volume_worker.time")
+    @patch("migrate.volume_worker.execute_and_poll")
+    def test_create_uses_if_not_exists(self, mock_execute, mock_time):
+        """Idempotency: a re-run must not fail because the volume
+        already exists on target."""
+        from migrate.volume_worker import migrate_volume
+
+        mock_time.time.side_effect = [100.0, 105.0]
+        mock_execute.return_value = {"state": "SUCCEEDED", "statement_id": "s-idem"}
+
+        deps = self._make_deps()
+        vol = {
+            "object_name": "`c`.`s`.`v`",
+            "table_type": "EXTERNAL",
+            "storage_location": "abfss://x@y.dfs.core.windows.net/v",
+        }
+        migrate_volume(vol, **deps)
+        sql = mock_execute.call_args[0][2]
+        assert "IF NOT EXISTS" in sql
+
+    @patch("migrate.volume_worker.time")
+    @patch("migrate.volume_worker.execute_and_poll")
+    def test_create_preserves_exact_location(self, mock_execute, mock_time):
+        """The LOCATION passed to CREATE EXTERNAL VOLUME on target must be
+        byte-identical to the source's storage_location. Silent quoting /
+        escaping bugs here would point the volume at the wrong path."""
+        from migrate.volume_worker import migrate_volume
+
+        mock_time.time.side_effect = [100.0, 105.0]
+        mock_execute.return_value = {"state": "SUCCEEDED", "statement_id": "s-loc"}
+
+        source_loc = "abfss://data@acct123.dfs.core.windows.net/path/with spaces/"
+        deps = self._make_deps()
+        vol = {
+            "object_name": "`c`.`s`.`spaced`",
+            "table_type": "EXTERNAL",
+            "storage_location": source_loc,
+        }
+        migrate_volume(vol, **deps)
+        sql = mock_execute.call_args[0][2]
+        assert f"LOCATION '{source_loc}'" in sql
+
+    @patch("migrate.volume_worker.time")
+    @patch("migrate.volume_worker.execute_and_poll")
+    def test_target_creation_failure_propagates(self, mock_execute, mock_time):
+        """If CREATE EXTERNAL VOLUME on target fails (e.g. access
+        connector not granted on the external location), the worker
+        records status=failed with the SQL error message surfaced so
+        operators can diagnose. This is the real-world PERMISSION_DENIED
+        path when target infra isn't wired up."""
+        from migrate.volume_worker import migrate_volume
+
+        mock_time.time.side_effect = [100.0, 101.0]
+        mock_execute.return_value = {
+            "state": "FAILED",
+            "error": "PERMISSION_DENIED: External location 'x' not found",
+            "statement_id": "s-denied",
+        }
+
+        deps = self._make_deps()
+        vol = {
+            "object_name": "`c`.`s`.`v`",
+            "table_type": "EXTERNAL",
+            "storage_location": "abfss://nope@nope.dfs.core.windows.net/",
+        }
+        result, _ = migrate_volume(vol, **deps)
+        assert result["status"] == "failed"
+        assert "PERMISSION_DENIED" in result["error_message"]
