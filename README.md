@@ -49,9 +49,26 @@ authoritative config is the copy on the workspace at
 `${workspace.file_path}/config.yaml`, which DAB refreshes from the repo
 on every deploy.
 
+### Required deploy-time variables
+
+`databricks.yml` declares two variables with no baked-in defaults —
+operators must supply them for every deploy:
+
+| Variable | Purpose | How to set |
+|---|---|---|
+| `migration_spn_id` | SPN application ID that jobs run as | `--var migration_spn_id=<app-id>` or env `BUNDLE_VAR_migration_spn_id` |
+| `dashboard_warehouse_name` | Name of the SQL warehouse the dashboard reads from (resolved to an ID via lookup). Defaults to `cp-migration` — override if your warehouse has a different name | `--var dashboard_warehouse_name=<name>` or env `BUNDLE_VAR_dashboard_warehouse_name` |
+
+The SPN needs: workspace admin on source + target, metastore-level
+`CREATE_*` privileges, `USE_PROVIDER` on target, and
+`READ_FILES`/`WRITE_FILES`/`CREATE_EXTERNAL_TABLE` on any external
+location used for Hive DBFS-root migration.
+
+### Deploy + configure flow
+
 1. Clone this repo
-2. `databricks bundle deploy -t dev` (uploads `config.yaml` with
-   placeholders to the workspace)
+2. `databricks bundle deploy -t dev --var migration_spn_id=<your-app-id>`
+   (uploads `config.yaml` with placeholders to the workspace)
 3. In the workspace, edit `${workspace.file_path}/config.yaml` with real
    values:
    - `source_workspace_url` / `target_workspace_url`
@@ -73,7 +90,7 @@ on every deploy.
 
 Same shape as above — edit the workspace `config.yaml` first:
 
-1. `databricks bundle deploy -t dev`
+1. `databricks bundle deploy -t dev --var migration_spn_id=<your-app-id>`
 2. Edit `${workspace.file_path}/config.yaml`:
    - Real workspace URLs, SPN app ID, secret scope/key
    - `scope.include_hive: true` (the Hive integration test requires it)
