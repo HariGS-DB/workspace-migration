@@ -219,3 +219,20 @@ class TrackingManager:
               AND (s.status IS NULL OR s.status NOT IN ('validated', 'skipped'))
         """).collect()
         return [row.asDict() for row in rows]
+
+    def get_row(self, object_type: str, object_name: str) -> dict | None:
+        """Return a single discovery_inventory row by (object_type, object_name).
+
+        Used by workers that receive lightweight identifier-only batches from
+        the orchestrator and need to re-hydrate the full row (e.g. the
+        ``create_statement`` field, which the orchestrator strips to keep
+        for_each task-value payloads under Jobs' 3000-byte limit).
+        """
+        rows = self.spark.sql(f"""
+            SELECT *
+            FROM {self._fqn}.discovery_inventory
+            WHERE object_type = '{object_type}'
+              AND object_name = '{object_name}'
+            LIMIT 1
+        """).collect()
+        return rows[0].asDict() if rows else None

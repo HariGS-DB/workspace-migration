@@ -48,6 +48,15 @@ _MIGRATION_SHARE = "cp_migration_share"
 _MIGRATION_RECIPIENT_PREFIX = "cp_migration_recipient_"
 
 
+def _tool_owned_catalogs(config) -> set[str]:
+    """Catalogs the tool itself owns — excluded from discovery so the tool
+    doesn't try to migrate its own tracking/consumer state."""
+    return {
+        config.tracking_catalog,           # discovery_inventory, migration_status, pre_check_results
+        f"{_MIGRATION_SHARE}_consumer",    # target-side share-consumer catalog (on source this won't exist, harmless)
+    }
+
+
 def _discover_uc(config, explorer, now) -> tuple[list[dict], int]:
     """Discover UC objects. Returns (rows, dlt_count)."""
     rows: list[dict] = []
@@ -55,7 +64,9 @@ def _discover_uc(config, explorer, now) -> tuple[list[dict], int]:
     all_table_fqns: list[str] = []  # for workspace-level monitor enumeration
 
     catalogs = explorer.list_catalogs(filter_list=config.catalog_filter or None)
-    print(f"[uc] Discovered {len(catalogs)} catalog(s): {catalogs}")
+    tool_catalogs = _tool_owned_catalogs(config)
+    catalogs = [c for c in catalogs if c not in tool_catalogs]
+    print(f"[uc] Discovered {len(catalogs)} catalog(s) (excluding tool-owned {sorted(tool_catalogs)}): {catalogs}")
 
     for catalog in catalogs:
         schemas = explorer.list_schemas(catalog)
@@ -99,8 +110,16 @@ def _discover_uc(config, explorer, now) -> tuple[list[dict], int]:
                     with contextlib.suppress(Exception):
                         table_format = explorer.get_table_format(fqn)
 
-                with contextlib.suppress(Exception):
+                ddl_failure: str | None = None
+                try:
                     create_stmt = explorer.get_create_statement(fqn)
+                except Exception as exc:  # noqa: BLE001
+                    # Iceberg managed tables and some UC object types don't support
+                    # SHOW CREATE TABLE — record the reason in metadata_json so
+                    # workers can decide how to handle it, and keep discovery
+                    # going.
+                    ddl_failure = f"get_create_statement failed: {type(exc).__name__}: {exc}"
+                    print(f"    [uc][warn] {fqn}: {ddl_failure}")
 
                 rows.append(discovery_row(
                     source_type="uc",
@@ -115,6 +134,7 @@ def _discover_uc(config, explorer, now) -> tuple[list[dict], int]:
                     pipeline_id=pipeline_id,
                     create_statement=create_stmt,
                     format=table_format,
+                    metadata={"ddl_failure": ddl_failure} if ddl_failure else None,
                 ))
                 if obj_type in ("managed_table", "external_table"):
                     all_table_fqns.append(fqn)

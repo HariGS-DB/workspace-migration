@@ -33,15 +33,30 @@ logger = logging.getLogger("orchestrator")
 # Batching helper — importable for unit tests
 
 
+# Heavy fields stripped from task-value payloads — Databricks Jobs caps each
+# for_each input parameter at 3000 bytes, and a realistic CREATE TABLE DDL
+# (expanded with tags / row filters / column masks / comments) can exceed
+# that by itself. Workers that need ``create_statement`` re-hydrate the row
+# via ``TrackingManager.get_row(object_type, object_name)``.
+_STRIPPED_FIELDS = ("create_statement",)
+
+
+def _strip_heavy_fields(objects: list[dict]) -> list[dict]:
+    """Return object dicts with heavy fields removed for task-value publishing."""
+    return [{k: v for k, v in o.items() if k not in _STRIPPED_FIELDS} for o in objects]
+
+
 def build_batches(objects: list[dict], batch_size: int) -> list[str]:
     """Split a list of object dicts into JSON-encoded batch strings.
 
     Each returned string is a JSON array of dicts, with at most *batch_size*
-    elements.
+    elements. Heavy fields (see ``_STRIPPED_FIELDS``) are removed so the
+    encoded batch fits under Jobs' 3000-byte for_each limit.
     """
+    minimized = _strip_heavy_fields(objects)
     batches: list[str] = []
-    for i in range(0, len(objects), batch_size):
-        chunk = objects[i : i + batch_size]
+    for i in range(0, len(minimized), batch_size):
+        chunk = minimized[i : i + batch_size]
         batches.append(json.dumps(chunk, default=str))
     return batches
 
@@ -135,7 +150,11 @@ if _is_notebook():
         for obj_type in LIST_TYPES:
             pending = tracker.get_pending_objects(obj_type)
             logger.info("Pending %s: %d objects", obj_type, len(pending))
-            list_output[f"{obj_type}_list"] = json.dumps(pending, default=str)
+            # Strip heavy fields for the same reason as batched types — the
+            # aggregated list is also subject to the 3000-byte task-value limit.
+            list_output[f"{obj_type}_list"] = json.dumps(
+                _strip_heavy_fields(pending), default=str
+            )
 
         # Publish task values for downstream workers
         for key, batches in batch_output.items():

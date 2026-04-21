@@ -150,7 +150,9 @@ class TestIcebergManagedTable:
         }
         result = clone_table(table_info, **deps)
 
-        assert result["status"] == "skipped"
+        # skipped_by_config (not plain 'skipped') so re-runs with opt-in
+        # configured pick the table back up via get_pending_objects.
+        assert result["status"] == "skipped_by_config"
         assert "iceberg_strategy" in result["error_message"]
         mock_execute.assert_not_called()
 
@@ -195,6 +197,9 @@ class TestIcebergManagedTable:
         mock_time.time.side_effect = [100.0, 100.1]
 
         deps = self._make_deps(iceberg_strategy="ddl_replay")
+        # Simulate: batch dict has no create_statement AND discovery row is
+        # also missing it (real "no DDL anywhere" scenario).
+        deps["tracker"].get_row.return_value = None
         table_info = {
             "object_name": "`cat`.`sch`.`ice_tbl`",
             "format": "iceberg",
@@ -204,6 +209,40 @@ class TestIcebergManagedTable:
 
         assert result["status"] == "failed"
         assert "create_statement" in result["error_message"]
+
+    @patch("migrate.managed_table_worker.time")
+    @patch("migrate.managed_table_worker.execute_and_poll")
+    def test_iceberg_rehydrates_create_statement_from_tracker(self, mock_execute, mock_time):
+        """When create_statement is stripped from the batch (to stay under
+        Jobs' 3000-byte for_each limit), the worker falls back to
+        tracker.get_row to re-hydrate it from discovery_inventory."""
+        from migrate.managed_table_worker import clone_table
+
+        mock_time.time.side_effect = [100.0, 105.0, 110.0]
+        mock_execute.return_value = {"state": "SUCCEEDED", "statement_id": "s-1"}
+
+        deps = self._make_deps(iceberg_strategy="ddl_replay")
+        deps["validator"].validate_row_count.return_value = {
+            "match": True,
+            "source_count": 7,
+            "target_count": 7,
+        }
+        deps["tracker"].get_row.return_value = {
+            "object_name": "`cat`.`sch`.`ice_tbl`",
+            "create_statement": "CREATE TABLE `cat`.`sch`.`ice_tbl` (id INT) USING ICEBERG",
+        }
+
+        table_info = {
+            "object_name": "`cat`.`sch`.`ice_tbl`",
+            "format": "iceberg",
+            # create_statement absent — stripped by orchestrator
+        }
+        result = clone_table(table_info, **deps)
+
+        deps["tracker"].get_row.assert_called_once_with("managed_table", "`cat`.`sch`.`ice_tbl`")
+        assert result["status"] == "validated"
+        sqls = [c.args[2] for c in mock_execute.call_args_list]
+        assert any("USING ICEBERG" in s for s in sqls)
 
     @patch("migrate.managed_table_worker.time")
     @patch("migrate.managed_table_worker.execute_and_poll")

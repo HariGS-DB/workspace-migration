@@ -2,6 +2,8 @@ resources:
   jobs:
     pre_check:
       name: "${var.job_prefix}-pre-check"
+      run_as:
+        service_principal_name: ${var.migration_spn_id}
       tasks:
         - task_key: pre_check
           notebook_task:

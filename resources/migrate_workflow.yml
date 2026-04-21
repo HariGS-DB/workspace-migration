@@ -3,6 +3,8 @@ resources:
     migrate:
       name: "${var.job_prefix}-migrate"
       description: "Unified migrate workflow. UC tasks run when scope.include_uc=true; Hive tasks when scope.include_hive=true. Each worker gates internally."
+      run_as:
+        service_principal_name: ${var.migration_spn_id}
       tasks:
         # --- UC migration chain ---
 

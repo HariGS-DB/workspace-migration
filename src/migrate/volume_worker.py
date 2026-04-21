@@ -32,6 +32,10 @@ import json
 import logging
 import time
 
+from databricks.sdk.service.compute import Environment
+from databricks.sdk.service.jobs import JobEnvironment, NotebookTask, SubmitTask
+from databricks.sdk.service.workspace import ImportFormat, Language
+
 from common.auth import AuthManager
 from common.config import MigrationConfig
 from common.sql_utils import execute_and_poll, find_warehouse
@@ -147,11 +151,13 @@ def _ensure_copy_notebook_on_target(auth: AuthManager) -> None:
         target.workspace.mkdirs("/Shared/cp_migration_runtime")
     except Exception:  # noqa: BLE001
         pass  # mkdirs is idempotent; swallow errors
+    # SDK >= recent requires real Enums here — passing raw strings triggers
+    # ``AttributeError: 'str' object has no attribute 'value'`` inside the SDK.
     target.workspace.import_(
         path=TARGET_COPY_NOTEBOOK_PATH,
         content=base64.b64encode(_TARGET_COPY_NOTEBOOK.encode()).decode(),
-        format="SOURCE",  # type: ignore[arg-type]
-        language="PYTHON",  # type: ignore[arg-type]
+        format=ImportFormat.SOURCE,
+        language=Language.PYTHON,
         overwrite=True,
     )
 
@@ -165,24 +171,27 @@ def _run_target_volume_copy(
     Raises RuntimeError on failure or timeout.
     """
     target = auth.target_client
+    # SDK >= recent requires real dataclasses here — raw dicts trigger
+    # ``AttributeError: 'dict' object has no attribute 'as_dict'`` during the
+    # SDK's outbound request shaping.
     submit_tasks = [
-        {
-            "task_key": "copy",
-            "notebook_task": {
-                "notebook_path": TARGET_COPY_NOTEBOOK_PATH,
-                "base_parameters": {"src": src_path, "dst": dst_path},
-            },
+        SubmitTask(
+            task_key="copy",
+            notebook_task=NotebookTask(
+                notebook_path=TARGET_COPY_NOTEBOOK_PATH,
+                base_parameters={"src": src_path, "dst": dst_path},
+            ),
             # Serverless: no new_cluster / existing_cluster_id — Databricks picks
             # serverless compute automatically when neither is supplied.
-            "environment_key": "default",
-        }
+            environment_key="default",
+        )
     ]
-    environments = [{"environment_key": "default", "spec": {"client": "2"}}]
+    environments = [JobEnvironment(environment_key="default", spec=Environment(client="2"))]
 
     run = target.jobs.submit(
         run_name=run_name,
-        tasks=submit_tasks,  # type: ignore[arg-type]
-        environments=environments,  # type: ignore[arg-type]
+        tasks=submit_tasks,
+        environments=environments,
     )
     run_id = run.run_id  # may be None on the submit response; re-fetch by waiter
     # Poll
@@ -341,7 +350,7 @@ def migrate_volume(
             "object_name": obj_name,
             "object_type": "volume",
             "status": "failed",
-            "error_message": str(exc),
+            "error_message": f"{type(exc).__name__}: {exc}",
             "duration_seconds": time.time() - start,
         }, notebook_uploaded
     finally:
@@ -379,11 +388,12 @@ def run(dbutils, spark) -> None:
                 notebook_uploaded=notebook_uploaded,
             )
         except Exception as exc:  # noqa: BLE001
+            logger.exception("Volume migration failed for %s", vol.get("object_name"))
             res = {
                 "object_name": vol["object_name"],
                 "object_type": "volume",
                 "status": "failed",
-                "error_message": str(exc),
+                "error_message": f"{type(exc).__name__}: {exc}",
                 "duration_seconds": 0.0,
             }
         results.append(res)
