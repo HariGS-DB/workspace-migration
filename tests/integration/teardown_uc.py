@@ -22,6 +22,34 @@ spark.sql("DROP CATALOG IF EXISTS integration_test_src CASCADE")  # noqa: F821
 spark.sql("DROP SCHEMA IF EXISTS migration_tracking.cp_migration_test CASCADE")  # noqa: F821
 print("Dropped UC test catalogs on source.")
 
+# Clear test-fixture rows from migration_status / discovery_inventory so
+# the next integration run starts from a clean slate. Without this,
+# ``get_pending_objects`` treats stale ``validated`` rows as final,
+# migrate workers get empty input, and Phase 3 workers fail trying to
+# apply to target tables that this run never actually created.
+# Scoped to integration_test_src / test_schema so we don't touch any
+# real customer state that might share the tracking catalog.
+try:
+    spark.sql(  # noqa: F821
+        """
+        DELETE FROM migration_tracking.cp_migration.migration_status
+        WHERE object_name LIKE '%integration_test_src%'
+           OR object_name LIKE '%test_schema%'
+        """
+    )
+    spark.sql(  # noqa: F821
+        """
+        DELETE FROM migration_tracking.cp_migration.discovery_inventory
+        WHERE object_name LIKE '%integration_test_src%'
+           OR object_name LIKE '%test_schema%'
+           OR (catalog_name = 'integration_test_src')
+        """
+    )
+    print("Cleared integration_test fixture rows from tracking tables.")
+except Exception as _exc:  # noqa: BLE001
+    # First-ever run: tracking tables don't exist yet — safe to skip.
+    print(f"Tracking table cleanup skipped: {_exc}")
+
 # Also drop the migrated catalog on TARGET, otherwise the next run's
 # migrate fails with TABLE_OR_VIEW_ALREADY_EXISTS. Use the target
 # workspace's SQL warehouse via AuthManager.

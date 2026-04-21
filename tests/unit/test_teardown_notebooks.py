@@ -55,6 +55,18 @@ class TestTeardownUcTargetCleanup:
         assert ".pre-integration-test.bak" in src
         assert "shutil.move" in src or "shutil.copy2" in src
 
+    def test_clears_fixture_rows_from_tracking_tables(self):
+        """Without this, stale ``validated`` rows make
+        ``get_pending_objects`` treat fixtures as already-migrated on the
+        NEXT run — migrate workers produce no work, Phase 3 workers fail
+        trying to apply to target tables this run never created.
+        DELETE is scoped to integration_test_src / test_schema so any
+        real state sharing the catalog isn't touched."""
+        src = _teardown_uc_text()
+        assert "DELETE FROM migration_tracking.cp_migration.migration_status" in src
+        assert "integration_test_src" in src
+        assert "DELETE FROM migration_tracking.cp_migration.discovery_inventory" in src
+
 
 class TestTeardownHiveTargetCleanup:
     """teardown_hive must drop the hive_target_catalog on both sides."""
@@ -83,3 +95,11 @@ class TestTeardownHiveTargetCleanup:
     def test_restores_config_yaml_backup(self):
         src = _teardown_hive_text()
         assert ".pre-integration-test.bak" in src
+
+    def test_clears_fixture_rows_from_tracking_tables(self):
+        """Same rationale as the UC teardown — stale ``validated`` rows
+        on hive_* object_types block re-runs."""
+        src = _teardown_hive_text()
+        assert "DELETE FROM migration_tracking.cp_migration.migration_status" in src
+        assert "DELETE FROM migration_tracking.cp_migration.discovery_inventory" in src
+        assert "integration_test_hive" in src
