@@ -462,3 +462,156 @@ class TestPhase3StatusEmission:
             auth=auth, wh_id="wh", dry_run=False,
         )
         assert res["object_type"] == "row_filter"
+
+
+# ---------------------------------------------------- Negative-path ----
+#
+# Every Phase 3 worker must turn a downstream failure into a status='failed'
+# tracking row, not a raised exception. Locks in the contract so a single
+# bad tag / RLS / mask / monitor doesn't halt the whole worker.
+
+class TestPhase3WorkerErrorSurfacing:
+    @patch("migrate.tags_worker.time")
+    @patch("migrate.tags_worker.execute_and_poll")
+    def test_tags_worker_surfaces_failed_sql(self, mock_execute, mock_time):
+        from migrate.tags_worker import apply_tag_group
+
+        mock_time.time.side_effect = [100.0, 101.0]
+        mock_execute.return_value = {
+            "state": "FAILED",
+            "error": "PERMISSION_DENIED: not metastore admin",
+            "statement_id": "s",
+        }
+        res = apply_tag_group(
+            ("TABLE", "`c`.`s`.`t`", ""),
+            [{"tag_name": "env", "tag_value": "prod"}],
+            auth=MagicMock(), wh_id="wh", dry_run=False,
+        )
+        assert res["status"] == "failed"
+        assert "PERMISSION_DENIED" in res["error_message"]
+
+    @patch("migrate.row_filters_worker.time")
+    @patch("migrate.row_filters_worker.execute_and_poll")
+    def test_row_filter_surfaces_missing_function(self, mock_execute, mock_time):
+        from migrate.row_filters_worker import apply_row_filter
+
+        mock_time.time.side_effect = [100.0, 100.5]
+        mock_execute.return_value = {
+            "state": "FAILED", "error": "ROUTINE_NOT_FOUND", "statement_id": "s",
+        }
+        res = apply_row_filter(
+            {"table_fqn": "`c`.`s`.`t`",
+             "filter_function_fqn": "c.s.missing_fn",
+             "filter_columns": ["region"]},
+            auth=MagicMock(), wh_id="wh", dry_run=False,
+        )
+        assert res["status"] == "failed"
+        assert "ROUTINE_NOT_FOUND" in res["error_message"]
+
+    @patch("migrate.column_masks_worker.time")
+    @patch("migrate.column_masks_worker.execute_and_poll")
+    def test_column_mask_surfaces_missing_function(self, mock_execute, mock_time):
+        from migrate.column_masks_worker import apply_column_mask
+
+        mock_time.time.side_effect = [100.0, 100.5]
+        mock_execute.return_value = {
+            "state": "FAILED", "error": "ROUTINE_NOT_FOUND", "statement_id": "s",
+        }
+        res = apply_column_mask(
+            {"table_fqn": "`c`.`s`.`t`",
+             "column_name": "ssn",
+             "mask_function_fqn": "c.s.missing_mask"},
+            auth=MagicMock(), wh_id="wh", dry_run=False,
+        )
+        assert res["status"] == "failed"
+        assert "ROUTINE_NOT_FOUND" in res["error_message"]
+
+    @patch("migrate.monitors_worker.time")
+    def test_monitor_surfaces_api_failure(self, mock_time):
+        from migrate.monitors_worker import apply_monitor
+
+        mock_time.time.side_effect = [100.0, 101.0]
+        auth = MagicMock()
+        auth.target_client.api_client.do.side_effect = Exception(
+            "TABLE_NOT_FOUND: monitor target missing"
+        )
+        res = apply_monitor(
+            {"table_fqn": "`c`.`s`.`t`",
+             "definition": {"schedule": {"quartz_cron_expression": "0 0 * * * ?"}}},
+            auth=auth, dry_run=False,
+        )
+        assert res["status"] == "failed"
+        assert "TABLE_NOT_FOUND" in res["error_message"]
+
+    @patch("migrate.models_worker.time")
+    def test_model_surfaces_api_failure(self, mock_time):
+        from migrate.models_worker import apply_model
+
+        mock_time.time.side_effect = [100.0, 101.0]
+        auth = MagicMock()
+        auth.target_client.registered_models.create.side_effect = Exception(
+            "PERMISSION_DENIED on schema"
+        )
+        results = apply_model(
+            {"model_fqn": "c.s.m1",
+             "storage_location": "abfss://x@y/m1",
+             "versions": []},
+            auth=auth, dry_run=False,
+        )
+        # apply_model returns a list of results (model + versions)
+        assert any(r["status"] == "failed" for r in results)
+        assert any("PERMISSION_DENIED" in (r.get("error_message") or "")
+                   for r in results)
+
+
+# ---------------------------------------------------- Dry-run gate ------
+
+class TestPhase3DryRun:
+    """Every worker that takes dry_run must short-circuit execute_and_poll
+    and return status='skipped' / error_message='dry_run'. Missing these
+    means dry_run silently hits the target."""
+
+    @patch("migrate.tags_worker.execute_and_poll")
+    @patch("migrate.tags_worker.time")
+    def test_tags_worker_dry_run(self, mock_time, mock_execute):
+        from migrate.tags_worker import apply_tag_group
+
+        mock_time.time.side_effect = [100.0, 100.0]
+        res = apply_tag_group(
+            ("TABLE", "`c`.`s`.`t`", ""),
+            [{"tag_name": "k", "tag_value": "v"}],
+            auth=MagicMock(), wh_id="wh", dry_run=True,
+        )
+        assert res["status"] == "skipped"
+        assert res["error_message"] == "dry_run"
+        mock_execute.assert_not_called()
+
+    @patch("migrate.row_filters_worker.execute_and_poll")
+    @patch("migrate.row_filters_worker.time")
+    def test_row_filter_dry_run(self, mock_time, mock_execute):
+        from migrate.row_filters_worker import apply_row_filter
+
+        mock_time.time.side_effect = [100.0, 100.0]
+        res = apply_row_filter(
+            {"table_fqn": "`c`.`s`.`t`",
+             "filter_function_fqn": "c.s.f",
+             "filter_columns": ["r"]},
+            auth=MagicMock(), wh_id="wh", dry_run=True,
+        )
+        assert res["status"] == "skipped"
+        mock_execute.assert_not_called()
+
+    @patch("migrate.column_masks_worker.execute_and_poll")
+    @patch("migrate.column_masks_worker.time")
+    def test_column_mask_dry_run(self, mock_time, mock_execute):
+        from migrate.column_masks_worker import apply_column_mask
+
+        mock_time.time.side_effect = [100.0, 100.0]
+        res = apply_column_mask(
+            {"table_fqn": "`c`.`s`.`t`",
+             "column_name": "ssn",
+             "mask_function_fqn": "c.s.f"},
+            auth=MagicMock(), wh_id="wh", dry_run=True,
+        )
+        assert res["status"] == "skipped"
+        mock_execute.assert_not_called()

@@ -167,6 +167,94 @@ class TestWorkerErrorMessagesAreOperatorReadable:
                 raise AssertionError(pytest_fail_msg)
 
 
+class TestWorkerScopeGating:
+    """Workers run as per-notebook tasks. Each UC worker must short-circuit
+    when ``config.include_uc == False``; each Hive worker must short-circuit
+    when ``config.include_hive == False``. Missing the gate means a
+    UC-only migration still runs Hive workers and vice versa, producing
+    spurious no-op failures / wasted compute.
+
+    Exclusions:
+      - Batched workers (external_table_worker, managed_table_worker,
+        volume_worker, mv_st_worker) are scope-gated at the orchestrator
+        level — they only run when the orchestrator emits batches.
+      - Hive per-category workers (hive_external_worker,
+        hive_managed_dbfs_worker, hive_managed_nondbfs_worker) are gated
+        by hive_orchestrator's scope check.
+    """
+
+    UC_WORKERS_WITH_SCOPE_GATE = (
+        "views_worker.py",
+        "functions_worker.py",
+        "grants_worker.py",
+        "tags_worker.py",
+        "row_filters_worker.py",
+        "column_masks_worker.py",
+        "policies_worker.py",
+        "monitors_worker.py",
+        "models_worker.py",
+        "connections_worker.py",
+        "foreign_catalogs_worker.py",
+        "online_tables_worker.py",
+        "comments_worker.py",
+        "sharing_worker.py",
+    )
+
+    HIVE_WORKERS_WITH_SCOPE_GATE = (
+        "hive_views_worker.py",
+        "hive_functions_worker.py",
+        "hive_grants_worker.py",
+    )
+
+    def test_uc_workers_check_include_uc_in_run(self):
+        for worker in self.UC_WORKERS_WITH_SCOPE_GATE:
+            src = _src(f"src/migrate/{worker}")
+            assert "include_uc" in src, (
+                f"{worker}: missing include_uc scope gate — a Hive-only "
+                f"migration (include_uc=False) would still run this UC worker."
+            )
+
+    def test_hive_workers_check_include_hive(self):
+        for worker in self.HIVE_WORKERS_WITH_SCOPE_GATE:
+            src = _src(f"src/migrate/{worker}")
+            assert "include_hive" in src, (
+                f"{worker}: missing include_hive scope gate — a UC-only "
+                f"migration (include_hive=False) would still run this Hive worker."
+            )
+
+    def test_scope_gate_short_circuits_before_work(self):
+        """Gate must appear before any substantive work (spark.sql,
+        AuthManager, execute_and_poll). If the gate is after ``config = ...``
+        but before those, you're fine. Placing it after a spark.sql call
+        defeats the purpose."""
+        import re
+        for worker in self.UC_WORKERS_WITH_SCOPE_GATE:
+            src = _src(f"src/migrate/{worker}")
+            gate_match = re.search(r"if not config\.(include_uc|include_hive)", src)
+            if not gate_match:
+                continue  # already caught above
+            gate_idx = gate_match.start()
+            # The FIRST spark.sql / execute_and_poll in run() must be AFTER
+            # the gate. But allow imports at the top and helper defs to
+            # contain these. Scope to the run() function body.
+            run_def = src.find("def run(")
+            if run_def == -1:
+                continue
+            body = src[run_def:]
+            body_gate = body.find(f"if not config.")
+            first_spark = body.find("spark.sql(")
+            first_exec = body.find("execute_and_poll(")
+            first_work = min(
+                x for x in (first_spark, first_exec) if x >= 0
+            ) if (first_spark >= 0 or first_exec >= 0) else -1
+            if first_work > 0 and body_gate > 0:
+                assert body_gate < first_work, (
+                    f"{worker}: scope gate appears AFTER spark.sql / "
+                    f"execute_and_poll in run() — gate at {body_gate}, "
+                    f"first work at {first_work}. Move the gate up."
+                )
+
+
 class TestRunAsConsistency:
     """All integration + migration jobs must run_as the same SPN
     declared in databricks.yml. A missing run_as on any job would run
