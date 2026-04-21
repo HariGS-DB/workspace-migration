@@ -253,6 +253,33 @@ if str(has_rf).lower() == "true":
         error_messages.append("Phase 3 T29: row filter not replayed on target.")
     else:
         print(f"Phase 3 T29 validated: row filter applied on {rf_rows[0]['object_name']}.")
+
+    # --- DDL sanitizer end-to-end (S.12) ---
+    # Not just "migration_status says validated" — fetch the external_customers
+    # table from TARGET and verify its row_filter is actually populated.
+    # Proves the strip-filter-from-DDL path in external_table_worker + the
+    # later row_filters_worker re-application on target both work.
+    try:
+        from common.auth import AuthManager  # noqa: E402
+        _auth = AuthManager(config, dbutils)  # noqa: F821
+        _tgt_info = _auth.target_client.tables.get(
+            "integration_test_src.test_schema.external_customers"
+        )
+        if getattr(_tgt_info, "row_filter", None) is None:
+            error_messages.append(
+                "DDL sanitizer E2E: external_customers on target has no "
+                "row_filter — strip-then-reapply chain broke. Sanitizer "
+                "stripped the filter from CREATE TABLE but row_filters_worker "
+                "didn't reapply it."
+            )
+        else:
+            print(
+                f"DDL sanitizer E2E validated: external_customers on target "
+                f"carries row_filter "
+                f"'{getattr(_tgt_info.row_filter, 'function_name', '?')}'"
+            )
+    except Exception as _exc:  # noqa: BLE001
+        error_messages.append(f"DDL sanitizer E2E: target lookup failed: {_exc}")
 else:
     print("Phase 3 T29: row filter fixture not seeded; skipping.")
 
@@ -268,6 +295,34 @@ if str(has_cm).lower() == "true":
         error_messages.append("Phase 3 T30: column mask not replayed on target.")
     else:
         print(f"Phase 3 T30 validated: column mask applied on {cm_rows[0]['object_name']}.")
+
+    # --- DDL sanitizer end-to-end: column mask on target (S.12) ---
+    # external_customers.customer_id should carry the mask on target
+    # even though external_table_worker stripped the MASK clause from
+    # the replayed CREATE TABLE (because mask_customer function hadn't
+    # been migrated yet at that stage).
+    try:
+        from common.auth import AuthManager  # noqa: E402
+        _auth = AuthManager(config, dbutils)  # noqa: F821
+        _tgt_info = _auth.target_client.tables.get(
+            "integration_test_src.test_schema.external_customers"
+        )
+        _masked_cols = [
+            c for c in (getattr(_tgt_info, "columns", None) or [])
+            if getattr(c, "mask", None) is not None
+        ]
+        if not _masked_cols:
+            error_messages.append(
+                "DDL sanitizer E2E: external_customers on target has no "
+                "column masks — strip-then-reapply chain broke for masks."
+            )
+        else:
+            print(
+                f"DDL sanitizer E2E validated: {len(_masked_cols)} column "
+                f"mask(s) on external_customers on target."
+            )
+    except Exception as _exc:  # noqa: BLE001
+        error_messages.append(f"DDL sanitizer E2E (mask): target lookup failed: {_exc}")
 else:
     print("Phase 3 T30: column mask fixture not seeded; skipping.")
 

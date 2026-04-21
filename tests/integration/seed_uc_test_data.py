@@ -15,6 +15,49 @@ except NameError:
 
 # COMMAND ----------
 
+# --- Pre-seed hygiene checks (S.14, S.15) ---
+# Verify the previous run's teardown left a clean slate. If any of these
+# fail, subsequent migrate steps are likely to hit stale-state errors
+# (TABLE_OR_VIEW_ALREADY_EXISTS, config pollution, etc.) — catch early
+# with a clear message.
+
+import os  # noqa: E402
+from common.config import MigrationConfig, _resolve_bundle_config_path  # type: ignore[import-not-found]  # noqa: E402
+
+_config_path = _resolve_bundle_config_path()
+_backup_path = _config_path + ".pre-integration-test.bak"
+if os.path.exists(_backup_path):
+    # A leftover backup means previous teardown didn't restore the
+    # config — this run's setup_test_config would have layered another
+    # backup on top. Surface loud.
+    print(
+        f"WARN pre-seed (S.14): leftover {_backup_path!r} — previous "
+        f"teardown didn't restore config.yaml. setup_test_config should "
+        f"have preserved the older backup; verify teardown ran."
+    )
+
+# Verify target-side integration_test_src is gone (previous teardown
+# should have dropped it). If it's still there, migrate's DEEP CLONE
+# will fail with TABLE_OR_VIEW_ALREADY_EXISTS.
+try:
+    _config = MigrationConfig.from_workspace_file()
+    from common.auth import AuthManager  # noqa: E402
+    _auth = AuthManager(_config, dbutils)  # noqa: F821
+    try:
+        _auth.target_client.catalogs.get("integration_test_src")
+        print(
+            "WARN pre-seed (S.15): target still has integration_test_src — "
+            "previous teardown did not drop it. migrate may fail with "
+            "TABLE_OR_VIEW_ALREADY_EXISTS."
+        )
+    except Exception:  # noqa: BLE001
+        # 404 expected — catalog correctly absent.
+        pass
+except Exception as _exc:  # noqa: BLE001
+    print(f"Pre-seed hygiene check skipped: {_exc}")
+
+# COMMAND ----------
+
 # Seed UC test data: create a small source catalog with table, view, function, volume.
 
 spark.sql("CREATE CATALOG IF NOT EXISTS integration_test_src")  # noqa: F821
