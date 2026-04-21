@@ -240,12 +240,46 @@ def ensure_target_catalogs_and_schemas(
 # Notebook execution
 
 
+def _validate_rls_cm_strategy(config: MigrationConfig) -> str:
+    """Validate ``config.rls_cm_strategy`` and return the normalized value.
+
+    Runs BEFORE any side-effecting setup (share creation, API calls) so
+    misconfiguration fails loud without leaving orphan state on source.
+
+    Supported: ``""`` (skip affected tables) or ``"drop_and_restore"``
+    (planned — raises ``NotImplementedError`` today so nobody flips the
+    flag on and silently assumes it works).
+    """
+    strategy = (config.rls_cm_strategy or "").strip().lower()
+    if strategy not in ("", "drop_and_restore"):
+        msg = (
+            f"Unknown rls_cm_strategy {config.rls_cm_strategy!r}. "
+            f"Supported values: '' (skip) or 'drop_and_restore' (planned)."
+        )
+        raise ValueError(msg)
+    if strategy == "drop_and_restore":
+        msg = (
+            "rls_cm_strategy='drop_and_restore' is not yet implemented. "
+            "See README.md for the limitation and planned path. "
+            "Options today: migrate the tables' governance to ABAC policies "
+            "first (Delta Sharing supports sharing ABAC-protected tables), "
+            "or leave rls_cm_strategy empty and accept that tables with "
+            "row filter / column mask will be skipped with status "
+            "'skipped_by_rls_cm_policy' and will not have data on target."
+        )
+        raise NotImplementedError(msg)
+    return strategy
+
+
 def run(dbutils, spark) -> None:  # noqa: ARG001
     """Entry point when running as a Databricks notebook."""
     config = MigrationConfig.from_workspace_file()
     if not config.include_uc:
         logger.info("Skipping setup_sharing: scope.include_uc=false.")
         return
+    # Validate config-gated flags BEFORE any side effects so operator errors
+    # (bad rls_cm_strategy value) don't leave orphan shares / recipients.
+    _validate_rls_cm_strategy(config)
     auth = AuthManager(config, dbutils)
     spark_session = spark
     tracker = TrackingManager(spark_session, config)
@@ -268,34 +302,9 @@ def run(dbutils, spark) -> None:  # noqa: ARG001
     # 4a. Filter out tables with row filter / column mask. Delta Sharing
     #     refuses to share tables with legacy RLS/CM
     #     (``InvalidParameterValue: Table has row level security or column
-    #     masks, which is not supported by Delta Sharing``). ``rls_cm_strategy``
-    #     gates the behavior:
-    #
-    #       ""                  — default; skip affected tables, record
-    #                             ``skipped_by_rls_cm_policy`` in
-    #                             migration_status. No data moves to target.
-    #       "drop_and_restore"  — not yet implemented; see README. Fail fast
-    #                             so users don't think they enabled it.
-    #
-    strategy = (config.rls_cm_strategy or "").strip().lower()
-    if strategy not in ("", "drop_and_restore"):
-        msg = (
-            f"Unknown rls_cm_strategy {config.rls_cm_strategy!r}. "
-            f"Supported values: '' (skip) or 'drop_and_restore' (planned)."
-        )
-        raise ValueError(msg)
-    if strategy == "drop_and_restore":
-        msg = (
-            "rls_cm_strategy='drop_and_restore' is not yet implemented. "
-            "See README.md for the limitation and planned path. "
-            "Options today: migrate the tables' governance to ABAC policies "
-            "first (Delta Sharing supports sharing ABAC-protected tables), "
-            "or leave rls_cm_strategy empty and accept that tables with "
-            "row filter / column mask will be skipped with status "
-            "'skipped_by_rls_cm_policy' and will not have data on target."
-        )
-        raise NotImplementedError(msg)
-
+    #     masks, which is not supported by Delta Sharing``). Strategy was
+    #     already validated at the top of ``run()``; only "" reaches here
+    #     today.
     rls_cm_fqns = tracker.get_tables_with_rls_cm()
     tables_to_share: list[dict] = []
     skipped_rls_cm: list[dict] = []

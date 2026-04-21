@@ -3,6 +3,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from migrate.setup_sharing import (
+    _validate_rls_cm_strategy,
     add_tables_to_share,
     ensure_share_consumer_catalog,
     ensure_target_catalogs_and_schemas,
@@ -211,3 +212,51 @@ class TestSetupSharing:
         with pytest.raises(RuntimeError, match="No target-side provider"):
             ensure_share_consumer_catalog(auth, "cp_migration_share", dry_run=False)
         auth.target_client.catalogs.create.assert_not_called()
+
+
+class TestRlsCmStrategyGating:
+    """Verify ``_validate_rls_cm_strategy``'s contract.
+
+    The flag is intentionally gated: today the drop-and-restore flow is
+    designed but not implemented. Setting the flag should fail loud so
+    operators don't silently assume the path is live. Any other non-empty
+    value should also be rejected (typo protection). The validator runs
+    BEFORE any side-effecting setup so misconfiguration doesn't leave
+    orphan shares / recipients on source.
+    """
+
+    def _config(self, strategy: str) -> MagicMock:
+        config = MagicMock()
+        config.rls_cm_strategy = strategy
+        return config
+
+    def test_empty_strategy_returns_empty(self):
+        """Default skip path — validator returns the normalized empty string."""
+        assert _validate_rls_cm_strategy(self._config("")) == ""
+
+    def test_none_strategy_treated_as_empty(self):
+        """Some config loaders might yield None; treat as default skip."""
+        assert _validate_rls_cm_strategy(self._config(None)) == ""
+
+    def test_whitespace_strategy_treated_as_empty(self):
+        assert _validate_rls_cm_strategy(self._config("   ")) == ""
+
+    def test_drop_and_restore_raises_not_implemented(self):
+        with pytest.raises(NotImplementedError, match="not yet implemented"):
+            _validate_rls_cm_strategy(self._config("drop_and_restore"))
+
+    def test_drop_and_restore_mixed_case_still_raises(self):
+        """Validator normalizes casing so a typo like ``Drop_And_Restore``
+        still trips the gate — no silent fall-through into skip mode."""
+        with pytest.raises(NotImplementedError):
+            _validate_rls_cm_strategy(self._config("Drop_And_Restore"))
+
+    def test_unknown_value_raises_value_error(self):
+        with pytest.raises(ValueError, match="Unknown rls_cm_strategy"):
+            _validate_rls_cm_strategy(self._config("bogus_value"))
+
+    def test_unknown_value_error_includes_offending_string(self):
+        """Error message should surface the exact value so the operator
+        can locate their typo without a log scavenger hunt."""
+        with pytest.raises(ValueError, match="'typo_value'"):
+            _validate_rls_cm_strategy(self._config("typo_value"))

@@ -268,6 +268,47 @@ dbutils.jobs.taskValues.set(  # type: ignore[name-defined]  # noqa: F821
 
 # COMMAND ----------
 
+# --- RLS/CM skip-path fixture ---
+# A managed Delta table with row filter AND column mask. Delta Sharing
+# refuses to share these, so with rls_cm_strategy="" (default) the tool
+# must skip the table and record status=skipped_by_rls_cm_policy. The
+# companion assertion in test_uc_end_to_end.py verifies that.
+
+_has_rls_cm_managed = False
+try:
+    spark.sql(  # noqa: F821
+        """
+        CREATE OR REPLACE TABLE integration_test_src.test_schema.managed_sensitive (
+            record_id INT,
+            account_id INT,
+            region STRING
+        ) USING DELTA
+        """
+    )
+    spark.sql(  # noqa: F821
+        "INSERT INTO integration_test_src.test_schema.managed_sensitive VALUES "
+        "(1, 100, 'US'), (2, 200, 'UK'), (3, 300, 'US')"
+    )
+    # Reuse region_filter + mask_customer from above (both were created
+    # in integration_test_src.test_schema).
+    spark.sql(  # noqa: F821
+        "ALTER TABLE integration_test_src.test_schema.managed_sensitive "
+        "SET ROW FILTER integration_test_src.test_schema.region_filter ON (region)"
+    )
+    spark.sql(  # noqa: F821
+        "ALTER TABLE integration_test_src.test_schema.managed_sensitive "
+        "ALTER COLUMN account_id SET MASK integration_test_src.test_schema.mask_customer"
+    )
+    _has_rls_cm_managed = True
+    print("Applied row filter + column mask on managed_sensitive (managed table).")
+except Exception as _exc:  # noqa: BLE001
+    print(f"Skipped managed RLS/CM seed: {_exc}")
+dbutils.jobs.taskValues.set(  # type: ignore[name-defined]  # noqa: F821
+    key="has_rls_cm_managed", value="true" if _has_rls_cm_managed else "false"
+)
+
+# COMMAND ----------
+
 # Task 32 — Comments on catalog/schema/table
 try:
     spark.sql(  # noqa: F821

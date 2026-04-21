@@ -285,6 +285,49 @@ else:
     print(f"Phase 3 T32 validated: {len(comment_rows)} comment row(s) replayed.")
 
 # COMMAND ----------
+# --- RLS/CM skip-path assertion ---
+# managed_sensitive has row filter + column mask on a managed Delta table.
+# Delta Sharing refuses to share these; with rls_cm_strategy="" (default)
+# setup_sharing records status=skipped_by_rls_cm_policy and the table's
+# data never reaches target.
+
+has_rls_cm_managed = dbutils.jobs.taskValues.get(  # type: ignore[name-defined]  # noqa: F821
+    taskKey="seed_uc", key="has_rls_cm_managed", debugValue="false"
+)
+if str(has_rls_cm_managed).lower() == "true":
+    sensitive_rows = full_status.filter(
+        "object_type = 'managed_table' "
+        "AND object_name LIKE '%managed_sensitive%'"
+    ).collect()
+    if not sensitive_rows:
+        error_messages.append(
+            "RLS/CM skip: no migration_status row for managed_sensitive; "
+            "setup_sharing should have recorded skipped_by_rls_cm_policy."
+        )
+    else:
+        # The worker can append multiple rows over the run's lifetime; take
+        # the latest by migrated_at (get_latest_migration_status in
+        # full_status already does this per (object_name, object_type)).
+        row = sensitive_rows[0]
+        if row["status"] != "skipped_by_rls_cm_policy":
+            error_messages.append(
+                f"RLS/CM skip: managed_sensitive status is {row['status']!r}, "
+                f"expected 'skipped_by_rls_cm_policy'."
+            )
+        elif not row.get("error_message") or "Delta Sharing" not in (row["error_message"] or ""):
+            error_messages.append(
+                "RLS/CM skip: managed_sensitive skipped, but error_message "
+                "does not mention Delta Sharing — operator-visible reason is missing."
+            )
+        else:
+            print(
+                "RLS/CM skip validated: managed_sensitive recorded "
+                "'skipped_by_rls_cm_policy' with Delta-Sharing reason."
+            )
+else:
+    print("RLS/CM skip: managed_sensitive fixture not seeded; skipping.")
+
+# COMMAND ----------
 
 if error_messages:
     raise AssertionError(
