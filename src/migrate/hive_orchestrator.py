@@ -51,10 +51,10 @@ if _is_notebook():
             dbutils.jobs.taskValues.set(key=f"{_cat}_batches", value=json.dumps([]))  # type: ignore[name-defined] # noqa: F821
         dbutils.jobs.taskValues.set(key="hive_view_list", value=json.dumps([]))  # type: ignore[name-defined] # noqa: F821
         dbutils.jobs.taskValues.set(key="hive_function_list", value=json.dumps([]))  # type: ignore[name-defined] # noqa: F821
-        # Short-circuit the rest of the notebook — use sys.exit so downstream
-        # cells don't execute. Non-notebook imports fall through harmlessly
-        # because _is_notebook() returned False above.
-        sys.exit(0)
+        # Short-circuit the rest of the notebook. dbutils.notebook.exit is
+        # the correct idiom — sys.exit raises SystemExit, which Databricks
+        # Jobs marks as FAILED even with code 0.
+        dbutils.notebook.exit("skipped: include_hive=false")  # type: ignore[name-defined] # noqa: F821
 
     tracker = TrackingManager(spark, config)  # type: ignore[name-defined] # noqa: F821
 

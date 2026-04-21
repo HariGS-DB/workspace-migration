@@ -124,7 +124,9 @@ class CatalogExplorer:
         """Return a CREATE OR REPLACE VIEW/TABLE statement for the given object.
 
         For views, prefer information_schema.views (view_definition) so we get
-        the original SQL body without any SHOW CREATE quirks.
+        the original SQL body without any SHOW CREATE quirks. For UC-managed
+        Iceberg tables (which don't support SHOW CREATE TABLE), synthesize a
+        CREATE TABLE statement from information_schema.columns.
         """
         parts = object_fqn.strip("`").split("`.`")
         if len(parts) == 3:
@@ -142,8 +144,47 @@ class CatalogExplorer:
                     return f"CREATE OR REPLACE VIEW `{catalog}`.`{schema}`.`{name}` AS {row.view_definition}"
             except Exception:  # noqa: BLE001
                 pass  # fall through to SHOW CREATE
-        row = self.spark.sql(f"SHOW CREATE TABLE {object_fqn}").first()  # type: ignore[attr-defined]
-        return row.createtab_stmt  # type: ignore[union-attr]
+        try:
+            row = self.spark.sql(f"SHOW CREATE TABLE {object_fqn}").first()  # type: ignore[attr-defined]
+            return row.createtab_stmt  # type: ignore[union-attr]
+        except Exception as exc:  # noqa: BLE001
+            # UC-managed Iceberg raises MANAGED_ICEBERG_OPERATION_NOT_SUPPORTED for
+            # SHOW CREATE TABLE. Fall back to synthesizing the DDL from
+            # information_schema.columns so iceberg migration can proceed.
+            if "MANAGED_ICEBERG" in str(exc) or "SHOW CREATE TABLE" in str(exc):
+                if len(parts) == 3:
+                    synthetic = self._build_create_stmt_from_columns(parts[0], parts[1], parts[2])
+                    if synthetic:
+                        return synthetic
+            raise
+
+    def _build_create_stmt_from_columns(self, catalog: str, schema: str, name: str) -> str:
+        """Synthesize ``CREATE TABLE ... USING ICEBERG`` from information_schema.
+
+        Used as a fallback when SHOW CREATE TABLE is unsupported (UC-managed
+        Iceberg). Best-effort — captures columns + nullability, omits partition
+        spec / TBLPROPERTIES (iceberg migration is already Option A — lossy).
+        """
+        rows = self.spark.sql(  # type: ignore[attr-defined]
+            f"""
+            SELECT column_name, full_data_type, is_nullable
+            FROM `{catalog}`.`information_schema`.`columns`
+            WHERE table_schema = '{schema}' AND table_name = '{name}'
+            ORDER BY ordinal_position
+            """
+        ).collect()
+        if not rows:
+            return ""
+        col_defs = []
+        for r in rows:
+            null_clause = "" if (r.is_nullable or "").upper() == "YES" else " NOT NULL"
+            col_defs.append(f"  `{r.column_name}` {r.full_data_type}{null_clause}")
+        cols_sql = ",\n".join(col_defs)
+        return (
+            f"CREATE TABLE `{catalog}`.`{schema}`.`{name}` (\n"
+            f"{cols_sql}\n"
+            f") USING ICEBERG"
+        )
 
     def get_function_ddl(self, function_fqn: str) -> str:
         """Return the full CREATE OR REPLACE FUNCTION statement.

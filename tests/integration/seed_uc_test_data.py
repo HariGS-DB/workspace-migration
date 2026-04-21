@@ -197,9 +197,38 @@ dbutils.jobs.taskValues.set(  # type: ignore[name-defined]  # noqa: F821
 
 # COMMAND ----------
 
-# Task 29 — Row filter function + ALTER TABLE SET ROW FILTER
+# Task 29 / 30 — Row filter + column mask applied to an EXTERNAL table.
+#
+# Delta Sharing refuses tables that carry row-level security or column masks
+# (InvalidParameterValue), so applying these to a managed table breaks
+# setup_sharing. External tables are migrated via DDL replay (not Delta
+# Sharing), so they can carry filters/masks without blocking the share.
+# The migration tool's setup_sharing → filter/mask workers chain covers
+# external tables fine; discovery reads filter/mask metadata from
+# information_schema regardless of table_type.
+
+_external_customers_location = (
+    "abfss://external-data@stextsourcemig36cd38.dfs.core.windows.net/external_customers"
+)
+
 _has_row_filter = False
+_has_column_mask = False
 try:
+    spark.sql(  # noqa: F821
+        f"""
+        CREATE OR REPLACE TABLE integration_test_src.test_schema.external_customers (
+            customer_id INT,
+            name STRING,
+            region STRING
+        )
+        USING DELTA
+        LOCATION '{_external_customers_location}'
+        """
+    )
+    spark.sql(  # noqa: F821
+        "INSERT INTO integration_test_src.test_schema.external_customers VALUES "
+        "(1, 'Alice', 'US'), (2, 'Bob', 'UK')"
+    )
     spark.sql(  # noqa: F821
         """
         CREATE OR REPLACE FUNCTION integration_test_src.test_schema.region_filter(region STRING)
@@ -207,34 +236,13 @@ try:
         RETURN region = 'US' OR is_account_group_member('admins')
         """
     )
-    # Row filters need a column to filter on — add one and populate
     spark.sql(  # noqa: F821
-        "ALTER TABLE integration_test_src.test_schema.managed_orders "
-        "ADD COLUMN IF NOT EXISTS region STRING"
-    )
-    spark.sql(  # noqa: F821
-        "UPDATE integration_test_src.test_schema.managed_orders SET region = 'US' WHERE order_id = 1"
-    )
-    spark.sql(  # noqa: F821
-        "UPDATE integration_test_src.test_schema.managed_orders SET region = 'UK' WHERE order_id = 2"
-    )
-    spark.sql(  # noqa: F821
-        "ALTER TABLE integration_test_src.test_schema.managed_orders "
+        "ALTER TABLE integration_test_src.test_schema.external_customers "
         "SET ROW FILTER integration_test_src.test_schema.region_filter ON (region)"
     )
     _has_row_filter = True
-    print("Applied row filter region_filter on managed_orders.region.")
-except Exception as _exc:  # noqa: BLE001
-    print(f"Skipped row filter seed: {_exc}")
-dbutils.jobs.taskValues.set(  # type: ignore[name-defined]  # noqa: F821
-    key="has_row_filter", value="true" if _has_row_filter else "false"
-)
+    print("Applied row filter region_filter on external_customers.region.")
 
-# COMMAND ----------
-
-# Task 30 — Column mask function + ALTER COLUMN SET MASK
-_has_column_mask = False
-try:
     spark.sql(  # noqa: F821
         """
         CREATE OR REPLACE FUNCTION integration_test_src.test_schema.mask_customer(cid INT)
@@ -243,13 +251,17 @@ try:
         """
     )
     spark.sql(  # noqa: F821
-        "ALTER TABLE integration_test_src.test_schema.managed_orders "
+        "ALTER TABLE integration_test_src.test_schema.external_customers "
         "ALTER COLUMN customer_id SET MASK integration_test_src.test_schema.mask_customer"
     )
     _has_column_mask = True
-    print("Applied column mask mask_customer on managed_orders.customer_id.")
+    print("Applied column mask mask_customer on external_customers.customer_id.")
 except Exception as _exc:  # noqa: BLE001
-    print(f"Skipped column mask seed: {_exc}")
+    print(f"Skipped row filter / column mask seed: {_exc}")
+
+dbutils.jobs.taskValues.set(  # type: ignore[name-defined]  # noqa: F821
+    key="has_row_filter", value="true" if _has_row_filter else "false"
+)
 dbutils.jobs.taskValues.set(  # type: ignore[name-defined]  # noqa: F821
     key="has_column_mask", value="true" if _has_column_mask else "false"
 )

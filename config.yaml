@@ -14,11 +14,11 @@
 # ------------------------------------------------------------
 
 # --- Workspaces (required) ---
-source_workspace_url: https://adb-SOURCE.azuredatabricks.net
-target_workspace_url: https://adb-TARGET.azuredatabricks.net
+source_workspace_url: https://adb-7405617542499984.4.azuredatabricks.net
+target_workspace_url: https://adb-7405606200983417.17.azuredatabricks.net
 
 # --- SPN auth (required) ---
-spn_client_id: REPLACE_WITH_APPLICATION_ID
+spn_client_id: d0354350-71fa-4bb4-aa55-8adb5dd9f1ae
 spn_secret_scope: migration
 spn_secret_key: spn-secret
 
@@ -27,7 +27,7 @@ spn_secret_key: spn-secret
 # hive_metastore catalog (discovery + migrate workflows will run Hive steps).
 scope:
   include_uc: true
-  include_hive: false
+  include_hive: true
 
 # --- Scoping ---
 # Comma-separated; leave empty to include everything.
@@ -44,6 +44,13 @@ tracking_schema: cp_migration
 # Set migrate_hive_dbfs_root=true to include Hive managed tables stored in
 # DBFS root; required in that case: hive_dbfs_target_path (ADLS path the
 # migration SPN can write to).
-migrate_hive_dbfs_root: false
-hive_dbfs_target_path: ""
+migrate_hive_dbfs_root: true
+hive_dbfs_target_path: "abfss://external-data@stextsourcemig36cd38.dfs.core.windows.net/hive_migrated"
 hive_target_catalog: hive_upgraded
+
+# --- Iceberg managed tables (Phase 2.5.B) ---
+# DEEP CLONE does not support UC-managed Iceberg; 'ddl_replay' uses
+# CREATE TABLE + INSERT INTO via cp_migration_share (Option A). Losses:
+# snapshot history, time travel, branches/tags (target gets a compacted
+# current-state snapshot). Leave unset / empty to skip Iceberg tables.
+iceberg_strategy: ddl_replay

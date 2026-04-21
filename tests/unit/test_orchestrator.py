@@ -61,3 +61,22 @@ class TestOrchestrator:
         assert len(batches) == 1
         parsed = json.loads(batches[0])
         assert parsed == objects
+
+    def test_batch_strips_create_statement(self):
+        """create_statement is stripped to keep task-value payloads under
+        Jobs' 3000-byte for_each limit; workers re-query the full row."""
+        objects = [
+            {
+                "object_name": "`cat`.`sch`.`tbl`",
+                "object_type": "managed_table",
+                "create_statement": "CREATE TABLE ...  (... very long DDL ...)",
+                "row_count": 100,
+            },
+        ]
+        batches = build_batches(objects, batch_size=10)
+
+        parsed = json.loads(batches[0])
+        assert "create_statement" not in parsed[0]
+        # other fields preserved
+        assert parsed[0]["object_name"] == "`cat`.`sch`.`tbl`"
+        assert parsed[0]["row_count"] == 100

@@ -4,6 +4,9 @@ bundle:
 variables:
   job_prefix:
     default: "uc-migration"
+  migration_spn_id:
+    description: "SPN application ID that jobs run as (owns tracking + test catalogs)."
+    default: "d0354350-71fa-4bb4-aa55-8adb5dd9f1ae"
 
 workspace:
   # Deploy to a Shared workspace path so the bundle is visible to all migration
@@ -11,6 +14,10 @@ workspace:
   # and is re-synced to ${workspace.file_path}/config.yaml on every
   # ``databricks bundle deploy``. Edit the file locally and redeploy.
   root_path: /Shared/cp_migration/${bundle.target}
+
+# Bundle-level run_as conflicts with dashboards (which must run as owner).
+# Each job sets run_as: ${var.migration_spn_id} individually in its resource
+# file instead — dashboards are left with default (deployer) ownership.
 
 # Acknowledge the shared path; operators should tighten to a dedicated
 # admin group in prod (replace 'users' with e.g. 'migration_admins').
@@ -31,6 +38,10 @@ targets:
       name_prefix: "[dev-${workspace.current_user.short_name}] "
       tags:
         dev: "${workspace.current_user.userName}"
+    resources:
+      # Dashboards don't support run_as != owner, so skip in dev (SPN run_as).
+      dashboards:
+        migration_dashboard: null
 
   test:
     presets:

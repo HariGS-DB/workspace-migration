@@ -3,6 +3,8 @@ resources:
     hive_integration_test:
       name: "${var.job_prefix}-hive-integration-test"
       description: "End-to-end integration test for the Hive migration workflow."
+      run_as:
+        service_principal_name: ${var.migration_spn_id}
       tasks:
         - task_key: seed_hive
           notebook_task:

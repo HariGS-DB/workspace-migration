@@ -94,6 +94,7 @@ def _replay_mv_st_ddl(
     auth: AuthManager,
     wh_id: str,
     dry_run: bool,
+    tracker: TrackingManager,
 ) -> tuple[str, str | None]:
     """Replay the CREATE statement on target and issue an initial REFRESH.
 
@@ -102,7 +103,12 @@ def _replay_mv_st_ddl(
     """
     obj_name = obj_info["object_name"]
     obj_type = obj_info["object_type"]  # "mv" or "st"
+    # create_statement is stripped from for_each batch payloads to stay under
+    # Jobs' 3000-byte limit; re-hydrate from discovery_inventory.
     create_stmt = obj_info.get("create_statement") or ""
+    if not create_stmt:
+        full_row = tracker.get_row(obj_type, obj_name)
+        create_stmt = (full_row or {}).get("create_statement") or ""
     if not create_stmt:
         return "failed", "Missing create_statement in discovery row"
 
@@ -187,7 +193,7 @@ def migrate_mv_st(
         }
 
     status, err = _replay_mv_st_ddl(
-        obj_info, auth=auth, wh_id=wh_id, dry_run=config.dry_run,
+        obj_info, auth=auth, wh_id=wh_id, dry_run=config.dry_run, tracker=tracker,
     )
     return {
         "object_name": obj_name,
