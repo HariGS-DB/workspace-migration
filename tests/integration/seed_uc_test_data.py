@@ -268,6 +268,47 @@ dbutils.jobs.taskValues.set(  # type: ignore[name-defined]  # noqa: F821
 
 # COMMAND ----------
 
+# --- RLS/CM skip-path fixture ---
+# A managed Delta table with row filter AND column mask. Delta Sharing
+# refuses to share these, so with rls_cm_strategy="" (default) the tool
+# must skip the table and record status=skipped_by_rls_cm_policy. The
+# companion assertion in test_uc_end_to_end.py verifies that.
+
+_has_rls_cm_managed = False
+try:
+    spark.sql(  # noqa: F821
+        """
+        CREATE OR REPLACE TABLE integration_test_src.test_schema.managed_sensitive (
+            record_id INT,
+            account_id INT,
+            region STRING
+        ) USING DELTA
+        """
+    )
+    spark.sql(  # noqa: F821
+        "INSERT INTO integration_test_src.test_schema.managed_sensitive VALUES "
+        "(1, 100, 'US'), (2, 200, 'UK'), (3, 300, 'US')"
+    )
+    # Reuse region_filter + mask_customer from above (both were created
+    # in integration_test_src.test_schema).
+    spark.sql(  # noqa: F821
+        "ALTER TABLE integration_test_src.test_schema.managed_sensitive "
+        "SET ROW FILTER integration_test_src.test_schema.region_filter ON (region)"
+    )
+    spark.sql(  # noqa: F821
+        "ALTER TABLE integration_test_src.test_schema.managed_sensitive "
+        "ALTER COLUMN account_id SET MASK integration_test_src.test_schema.mask_customer"
+    )
+    _has_rls_cm_managed = True
+    print("Applied row filter + column mask on managed_sensitive (managed table).")
+except Exception as _exc:  # noqa: BLE001
+    print(f"Skipped managed RLS/CM seed: {_exc}")
+dbutils.jobs.taskValues.set(  # type: ignore[name-defined]  # noqa: F821
+    key="has_rls_cm_managed", value="true" if _has_rls_cm_managed else "false"
+)
+
+# COMMAND ----------
+
 # Task 32 — Comments on catalog/schema/table
 try:
     spark.sql(  # noqa: F821
@@ -294,6 +335,27 @@ if config.spn_client_id:
         f"GRANT USE CATALOG, USE SCHEMA, SELECT, EXECUTE, READ VOLUME ON CATALOG integration_test_src TO `{config.spn_client_id}`"
     )
     print(f"Granted migration SPN {config.spn_client_id} perms on integration_test_src.")
+
+# Schema-level grant to a well-known principal (``account users``) so
+# test_uc_end_to_end can assert a specific grant replays on target.
+# ``account users`` exists on every Databricks account, so the grant is
+# portable across test environments.
+# Note: table-level grants are out of scope for grants_worker today
+# (only CATALOG + SCHEMA grants migrate). Seeding at schema level so
+# the assertion exercises a path the tool actually supports.
+_has_schema_grant = False
+try:
+    spark.sql(  # noqa: F821
+        "GRANT SELECT ON SCHEMA integration_test_src.test_schema "
+        "TO `account users`"
+    )
+    _has_schema_grant = True
+    print("Granted SELECT on test_schema to `account users`.")
+except Exception as _exc:  # noqa: BLE001
+    print(f"Skipped schema-level grant seed: {_exc}")
+dbutils.jobs.taskValues.set(  # type: ignore[name-defined]  # noqa: F821
+    key="has_schema_grant", value="true" if _has_schema_grant else "false"
+)
 
 # COMMAND ----------
 

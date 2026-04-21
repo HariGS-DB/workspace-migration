@@ -88,22 +88,30 @@ location used for Hive DBFS-root migration.
 
 ### Running the integration tests
 
-Same shape as above — edit the workspace `config.yaml` first:
+The integration workflows override the workspace `config.yaml` per-run
+(backup before, restore in teardown), so you only need to populate the
+environment-specific fields **once** after deploy.
 
 1. `databricks bundle deploy -t dev --var migration_spn_id=<your-app-id>`
-2. Edit `${workspace.file_path}/config.yaml`:
+2. Edit `${workspace.file_path}/config.yaml` with the environment-specific
+   fields once:
    - Real workspace URLs, SPN app ID, secret scope/key
-   - `scope.include_hive: true` (the Hive integration test requires it)
-   - `iceberg_strategy: ddl_replay` (if the source has UC-managed Iceberg
-     tables in the fixture)
-   - `migrate_hive_dbfs_root: true` + `hive_dbfs_target_path:
-     abfss://<container>@<account>.dfs.core.windows.net/<path>` for the
-     Hive DBFS-root branch (the SPN needs READ_FILES + WRITE_FILES +
-     CREATE_EXTERNAL_TABLE on the corresponding external location)
-3. Trigger `uc_integration_test` — waits for the SPN+secrets to be set
-   up on the source workspace, then runs seed → pre_check → discovery →
-   migrate → test → teardown
-4. Trigger `hive_integration_test` — same shape for the Hive branch
+   - `hive_dbfs_target_path: abfss://<container>@<account>.dfs.core.windows.net/<path>`
+     (the SPN needs `READ_FILES` + `WRITE_FILES` +
+     `CREATE_EXTERNAL_TABLE` on the corresponding external location)
+3. Trigger `uc_integration_test` — the first task (`setup_test_config`)
+   rewrites the workspace config.yaml with UC-appropriate toggles
+   (`include_uc=true`, `include_hive=false`, `iceberg_strategy=ddl_replay`),
+   runs seed → pre_check → discovery → migrate → test, and `teardown_uc`
+   restores the original config.yaml from the backup.
+4. Trigger `hive_integration_test` — same pattern, with Hive-appropriate
+   toggles (`include_hive=true`, `migrate_hive_dbfs_root=true`,
+   `iceberg_strategy=""`). Your operator-set `hive_dbfs_target_path`
+   from step 2 is preserved — workflows don't overwrite env-specific
+   paths, only the behavioral toggles.
+
+The per-workflow toggles live in each workflow's YAML task parameters;
+edit them there if you need to change test behavior.
 
 See [docs/external_hive_metastore.md](docs/external_hive_metastore.md) for
 the Hive-specific cluster/init-script reconfiguration checklist.

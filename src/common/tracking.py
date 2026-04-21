@@ -197,7 +197,14 @@ class TrackingManager:
         """)
 
     def get_pending_objects(self, object_type: str) -> list[dict]:
-        """Return discovery inventory objects that have not been validated or skipped."""
+        """Return discovery inventory objects that have not been validated or skipped.
+
+        Any status that starts with ``skipped`` is treated as final so that
+        workers honour flag-based skips (``skipped_by_config``,
+        ``skipped_by_pipeline_migration``, ``skipped_by_rls_cm_policy``) the
+        same way as the canonical ``skipped``. This keeps the pattern
+        open-ended — new skip-reason statuses don't need a code change here.
+        """
         rows = self.spark.sql(f"""
             WITH latest_status AS (
                 SELECT *
@@ -216,7 +223,8 @@ class TrackingManager:
             LEFT JOIN latest_status s
                 ON d.object_name = s.object_name AND d.object_type = s.object_type
             WHERE d.object_type = '{object_type}'
-              AND (s.status IS NULL OR s.status NOT IN ('validated', 'skipped'))
+              AND (s.status IS NULL
+                   OR (s.status != 'validated' AND s.status NOT LIKE 'skipped%'))
         """).collect()
         return [row.asDict() for row in rows]
 

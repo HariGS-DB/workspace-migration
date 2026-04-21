@@ -158,6 +158,38 @@ class CatalogExplorer:
                         return synthetic
             raise
 
+    @staticmethod
+    def strip_filter_mask_clauses(ddl: str) -> str:
+        """Remove row filter / column mask clauses from a CREATE TABLE DDL.
+
+        SHOW CREATE TABLE on a UC table with legacy RLS/CM applied includes
+        inline ``WITH ROW FILTER ... ON (...)`` and per-column ``MASK
+        <fqn> [USING (cols)]`` clauses. Replaying that DDL on target fails
+        with ``ROUTINE_NOT_FOUND`` because the filter/mask functions
+        haven't been migrated yet (functions_worker runs AFTER tables).
+        Strip both so the table is created bare; ``row_filters_worker`` and
+        ``column_masks_worker`` apply them after the target functions
+        exist.
+        """
+        import re
+
+        # Strip ``WITH ROW FILTER <fqn> ON (cols)``.
+        ddl = re.sub(
+            r"\s*\bWITH\s+ROW\s+FILTER\b[^(]*\([^)]*\)",
+            "",
+            ddl,
+            flags=re.IGNORECASE,
+        )
+        # Strip per-column ``MASK <fqn> [USING (cols)]`` appearing inline
+        # in column definitions.
+        ddl = re.sub(
+            r"\s+MASK\s+[^\s,()]+(?:\s+USING\s*\([^)]*\))?",
+            "",
+            ddl,
+            flags=re.IGNORECASE,
+        )
+        return ddl
+
     def _build_create_stmt_from_columns(self, catalog: str, schema: str, name: str) -> str:
         """Synthesize ``CREATE TABLE ... USING ICEBERG`` from information_schema.
 
@@ -379,39 +411,59 @@ class CatalogExplorer:
         return results
 
     def list_row_filters(self, catalog: str, schema: str) -> list[dict]:
-        """Row filters applied to tables via ALTER TABLE ... SET ROW FILTER."""
+        """Row filters applied to tables via ALTER TABLE ... SET ROW FILTER.
+
+        Uses the UC Tables API (authoritative) instead of
+        ``information_schema.tables.row_filter_name`` — the latter column
+        doesn't surface on every runtime and silently returns empty,
+        which means discovery misses filters and migrate_row_filters has
+        nothing to replay.
+        """
         results: list[dict] = []
-        with _suppress():
-            rows = self.spark.sql(  # type: ignore[attr-defined]
-                f"SELECT table_name, row_filter_name, row_filter_input_columns "
-                f"FROM `{catalog}`.`information_schema`.`tables` "
-                f"WHERE table_schema = '{schema}' AND row_filter_name IS NOT NULL"
-            ).collect()
-            for r in rows:
-                results.append({
-                    "table_fqn": f"`{catalog}`.`{schema}`.`{r.table_name}`",
-                    "filter_function_fqn": r.row_filter_name,
-                    "filter_columns": list(r.row_filter_input_columns)
-                    if r.row_filter_input_columns else [],
-                })
+        try:
+            tables = self.auth_manager.source_client.tables.list(  # type: ignore[attr-defined]
+                catalog_name=catalog, schema_name=schema,
+            )
+        except Exception:  # noqa: BLE001
+            return results
+        for t in tables:
+            rf = getattr(t, "row_filter", None)
+            if rf is None:
+                continue
+            fn_name = getattr(rf, "function_name", None) or ""
+            input_cols = getattr(rf, "input_column_names", None) or []
+            results.append({
+                "table_fqn": f"`{catalog}`.`{schema}`.`{t.name}`",
+                "filter_function_fqn": fn_name,
+                "filter_columns": list(input_cols),
+            })
         return results
 
     def list_column_masks(self, catalog: str, schema: str) -> list[dict]:
-        """Column masks applied via ALTER TABLE ... ALTER COLUMN ... SET MASK."""
+        """Column masks applied via ALTER TABLE ... ALTER COLUMN ... SET MASK.
+
+        Uses the UC Tables API (authoritative) — ``information_schema
+        .columns.mask_name`` isn't reliably populated on every runtime.
+        """
         results: list[dict] = []
-        with _suppress():
-            rows = self.spark.sql(  # type: ignore[attr-defined]
-                f"SELECT table_name, column_name, mask_name, mask_using_columns "
-                f"FROM `{catalog}`.`information_schema`.`columns` "
-                f"WHERE table_schema = '{schema}' AND mask_name IS NOT NULL"
-            ).collect()
-            for r in rows:
+        try:
+            tables = self.auth_manager.source_client.tables.list(  # type: ignore[attr-defined]
+                catalog_name=catalog, schema_name=schema,
+            )
+        except Exception:  # noqa: BLE001
+            return results
+        for t in tables:
+            for col in (getattr(t, "columns", None) or []):
+                mask = getattr(col, "mask", None)
+                if mask is None:
+                    continue
+                fn_name = getattr(mask, "function_name", None) or ""
+                using_cols = getattr(mask, "using_column_names", None) or []
                 results.append({
-                    "table_fqn": f"`{catalog}`.`{schema}`.`{r.table_name}`",
-                    "column_name": r.column_name,
-                    "mask_function_fqn": r.mask_name,
-                    "mask_using_columns": list(r.mask_using_columns)
-                    if r.mask_using_columns else [],
+                    "table_fqn": f"`{catalog}`.`{schema}`.`{t.name}`",
+                    "column_name": col.name,
+                    "mask_function_fqn": fn_name,
+                    "mask_using_columns": list(using_cols),
                 })
         return results
 

@@ -321,3 +321,71 @@ class TestCatalogUtils:
         # Both views must be present despite the cycle
         assert set(result) == set(views)
         assert len(result) == 2
+
+
+class TestStripFilterMaskClauses:
+    """Tests for CatalogExplorer.strip_filter_mask_clauses — removes
+    WITH ROW FILTER and inline MASK clauses so external_table_worker /
+    managed_table_worker can replay the CREATE TABLE DDL before the
+    filter/mask functions are migrated to target (they don't exist on
+    target yet; row_filters_worker / column_masks_worker apply them
+    later).
+    """
+
+    def test_strips_trailing_with_row_filter(self):
+        ddl = (
+            "CREATE TABLE `c`.`s`.`t` (id INT, region STRING) "
+            "USING delta "
+            "LOCATION 'abfss://...' "
+            "WITH ROW FILTER `c`.`s`.`region_filter` ON (region)"
+        )
+        out = CatalogExplorer.strip_filter_mask_clauses(ddl)
+        assert "ROW FILTER" not in out
+        assert "region_filter" not in out
+        assert "USING delta" in out
+        assert "LOCATION" in out
+
+    def test_strips_inline_mask_on_column(self):
+        ddl = (
+            "CREATE TABLE `c`.`s`.`t` ("
+            "id INT MASK `c`.`s`.`mask_id`,"
+            "region STRING"
+            ") USING delta"
+        )
+        out = CatalogExplorer.strip_filter_mask_clauses(ddl)
+        assert "MASK" not in out
+        assert "mask_id" not in out
+        assert "id INT" in out
+        assert "region STRING" in out
+
+    def test_strips_inline_mask_with_using(self):
+        ddl = (
+            "CREATE TABLE `c`.`s`.`t` ("
+            "id INT MASK `c`.`s`.`mask_id` USING (region),"
+            "region STRING"
+            ") USING delta"
+        )
+        out = CatalogExplorer.strip_filter_mask_clauses(ddl)
+        assert "MASK" not in out
+        assert "USING (region)" not in out
+        assert "id INT" in out
+
+    def test_strips_both_filter_and_mask(self):
+        ddl = (
+            "CREATE TABLE `c`.`s`.`t` ("
+            "id INT MASK `c`.`s`.`m`,"
+            "region STRING"
+            ") USING delta "
+            "WITH ROW FILTER `c`.`s`.`rf` ON (region)"
+        )
+        out = CatalogExplorer.strip_filter_mask_clauses(ddl)
+        assert "ROW FILTER" not in out
+        assert "MASK" not in out
+        assert "id INT" in out
+        assert "region STRING" in out
+        assert "USING delta" in out
+
+    def test_passthrough_when_no_filter_mask(self):
+        ddl = "CREATE TABLE `c`.`s`.`t` (id INT) USING delta LOCATION 'abfss://...'"
+        out = CatalogExplorer.strip_filter_mask_clauses(ddl)
+        assert out == ddl

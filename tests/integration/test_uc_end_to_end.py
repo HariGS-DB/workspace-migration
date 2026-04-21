@@ -285,6 +285,81 @@ else:
     print(f"Phase 3 T32 validated: {len(comment_rows)} comment row(s) replayed.")
 
 # COMMAND ----------
+# --- Grants assertion (UC) ---
+# The seed grants SELECT on test_schema (schema level, which grants_worker
+# supports today — table-level grants are a separate future gap). Verify
+# grants_worker migrated that grant.
+
+has_schema_grant = dbutils.jobs.taskValues.get(  # type: ignore[name-defined]  # noqa: F821
+    taskKey="seed_uc", key="has_schema_grant", debugValue="false"
+)
+if str(has_schema_grant).lower() == "true":
+    grant_rows = full_status.filter(
+        "object_type = 'grant' AND status = 'validated' "
+        "AND object_name LIKE '%SELECT%' "
+        "AND object_name LIKE '%test_schema%' "
+        "AND object_name LIKE '%account users%'"
+    ).collect()
+    if not grant_rows:
+        error_messages.append(
+            "Grants: no validated grant row for `account users` on test_schema"
+            " — SELECT on schema did not migrate to target."
+        )
+    else:
+        print(
+            f"Grants validated: {len(grant_rows)} "
+            f"SELECT-on-test_schema grant row(s) for 'account users' "
+            f"replayed on target."
+        )
+else:
+    print("Grants: schema-level grant not seeded; skipping assertion.")
+
+# COMMAND ----------
+# --- RLS/CM skip-path assertion ---
+# managed_sensitive has row filter + column mask on a managed Delta table.
+# Delta Sharing refuses to share these; with rls_cm_strategy="" (default)
+# setup_sharing records status=skipped_by_rls_cm_policy and the table's
+# data never reaches target.
+
+has_rls_cm_managed = dbutils.jobs.taskValues.get(  # type: ignore[name-defined]  # noqa: F821
+    taskKey="seed_uc", key="has_rls_cm_managed", debugValue="false"
+)
+if str(has_rls_cm_managed).lower() == "true":
+    sensitive_rows = full_status.filter(
+        "object_type = 'managed_table' "
+        "AND object_name LIKE '%managed_sensitive%'"
+    ).collect()
+    if not sensitive_rows:
+        error_messages.append(
+            "RLS/CM skip: no migration_status row for managed_sensitive; "
+            "setup_sharing should have recorded skipped_by_rls_cm_policy."
+        )
+    else:
+        # The worker can append multiple rows over the run's lifetime; take
+        # the latest by migrated_at (get_latest_migration_status in
+        # full_status already does this per (object_name, object_type)).
+        row = sensitive_rows[0].asDict()
+        status = row.get("status")
+        error_message = row.get("error_message") or ""
+        if status != "skipped_by_rls_cm_policy":
+            error_messages.append(
+                f"RLS/CM skip: managed_sensitive status is {status!r}, "
+                f"expected 'skipped_by_rls_cm_policy'."
+            )
+        elif "Delta Sharing" not in error_message:
+            error_messages.append(
+                "RLS/CM skip: managed_sensitive skipped, but error_message "
+                "does not mention Delta Sharing — operator-visible reason is missing."
+            )
+        else:
+            print(
+                "RLS/CM skip validated: managed_sensitive recorded "
+                "'skipped_by_rls_cm_policy' with Delta-Sharing reason."
+            )
+else:
+    print("RLS/CM skip: managed_sensitive fixture not seeded; skipping.")
+
+# COMMAND ----------
 
 if error_messages:
     raise AssertionError(
