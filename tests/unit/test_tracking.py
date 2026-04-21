@@ -93,6 +93,37 @@ class TestTrackingManager:
         assert len(result) == 1
         assert result[0]["object_name"] == "catalog.schema.table1"
 
+    def test_get_tables_with_rls_cm(self, mock_spark, mock_config):
+        """row_filter.object_name is already the table FQN; column_mask
+        rows carry the clean table_fqn in metadata_json — both contribute."""
+        import json as _json
+        mgr = TrackingManager(mock_spark, mock_config)
+
+        rf = MagicMock()
+        rf.object_name = "`cat`.`sch`.`t1`"
+        cm = MagicMock()
+        cm.metadata_json = _json.dumps({
+            "table_fqn": "`cat`.`sch`.`t2`",
+            "column_name": "ssn",
+        })
+        # Also exercise: a malformed metadata_json is tolerated, not fatal.
+        cm_bad = MagicMock()
+        cm_bad.metadata_json = "not-json"
+
+        def _sql(query: str) -> MagicMock:
+            r = MagicMock()
+            if "object_type = 'row_filter'" in query:
+                r.collect.return_value = [rf]
+            elif "object_type = 'column_mask'" in query:
+                r.collect.return_value = [cm, cm_bad]
+            else:
+                r.collect.return_value = []
+            return r
+
+        mock_spark.sql.side_effect = _sql
+        result = mgr.get_tables_with_rls_cm()
+        assert result == {"`cat`.`sch`.`t1`", "`cat`.`sch`.`t2`"}
+
 
 class TestDiscoveryRowHelpers:
     """Tests for the module-level discovery_row() and discovery_schema() helpers."""

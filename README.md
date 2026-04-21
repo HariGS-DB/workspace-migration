@@ -91,6 +91,66 @@ Same shape as above — edit the workspace `config.yaml` first:
 See [docs/external_hive_metastore.md](docs/external_hive_metastore.md) for
 the Hive-specific cluster/init-script reconfiguration checklist.
 
+## Row filter / column mask on managed tables
+
+Delta Sharing providers cannot share tables protected by legacy
+row-level security or column masks — i.e. anything applied via
+`ALTER TABLE ... SET ROW FILTER` or `ALTER COLUMN ... SET MASK`. The
+Delta Sharing API rejects such tables with:
+
+```
+InvalidParameterValue: Table <fqn> has row level security or column masks,
+which is not supported by Delta Sharing.
+```
+
+Because this tool uses Delta Sharing to move managed-table data between
+workspaces, affected tables can't flow through the standard path.
+
+### Default behavior (safe skip)
+
+With `rls_cm_strategy: ""` (the default), discovery surfaces a warning
+listing the affected tables, and `setup_sharing` excludes them from the
+share. `migration_status` records one row per skipped table with
+`status = skipped_by_rls_cm_policy` so the skip is auditable from the
+dashboard and the test suite. **The skipped tables' data does not move
+to target.** Schema and grants on those tables still migrate, but the
+table itself arrives on target empty (or doesn't arrive at all,
+depending on whether a prior migration created it).
+
+### Your options
+
+1. **Migrate governance to ABAC first.** Delta Sharing *does* support
+   sharing tables protected by Unity Catalog ABAC row filter and column
+   mask policies (the caller must be exempt from the policy). Rewrite
+   the affected tables' RLS/CM as ABAC policies on source before
+   running this tool. Recipients can also apply their own ABAC-based
+   RLS/CM on the shared tables on target.
+
+2. **Accept the skip** and re-populate the affected tables by other
+   means after the migration (e.g. point queries at source during
+   cutover, or rebuild from upstream).
+
+3. **Opt into `rls_cm_strategy: drop_and_restore`** — *NOT YET
+   IMPLEMENTED*. The planned flow is:
+   - On source: save the current RLS/CM definition, then
+     `ALTER TABLE ... DROP ROW FILTER` / `DROP MASK`.
+   - Add the table to the migration share and DEEP CLONE to target.
+   - On source: reapply the saved RLS/CM definition.
+   - On target: the existing `row_filters_worker` / `column_masks_worker`
+     apply the filter/mask from discovery_inventory.
+
+   **Risk**: between the source drop and the source restore, the table
+   is unprotected. Any concurrent reader on source can see unfiltered,
+   unmasked data. Window is typically seconds to minutes per table
+   depending on DEEP CLONE duration. This path will only be appropriate
+   for maintenance-window migrations, not live ones. The implementation
+   will include a tracker-backed recovery harness so a crashed migration
+   auto-restores source state on restart.
+
+   The config flag is accepted today but raises `NotImplementedError`
+   at `setup_sharing` time so nobody silently flips it on before the
+   implementation lands.
+
 ## Architecture
 
 - All workflows run on serverless compute

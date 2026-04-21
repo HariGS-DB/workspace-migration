@@ -68,3 +68,14 @@ hive_target_catalog: hive_upgraded
 # will be recorded with status ``skipped_by_config`` and a re-run after
 # flipping this on will pick them up.
 iceberg_strategy: ""
+
+# --- Row filter / column mask on managed tables ---
+# Delta Sharing refuses to share tables protected by legacy RLS/CM
+# (``ALTER TABLE ... SET ROW FILTER`` / ``SET MASK``). Supported values:
+#   ""                  — default; affected tables skipped with status
+#                         ``skipped_by_rls_cm_policy``. No data on target.
+#   "drop_and_restore"  — NOT YET IMPLEMENTED. See README.md for the
+#                         planned flow and safety caveats.
+# Discovery surfaces a warning listing the affected tables so you can
+# decide whether to migrate their governance to ABAC before migration.
+rls_cm_strategy: ""

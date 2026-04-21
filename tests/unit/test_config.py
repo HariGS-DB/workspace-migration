@@ -83,6 +83,8 @@ batch_size: 25
 migrate_hive_dbfs_root: true
 hive_dbfs_target_path: abfss://hive@acct.dfs.core.windows.net/upgraded/
 hive_target_catalog: legacy_hive
+iceberg_strategy: ddl_replay
+rls_cm_strategy: drop_and_restore
 """)
         config = MigrationConfig.from_workspace_file(str(path))
         assert config.catalog_filter == ["cat_a", "cat_b"]
@@ -92,6 +94,20 @@ hive_target_catalog: legacy_hive
         assert config.migrate_hive_dbfs_root is True
         assert config.hive_dbfs_target_path.startswith("abfss://")
         assert config.hive_target_catalog == "legacy_hive"
+        assert config.iceberg_strategy == "ddl_replay"
+        assert config.rls_cm_strategy == "drop_and_restore"
+
+    def test_rls_cm_strategy_defaults_to_empty(self, tmp_path):
+        """rls_cm_strategy defaults to "" (skip) when unset in config."""
+        path = _write(tmp_path, """
+source_workspace_url: https://src.azuredatabricks.net
+target_workspace_url: https://tgt.azuredatabricks.net
+spn_client_id: client-id
+spn_secret_scope: migration
+spn_secret_key: spn-secret
+""")
+        config = MigrationConfig.from_workspace_file(str(path))
+        assert config.rls_cm_strategy == ""
 
     def test_from_workspace_file_catalog_filter_as_list(self, tmp_path):
         """YAML list syntax for catalog_filter also works."""
