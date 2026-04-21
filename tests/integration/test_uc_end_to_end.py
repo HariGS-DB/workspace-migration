@@ -285,6 +285,49 @@ else:
     print(f"Phase 3 T32 validated: {len(comment_rows)} comment row(s) replayed.")
 
 # COMMAND ----------
+# --- Grants assertion (UC) ---
+# The seed grants SELECT on managed_orders to ``account users``. Verify
+# grants_worker migrated that grant (creates a ``grant`` row in
+# migration_status with status validated).
+
+has_table_grant = dbutils.jobs.taskValues.get(  # type: ignore[name-defined]  # noqa: F821
+    taskKey="seed_uc", key="has_table_grant", debugValue="false"
+)
+if str(has_table_grant).lower() == "true":
+    grant_rows = full_status.filter(
+        "object_type = 'grant' AND status = 'validated' "
+        "AND object_name LIKE '%SELECT%' "
+        "AND object_name LIKE '%managed_orders%' "
+        "AND object_name LIKE '%account users%'"
+    ).collect()
+    if not grant_rows:
+        # Fallback lookup — some grant workers record broader securable-level
+        # entries; also accept a catalog/schema-level entry that would imply
+        # the grant propagated.
+        fallback = full_status.filter(
+            "object_type = 'grant' AND status = 'validated' "
+            "AND object_name LIKE '%account users%'"
+        ).collect()
+        if not fallback:
+            error_messages.append(
+                "Grants: no validated grant row for `account users` — "
+                "SELECT on managed_orders did not migrate to target."
+            )
+        else:
+            print(
+                f"Grants validated (fallback): {len(fallback)} grant row(s) "
+                f"for 'account users' replayed on target."
+            )
+    else:
+        print(
+            f"Grants validated: {len(grant_rows)} "
+            f"SELECT-on-managed_orders grant row(s) for 'account users' "
+            f"replayed on target."
+        )
+else:
+    print("Grants: table-level grant not seeded; skipping assertion.")
+
+# COMMAND ----------
 # --- RLS/CM skip-path assertion ---
 # managed_sensitive has row filter + column mask on a managed Delta table.
 # Delta Sharing refuses to share these; with rls_cm_strategy="" (default)

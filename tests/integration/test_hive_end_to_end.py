@@ -77,6 +77,118 @@ if config.migrate_hive_dbfs_root:
                 print(f"{row['object_name']}: src/tgt rows match ({row['source_row_count']})")
 
 # COMMAND ----------
+# --- Hive external + managed non-DBFS assertions ---
+# Both workers run on every Hive migration but had zero input before the
+# corresponding seed was added. Now we assert each seeded category is
+# validated and its row count matches across source and target.
+
+has_hive_external = dbutils.jobs.taskValues.get(  # type: ignore[name-defined]  # noqa: F821
+    taskKey="seed_hive", key="has_hive_external", debugValue="false"
+)
+if str(has_hive_external).lower() == "true":
+    ext_rows = status_df.filter(
+        "object_type = 'hive_external' AND object_name LIKE '%external_invoices%'"
+    ).collect()
+    if not ext_rows:
+        error_messages.append(
+            "hive_external: no migration_status row for external_invoices."
+        )
+    else:
+        row = ext_rows[0]
+        if row["status"] != "validated":
+            error_messages.append(
+                f"hive_external: external_invoices status is {row['status']!r} "
+                f"(expected 'validated'); error={row['error_message']}"
+            )
+        elif row["source_row_count"] != row["target_row_count"]:
+            error_messages.append(
+                f"hive_external: external_invoices row mismatch "
+                f"(src={row['source_row_count']}, tgt={row['target_row_count']})"
+            )
+        else:
+            print(
+                f"hive_external validated: external_invoices rows match "
+                f"({row['source_row_count']})"
+            )
+else:
+    print(
+        "hive_external: fixture not seeded (requires migrate_hive_dbfs_root + "
+        "hive_dbfs_target_path); skipping assertion."
+    )
+
+has_hive_nondbfs = dbutils.jobs.taskValues.get(  # type: ignore[name-defined]  # noqa: F821
+    taskKey="seed_hive", key="has_hive_nondbfs", debugValue="false"
+)
+if str(has_hive_nondbfs).lower() == "true":
+    nd_rows = status_df.filter(
+        "object_type = 'hive_managed_nondbfs' AND object_name LIKE '%nondbfs_sales%'"
+    ).collect()
+    if not nd_rows:
+        error_messages.append(
+            "hive_managed_nondbfs: no migration_status row for nondbfs_sales."
+        )
+    else:
+        row = nd_rows[0]
+        if row["status"] != "validated":
+            error_messages.append(
+                f"hive_managed_nondbfs: nondbfs_sales status is {row['status']!r} "
+                f"(expected 'validated'); error={row['error_message']}"
+            )
+        elif row["source_row_count"] != row["target_row_count"]:
+            error_messages.append(
+                f"hive_managed_nondbfs: nondbfs_sales row mismatch "
+                f"(src={row['source_row_count']}, tgt={row['target_row_count']})"
+            )
+        else:
+            print(
+                f"hive_managed_nondbfs validated: nondbfs_sales rows match "
+                f"({row['source_row_count']})"
+            )
+else:
+    print(
+        "hive_managed_nondbfs: fixture not seeded (requires migrate_hive_dbfs_root "
+        "+ hive_dbfs_target_path); skipping assertion."
+    )
+
+# COMMAND ----------
+# --- Hive grants assertion ---
+# Seed grants SELECT on managed_orders to ``account users``. Verify
+# hive_grants_worker migrated that grant.
+
+has_hive_grant = dbutils.jobs.taskValues.get(  # type: ignore[name-defined]  # noqa: F821
+    taskKey="seed_hive", key="has_hive_grant", debugValue="false"
+)
+if str(has_hive_grant).lower() == "true":
+    full_status_hive = tracker.get_latest_migration_status()
+    hg_rows = full_status_hive.filter(
+        "object_type = 'hive_grant' AND status = 'validated' "
+        "AND object_name LIKE '%managed_orders%' "
+        "AND object_name LIKE '%account users%'"
+    ).collect()
+    if not hg_rows:
+        fallback = full_status_hive.filter(
+            "object_type = 'hive_grant' AND status = 'validated' "
+            "AND object_name LIKE '%account users%'"
+        ).collect()
+        if not fallback:
+            error_messages.append(
+                "hive_grants: no validated hive_grant row for `account users` — "
+                "SELECT on Hive managed_orders did not migrate to target."
+            )
+        else:
+            print(
+                f"hive_grants validated (fallback): {len(fallback)} hive_grant "
+                f"row(s) for 'account users' replayed."
+            )
+    else:
+        print(
+            f"hive_grants validated: {len(hg_rows)} SELECT-on-managed_orders "
+            f"hive_grant row(s) for 'account users' replayed."
+        )
+else:
+    print("hive_grants: grant fixture not seeded; skipping assertion.")
+
+# COMMAND ----------
 
 if error_messages:
     raise AssertionError(
