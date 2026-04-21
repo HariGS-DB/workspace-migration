@@ -1,9 +1,18 @@
 # ------------------------------------------------------------
-# Migration configuration.
+# Migration configuration — PLACEHOLDERS ONLY.
 #
-# Edit this file locally and run ``databricks bundle deploy`` —
-# DAB will sync it to ``${workspace.file_path}/config.yaml`` on
-# the workspace, which is where the migration workflows read from.
+# This file is shipped in the bundle with placeholder values so the
+# repo never carries environment-specific identifiers. DAB syncs it to
+# ``${workspace.file_path}/config.yaml`` on every ``databricks bundle
+# deploy``; before running any migration or integration test, edit the
+# workspace copy with real values (source/target workspace URLs, SPN
+# application ID, hive_dbfs_target_path, etc).
+#
+# For integration testing, the expected flow is:
+#   1. ``databricks bundle deploy -t dev`` (ships this file as-is)
+#   2. Edit ``${workspace.file_path}/config.yaml`` in the workspace
+#      with your test-env values
+#   3. Trigger ``uc_integration_test`` / ``hive_integration_test``
 #
 # See config.example.yaml for a fully-commented reference.
 #
@@ -14,20 +23,22 @@
 # ------------------------------------------------------------
 
 # --- Workspaces (required) ---
-source_workspace_url: https://adb-7405617542499984.4.azuredatabricks.net
-target_workspace_url: https://adb-7405606200983417.17.azuredatabricks.net
+source_workspace_url: https://adb-SOURCE.azuredatabricks.net
+target_workspace_url: https://adb-TARGET.azuredatabricks.net
 
 # --- SPN auth (required) ---
-spn_client_id: d0354350-71fa-4bb4-aa55-8adb5dd9f1ae
+spn_client_id: REPLACE_WITH_APPLICATION_ID
 spn_secret_scope: migration
 spn_secret_key: spn-secret
 
 # --- Scope: which source metastore domains to discover/migrate ---
 # Default: UC only. Set include_hive=true to also cover the legacy
-# hive_metastore catalog (discovery + migrate workflows will run Hive steps).
+# hive_metastore catalog (discovery + migrate workflows will run Hive
+# steps). The Hive integration test requires include_hive=true — flip
+# it on the workspace copy before triggering that test.
 scope:
   include_uc: true
-  include_hive: true
+  include_hive: false
 
 # --- Scoping ---
 # Comma-separated; leave empty to include everything.
@@ -41,16 +52,19 @@ tracking_catalog: migration_tracking
 tracking_schema: cp_migration
 
 # --- Hive options (Phase 2) ---
-# Set migrate_hive_dbfs_root=true to include Hive managed tables stored in
-# DBFS root; required in that case: hive_dbfs_target_path (ADLS path the
-# migration SPN can write to).
-migrate_hive_dbfs_root: true
-hive_dbfs_target_path: "abfss://external-data@stextsourcemig36cd38.dfs.core.windows.net/hive_migrated"
+# Set migrate_hive_dbfs_root=true to include Hive managed tables stored
+# in DBFS root; required in that case: hive_dbfs_target_path (ADLS path
+# the migration SPN can write to, with READ_FILES + WRITE_FILES +
+# CREATE_EXTERNAL_TABLE granted on the corresponding external location).
+migrate_hive_dbfs_root: false
+hive_dbfs_target_path: ""
 hive_target_catalog: hive_upgraded
 
 # --- Iceberg managed tables (Phase 2.5.B) ---
 # DEEP CLONE does not support UC-managed Iceberg; 'ddl_replay' uses
 # CREATE TABLE + INSERT INTO via cp_migration_share (Option A). Losses:
 # snapshot history, time travel, branches/tags (target gets a compacted
-# current-state snapshot). Leave unset / empty to skip Iceberg tables.
-iceberg_strategy: ddl_replay
+# current-state snapshot). Leave empty to skip Iceberg tables — they
+# will be recorded with status ``skipped_by_config`` and a re-run after
+# flipping this on will pick them up.
+iceberg_strategy: ""

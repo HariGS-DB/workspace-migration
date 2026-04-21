@@ -43,17 +43,50 @@ migrations, account consolidations, or moving between Azure regions.
 
 ## Usage
 
+`config.yaml` ships in the repo with **placeholder values only** so the
+source tree never carries environment-specific identifiers. The
+authoritative config is the copy on the workspace at
+`${workspace.file_path}/config.yaml`, which DAB refreshes from the repo
+on every deploy.
+
 1. Clone this repo
-2. Edit `config.yaml`:
+2. `databricks bundle deploy -t dev` (uploads `config.yaml` with
+   placeholders to the workspace)
+3. In the workspace, edit `${workspace.file_path}/config.yaml` with real
+   values:
    - `source_workspace_url` / `target_workspace_url`
    - `spn_client_id` + `spn_secret_scope`/`spn_secret_key` (OAuth service
      principal with access to both workspaces)
    - `scope.include_uc` / `scope.include_hive`
-   - optional: `catalog_filter`, `schema_filter`, `iceberg_strategy`
-3. `databricks bundle deploy -t dev`
+   - optional: `catalog_filter`, `schema_filter`, `iceberg_strategy`,
+     `migrate_hive_dbfs_root`, `hive_dbfs_target_path`
 4. Run the `pre_check` workflow to validate connectivity and grants
 5. Run `discovery` to inventory source objects
 6. Run `migrate` to replay on target
+
+> **Note:** a subsequent `databricks bundle deploy` will overwrite the
+> workspace `config.yaml` with the placeholder version again. Re-apply
+> your edits after each deploy, or maintain your real values in an
+> out-of-repo copy that you paste in when needed.
+
+### Running the integration tests
+
+Same shape as above — edit the workspace `config.yaml` first:
+
+1. `databricks bundle deploy -t dev`
+2. Edit `${workspace.file_path}/config.yaml`:
+   - Real workspace URLs, SPN app ID, secret scope/key
+   - `scope.include_hive: true` (the Hive integration test requires it)
+   - `iceberg_strategy: ddl_replay` (if the source has UC-managed Iceberg
+     tables in the fixture)
+   - `migrate_hive_dbfs_root: true` + `hive_dbfs_target_path:
+     abfss://<container>@<account>.dfs.core.windows.net/<path>` for the
+     Hive DBFS-root branch (the SPN needs READ_FILES + WRITE_FILES +
+     CREATE_EXTERNAL_TABLE on the corresponding external location)
+3. Trigger `uc_integration_test` — waits for the SPN+secrets to be set
+   up on the source workspace, then runs seed → pre_check → discovery →
+   migrate → test → teardown
+4. Trigger `hive_integration_test` — same shape for the Hive branch
 
 See [docs/external_hive_metastore.md](docs/external_hive_metastore.md) for
 the Hive-specific cluster/init-script reconfiguration checklist.
