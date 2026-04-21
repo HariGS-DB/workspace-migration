@@ -162,28 +162,17 @@ if str(has_hive_grant).lower() == "true":
     full_status_hive = tracker.get_latest_migration_status()
     hg_rows = full_status_hive.filter(
         "object_type = 'hive_grant' AND status = 'validated' "
-        "AND object_name LIKE '%managed_orders%' "
         "AND object_name LIKE '%account users%'"
     ).collect()
     if not hg_rows:
-        fallback = full_status_hive.filter(
-            "object_type = 'hive_grant' AND status = 'validated' "
-            "AND object_name LIKE '%account users%'"
-        ).collect()
-        if not fallback:
-            error_messages.append(
-                "hive_grants: no validated hive_grant row for `account users` — "
-                "SELECT on Hive managed_orders did not migrate to target."
-            )
-        else:
-            print(
-                f"hive_grants validated (fallback): {len(fallback)} hive_grant "
-                f"row(s) for 'account users' replayed."
-            )
+        error_messages.append(
+            "hive_grants: no validated hive_grant row for `account users` — "
+            "SELECT on Hive schema did not migrate to target."
+        )
     else:
         print(
-            f"hive_grants validated: {len(hg_rows)} SELECT-on-managed_orders "
-            f"hive_grant row(s) for 'account users' replayed."
+            f"hive_grants validated: {len(hg_rows)} hive_grant row(s) for "
+            f"'account users' replayed."
         )
 else:
     print("hive_grants: grant fixture not seeded; skipping assertion.")

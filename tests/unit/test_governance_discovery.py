@@ -69,15 +69,18 @@ class TestListTags:
 
 
 class TestListRowFilters:
+    """list_row_filters uses the UC Tables API (source_client.tables.list)
+    for authoritative row-filter detection — information_schema doesn't
+    reliably surface ``row_filter_name`` on every runtime."""
+
     def test_returns_table_and_filter_metadata(self, mock_spark):
-        mock_spark.sql.return_value.collect.return_value = [
-            _row(
-                table_name="orders",
-                row_filter_name="c.s.region_filter",
-                row_filter_input_columns=["region"],
-            )
-        ]
-        explorer = _explorer(mock_spark, MagicMock())
+        auth = MagicMock()
+        t = MagicMock()
+        t.name = "orders"
+        t.row_filter.function_name = "c.s.region_filter"
+        t.row_filter.input_column_names = ["region"]
+        auth.source_client.tables.list.return_value = [t]
+        explorer = _explorer(mock_spark, auth)
         rfs = explorer.list_row_filters("c", "s")
 
         assert len(rfs) == 1
@@ -86,29 +89,39 @@ class TestListRowFilters:
         assert rfs[0]["filter_columns"] == ["region"]
 
     def test_handles_missing_input_columns(self, mock_spark):
-        mock_spark.sql.return_value.collect.return_value = [
-            _row(
-                table_name="orders",
-                row_filter_name="c.s.f",
-                row_filter_input_columns=None,
-            )
-        ]
-        explorer = _explorer(mock_spark, MagicMock())
+        auth = MagicMock()
+        t = MagicMock()
+        t.name = "orders"
+        t.row_filter.function_name = "c.s.f"
+        t.row_filter.input_column_names = None
+        auth.source_client.tables.list.return_value = [t]
+        explorer = _explorer(mock_spark, auth)
         rfs = explorer.list_row_filters("c", "s")
         assert rfs[0]["filter_columns"] == []
+
+    def test_skips_tables_without_filter(self, mock_spark):
+        """Tables whose .row_filter is None are not returned."""
+        auth = MagicMock()
+        t = MagicMock()
+        t.name = "orders"
+        t.row_filter = None
+        auth.source_client.tables.list.return_value = [t]
+        explorer = _explorer(mock_spark, auth)
+        assert explorer.list_row_filters("c", "s") == []
 
 
 class TestListColumnMasks:
     def test_returns_column_mask_metadata(self, mock_spark):
-        mock_spark.sql.return_value.collect.return_value = [
-            _row(
-                table_name="users",
-                column_name="ssn",
-                mask_name="c.s.redact_ssn",
-                mask_using_columns=["role"],
-            )
-        ]
-        explorer = _explorer(mock_spark, MagicMock())
+        auth = MagicMock()
+        t = MagicMock()
+        t.name = "users"
+        col = MagicMock()
+        col.name = "ssn"
+        col.mask.function_name = "c.s.redact_ssn"
+        col.mask.using_column_names = ["role"]
+        t.columns = [col]
+        auth.source_client.tables.list.return_value = [t]
+        explorer = _explorer(mock_spark, auth)
         masks = explorer.list_column_masks("c", "s")
 
         assert len(masks) == 1

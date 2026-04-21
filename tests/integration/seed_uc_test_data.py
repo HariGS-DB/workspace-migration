@@ -336,22 +336,25 @@ if config.spn_client_id:
     )
     print(f"Granted migration SPN {config.spn_client_id} perms on integration_test_src.")
 
-# Table-level grant to a well-known principal (``account users``) so
+# Schema-level grant to a well-known principal (``account users``) so
 # test_uc_end_to_end can assert a specific grant replays on target.
 # ``account users`` exists on every Databricks account, so the grant is
 # portable across test environments.
-_has_table_grant = False
+# Note: table-level grants are out of scope for grants_worker today
+# (only CATALOG + SCHEMA grants migrate). Seeding at schema level so
+# the assertion exercises a path the tool actually supports.
+_has_schema_grant = False
 try:
     spark.sql(  # noqa: F821
-        "GRANT SELECT ON TABLE integration_test_src.test_schema.managed_orders "
+        "GRANT SELECT ON SCHEMA integration_test_src.test_schema "
         "TO `account users`"
     )
-    _has_table_grant = True
-    print("Granted SELECT on managed_orders to `account users`.")
+    _has_schema_grant = True
+    print("Granted SELECT on test_schema to `account users`.")
 except Exception as _exc:  # noqa: BLE001
-    print(f"Skipped table-level grant seed: {_exc}")
+    print(f"Skipped schema-level grant seed: {_exc}")
 dbutils.jobs.taskValues.set(  # type: ignore[name-defined]  # noqa: F821
-    key="has_table_grant", value="true" if _has_table_grant else "false"
+    key="has_schema_grant", value="true" if _has_schema_grant else "false"
 )
 
 # COMMAND ----------

@@ -160,11 +160,11 @@ dbutils.jobs.taskValues.set(  # type: ignore[name-defined]  # noqa: F821
 _has_hive_grant = False
 try:
     spark.sql(  # noqa: F821
-        "GRANT SELECT ON TABLE hive_metastore.integration_test_hive.managed_orders "
+        "GRANT SELECT ON SCHEMA hive_metastore.integration_test_hive "
         "TO `account users`"
     )
     _has_hive_grant = True
-    print("Granted SELECT on Hive managed_orders to `account users`.")
+    print("Granted SELECT on Hive schema to `account users`.")
 except Exception as _exc:  # noqa: BLE001
     # Some clusters have Hive ACLs disabled (table ACLs on legacy); tolerate.
     print(f"Skipped Hive grant seed (table ACLs may be disabled): {_exc}")
