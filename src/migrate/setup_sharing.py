@@ -265,8 +265,76 @@ def run(dbutils, spark) -> None:  # noqa: ARG001
     pending_tables = tracker.get_pending_objects("managed_table")
     logger.info("Found %d pending managed tables to share.", len(pending_tables))
 
-    # 5. Add tables to share
-    add_tables_to_share(auth, SHARE_NAME, pending_tables, dry_run=config.dry_run)
+    # 4a. Filter out tables with row filter / column mask. Delta Sharing
+    #     refuses to share tables with legacy RLS/CM
+    #     (``InvalidParameterValue: Table has row level security or column
+    #     masks, which is not supported by Delta Sharing``). ``rls_cm_strategy``
+    #     gates the behavior:
+    #
+    #       ""                  — default; skip affected tables, record
+    #                             ``skipped_by_rls_cm_policy`` in
+    #                             migration_status. No data moves to target.
+    #       "drop_and_restore"  — not yet implemented; see README. Fail fast
+    #                             so users don't think they enabled it.
+    #
+    strategy = (config.rls_cm_strategy or "").strip().lower()
+    if strategy not in ("", "drop_and_restore"):
+        msg = (
+            f"Unknown rls_cm_strategy {config.rls_cm_strategy!r}. "
+            f"Supported values: '' (skip) or 'drop_and_restore' (planned)."
+        )
+        raise ValueError(msg)
+    if strategy == "drop_and_restore":
+        msg = (
+            "rls_cm_strategy='drop_and_restore' is not yet implemented. "
+            "See README.md for the limitation and planned path. "
+            "Options today: migrate the tables' governance to ABAC policies "
+            "first (Delta Sharing supports sharing ABAC-protected tables), "
+            "or leave rls_cm_strategy empty and accept that tables with "
+            "row filter / column mask will be skipped with status "
+            "'skipped_by_rls_cm_policy' and will not have data on target."
+        )
+        raise NotImplementedError(msg)
+
+    rls_cm_fqns = tracker.get_tables_with_rls_cm()
+    tables_to_share: list[dict] = []
+    skipped_rls_cm: list[dict] = []
+    for t in pending_tables:
+        if t["object_name"] in rls_cm_fqns:
+            skipped_rls_cm.append(t)
+        else:
+            tables_to_share.append(t)
+    if skipped_rls_cm:
+        logger.warning(
+            "Skipping %d managed table(s) with row filter / column mask — "
+            "Delta Sharing does not support sharing these. See README.md "
+            "section 'Row filter / column mask on managed tables'.",
+            len(skipped_rls_cm),
+        )
+        for t in skipped_rls_cm:
+            logger.warning("  - %s", t["object_name"])
+        tracker.append_migration_status([
+            {
+                "object_name": t["object_name"],
+                "object_type": "managed_table",
+                "status": "skipped_by_rls_cm_policy",
+                "error_message": (
+                    "Table has row filter or column mask; Delta Sharing "
+                    "refuses to share it. Data was not migrated to target. "
+                    "See README.md for options (migrate to ABAC, or wait "
+                    "for drop_and_restore strategy)."
+                ),
+                "job_run_id": None,
+                "task_run_id": None,
+                "source_row_count": None,
+                "target_row_count": None,
+                "duration_seconds": 0.0,
+            }
+            for t in skipped_rls_cm
+        ])
+
+    # 5. Add tables to share (RLS/CM-affected tables excluded above)
+    add_tables_to_share(auth, SHARE_NAME, tables_to_share, dry_run=config.dry_run)
 
     # 6. Grant SELECT on share to recipient
     if config.dry_run:

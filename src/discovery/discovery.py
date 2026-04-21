@@ -308,7 +308,77 @@ def _discover_uc(config, explorer, now) -> tuple[list[dict], int]:
             metadata=p,
         ))
 
+    _warn_rls_cm_tables(rows, config)
+
     return rows, dlt_count
+
+
+def _warn_rls_cm_tables(rows: list[dict], config) -> None:
+    """Surface a prominent warning listing tables with row filter / column
+    mask — Delta Sharing refuses to share these, and the tool skips them by
+    default. Operators can opt into the planned drop_and_restore path via
+    ``config.rls_cm_strategy``.
+    """
+    import json as _json
+    rls_cm_tables: set[str] = set()
+    for r in rows:
+        ot = r.get("object_type")
+        if ot == "row_filter" and r.get("object_name"):
+            rls_cm_tables.add(r["object_name"])
+        elif ot == "column_mask" and r.get("metadata_json"):
+            try:
+                meta = _json.loads(r["metadata_json"])
+            except _json.JSONDecodeError:
+                continue
+            tbl = meta.get("table_fqn")
+            if tbl:
+                rls_cm_tables.add(tbl)
+
+    if not rls_cm_tables:
+        return
+
+    strategy = (getattr(config, "rls_cm_strategy", "") or "").strip().lower()
+    print()
+    print("=" * 78)
+    print("!! TABLES WITH ROW FILTER / COLUMN MASK DETECTED")
+    print("=" * 78)
+    print(
+        f"Discovery found {len(rls_cm_tables)} managed table(s) protected by a "
+        f"row filter or column mask:"
+    )
+    for fqn in sorted(rls_cm_tables):
+        print(f"  - {fqn}")
+    print()
+    print(
+        "Delta Sharing providers cannot share tables with legacy RLS/CM "
+        "(ALTER TABLE ... SET ROW FILTER / SET MASK)."
+    )
+    print()
+    if strategy == "drop_and_restore":
+        print(
+            "config.rls_cm_strategy = 'drop_and_restore' — NOT YET IMPLEMENTED. "
+            "setup_sharing will fail with NotImplementedError when it runs. "
+            "Either wait for the drop+restore implementation or unset the flag "
+            "to accept the skip path."
+        )
+    else:
+        print(
+            "Default behavior: these tables WILL BE SKIPPED during migration. "
+            "Their data will NOT move to target. migration_status will record "
+            "status 'skipped_by_rls_cm_policy'."
+        )
+        print()
+        print("Options to migrate their data (see README.md for details):")
+        print(
+            "  1. Rewrite their governance as ABAC policies before migrating — "
+            "Delta Sharing supports sharing tables protected by ABAC."
+        )
+        print(
+            "  2. (Planned) Set rls_cm_strategy='drop_and_restore' to opt into "
+            "a drop-share-restore flow — brief exposure window on source."
+        )
+    print("=" * 78)
+    print()
 
 
 def _discover_hive(config, explorer, now) -> list[dict]:

@@ -236,3 +236,36 @@ class TrackingManager:
             LIMIT 1
         """).collect()
         return rows[0].asDict() if rows else None
+
+    def get_tables_with_rls_cm(self) -> set[str]:
+        """Return the set of table FQNs that have row filters or column masks
+        recorded in discovery_inventory.
+
+        Delta Sharing refuses to share tables with legacy RLS/CM, so
+        ``setup_sharing`` uses this to filter the share payload when
+        ``config.rls_cm_strategy`` is empty. ``row_filter`` rows have
+        ``object_name`` set to the table FQN; ``column_mask`` rows have
+        ``object_name`` set to ``<table_fqn>.<col>`` with the clean
+        ``table_fqn`` stored in ``metadata_json``.
+        """
+        import json
+        result: set[str] = set()
+        rf_rows = self.spark.sql(f"""
+            SELECT object_name FROM {self._fqn}.discovery_inventory
+            WHERE object_type = 'row_filter'
+        """).collect()
+        result.update(r.object_name for r in rf_rows if r.object_name)
+        cm_rows = self.spark.sql(f"""
+            SELECT metadata_json FROM {self._fqn}.discovery_inventory
+            WHERE object_type = 'column_mask'
+        """).collect()
+        for r in cm_rows:
+            if r.metadata_json:
+                try:
+                    meta = json.loads(r.metadata_json)
+                except json.JSONDecodeError:
+                    continue
+                tbl = meta.get("table_fqn")
+                if tbl:
+                    result.add(tbl)
+        return result
