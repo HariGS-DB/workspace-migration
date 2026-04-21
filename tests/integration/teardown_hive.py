@@ -19,8 +19,23 @@ except NameError:
 spark.sql("DROP DATABASE IF EXISTS hive_metastore.integration_test_hive CASCADE")  # noqa: F821
 
 from common.config import MigrationConfig
+from common.auth import AuthManager  # noqa: E402
+from common.sql_utils import execute_and_poll, find_warehouse  # noqa: E402
+
 config = MigrationConfig.from_workspace_file()
 spark.sql(f"DROP CATALOG IF EXISTS `{config.hive_target_catalog}` CASCADE")  # noqa: F821
+
+# Also drop hive_target_catalog on TARGET — hive migration creates it
+# there too and a stale copy breaks the next run.
+try:
+    auth = AuthManager(config, dbutils)  # noqa: F821
+    wh_id = find_warehouse(auth)
+    res = execute_and_poll(
+        auth, wh_id, f"DROP CATALOG IF EXISTS `{config.hive_target_catalog}` CASCADE"
+    )
+    print(f"Target drop `{config.hive_target_catalog}`: {res.get('state')}")
+except Exception as _exc:  # noqa: BLE001
+    print(f"Target hive catalog cleanup skipped: {_exc}")
 
 # COMMAND ----------
 

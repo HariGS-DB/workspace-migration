@@ -158,6 +158,38 @@ class CatalogExplorer:
                         return synthetic
             raise
 
+    @staticmethod
+    def strip_filter_mask_clauses(ddl: str) -> str:
+        """Remove row filter / column mask clauses from a CREATE TABLE DDL.
+
+        SHOW CREATE TABLE on a UC table with legacy RLS/CM applied includes
+        inline ``WITH ROW FILTER ... ON (...)`` and per-column ``MASK
+        <fqn> [USING (cols)]`` clauses. Replaying that DDL on target fails
+        with ``ROUTINE_NOT_FOUND`` because the filter/mask functions
+        haven't been migrated yet (functions_worker runs AFTER tables).
+        Strip both so the table is created bare; ``row_filters_worker`` and
+        ``column_masks_worker`` apply them after the target functions
+        exist.
+        """
+        import re
+
+        # Strip ``WITH ROW FILTER <fqn> ON (cols)``.
+        ddl = re.sub(
+            r"\s*\bWITH\s+ROW\s+FILTER\b[^(]*\([^)]*\)",
+            "",
+            ddl,
+            flags=re.IGNORECASE,
+        )
+        # Strip per-column ``MASK <fqn> [USING (cols)]`` appearing inline
+        # in column definitions.
+        ddl = re.sub(
+            r"\s+MASK\s+[^\s,()]+(?:\s+USING\s*\([^)]*\))?",
+            "",
+            ddl,
+            flags=re.IGNORECASE,
+        )
+        return ddl
+
     def _build_create_stmt_from_columns(self, catalog: str, schema: str, name: str) -> str:
         """Synthesize ``CREATE TABLE ... USING ICEBERG`` from information_schema.
 

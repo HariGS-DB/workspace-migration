@@ -16,11 +16,34 @@ except NameError:
 
 from databricks.sdk import WorkspaceClient
 
-# Drop UC test catalogs + tracking test schema
+# Drop UC test catalogs + tracking test schema on SOURCE
 spark.sql("DROP CATALOG IF EXISTS integration_test_tgt CASCADE")  # noqa: F821
 spark.sql("DROP CATALOG IF EXISTS integration_test_src CASCADE")  # noqa: F821
 spark.sql("DROP SCHEMA IF EXISTS migration_tracking.cp_migration_test CASCADE")  # noqa: F821
-print("Dropped UC test catalogs.")
+print("Dropped UC test catalogs on source.")
+
+# Also drop the migrated catalog on TARGET, otherwise the next run's
+# migrate fails with TABLE_OR_VIEW_ALREADY_EXISTS. Use the target
+# workspace's SQL warehouse via AuthManager.
+from common.auth import AuthManager  # noqa: E402
+from common.config import MigrationConfig  # noqa: E402
+from common.sql_utils import execute_and_poll, find_warehouse  # noqa: E402
+
+config = MigrationConfig.from_workspace_file()
+auth = AuthManager(config, dbutils)  # noqa: F821
+try:
+    wh_id = find_warehouse(auth)
+    for _sql in (
+        "DROP CATALOG IF EXISTS integration_test_src CASCADE",
+        "DROP CATALOG IF EXISTS cp_migration_share_consumer CASCADE",
+    ):
+        res = execute_and_poll(auth, wh_id, _sql)
+        if res["state"] == "SUCCEEDED":
+            print(f"Target: {_sql}")
+        else:
+            print(f"Target: {_sql} → {res.get('state')} ({res.get('error','')})")
+except Exception as _exc:  # noqa: BLE001
+    print(f"Target cleanup skipped: {_exc}")
 
 # COMMAND ----------
 

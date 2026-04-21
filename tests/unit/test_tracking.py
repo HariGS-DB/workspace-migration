@@ -86,7 +86,11 @@ class TestTrackingManager:
         # Verify the SQL query contains the correct filtering logic
         sql_arg = mock_spark.sql.call_args[0][0]
         assert "LEFT JOIN" in sql_arg
-        assert "NOT IN ('validated', 'skipped')" in sql_arg
+        # Filter: status != validated AND status NOT LIKE 'skipped%'
+        # (catches skipped_by_config / skipped_by_rls_cm_policy /
+        #  skipped_by_pipeline_migration as well as plain skipped)
+        assert "status != 'validated'" in sql_arg
+        assert "status NOT LIKE 'skipped%'" in sql_arg
         assert "managed_table" in sql_arg
 
         # Verify the result is a list of dicts from collect()
