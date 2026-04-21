@@ -351,13 +351,15 @@ if str(has_rls_cm_managed).lower() == "true":
         # The worker can append multiple rows over the run's lifetime; take
         # the latest by migrated_at (get_latest_migration_status in
         # full_status already does this per (object_name, object_type)).
-        row = sensitive_rows[0]
-        if row["status"] != "skipped_by_rls_cm_policy":
+        row = sensitive_rows[0].asDict()
+        status = row.get("status")
+        error_message = row.get("error_message") or ""
+        if status != "skipped_by_rls_cm_policy":
             error_messages.append(
-                f"RLS/CM skip: managed_sensitive status is {row['status']!r}, "
+                f"RLS/CM skip: managed_sensitive status is {status!r}, "
                 f"expected 'skipped_by_rls_cm_policy'."
             )
-        elif not row.get("error_message") or "Delta Sharing" not in (row["error_message"] or ""):
+        elif "Delta Sharing" not in error_message:
             error_messages.append(
                 "RLS/CM skip: managed_sensitive skipped, but error_message "
                 "does not mention Delta Sharing — operator-visible reason is missing."
