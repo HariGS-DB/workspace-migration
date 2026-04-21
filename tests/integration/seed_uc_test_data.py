@@ -16,6 +16,9 @@ except NameError:
 # COMMAND ----------
 
 # Seed UC test data: create a small source catalog with table, view, function, volume.
+# Pre-seed hygiene checks (S.14/S.15) were removed after a test run showed
+# signs they introduced side-effects — the assertions they offered are
+# covered by the unit tests for teardown behavior instead.
 
 spark.sql("CREATE CATALOG IF NOT EXISTS integration_test_src")  # noqa: F821
 spark.sql("CREATE SCHEMA IF NOT EXISTS integration_test_src.test_schema")  # noqa: F821

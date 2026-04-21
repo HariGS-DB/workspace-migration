@@ -25,6 +25,28 @@ from common.sql_utils import execute_and_poll, find_warehouse  # noqa: E402
 config = MigrationConfig.from_workspace_file()
 spark.sql(f"DROP CATALOG IF EXISTS `{config.hive_target_catalog}` CASCADE")  # noqa: F821
 
+# Clear Hive test-fixture rows from tracking tables — same reasoning as
+# teardown_uc: stale ``validated`` rows make get_pending_objects return
+# empty and Phase 2 workers produce no work on the next run.
+try:
+    spark.sql(  # noqa: F821
+        """
+        DELETE FROM migration_tracking.cp_migration.migration_status
+        WHERE object_name LIKE '%integration_test_hive%'
+           OR object_name LIKE '%hive_metastore.integration_test_hive%'
+        """
+    )
+    spark.sql(  # noqa: F821
+        """
+        DELETE FROM migration_tracking.cp_migration.discovery_inventory
+        WHERE source_type = 'hive'
+           OR object_name LIKE '%integration_test_hive%'
+        """
+    )
+    print("Cleared integration_test_hive fixture rows from tracking tables.")
+except Exception as _exc:  # noqa: BLE001
+    print(f"Tracking table cleanup skipped: {_exc}")
+
 # Also drop hive_target_catalog on TARGET — hive migration creates it
 # there too and a stale copy breaks the next run.
 try:

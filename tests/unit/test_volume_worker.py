@@ -167,3 +167,83 @@ class TestMigrateVolume:
 
         assert result["status"] == "failed"
         assert "PERMISSION_DENIED" in result["error_message"]
+
+
+class TestVolumeWorkerSdkTypes:
+    """Regression guards for the SDK-compat bugs that failed with
+    ``AttributeError: 'str' object has no attribute 'value'`` (for the
+    workspace.import_ format argument) and ``AttributeError: 'dict'
+    object has no attribute 'as_dict'`` (for jobs.submit tasks). The
+    SDK now requires real dataclasses / enums, not raw strings / dicts.
+    """
+
+    def test_ensure_copy_notebook_uses_import_format_enum(self):
+        """workspace.import_ is called with ``format=ImportFormat.SOURCE``
+        (Enum) and ``language=Language.PYTHON``, not raw strings."""
+        from databricks.sdk.service.workspace import ImportFormat, Language
+        from migrate.volume_worker import _ensure_copy_notebook_on_target
+
+        auth = MagicMock()
+        _ensure_copy_notebook_on_target(auth)
+
+        kwargs = auth.target_client.workspace.import_.call_args.kwargs
+        assert kwargs["format"] is ImportFormat.SOURCE, (
+            f"format argument must be ImportFormat.SOURCE enum, got "
+            f"{type(kwargs['format']).__name__}: {kwargs['format']!r}"
+        )
+        assert kwargs["language"] is Language.PYTHON, (
+            f"language argument must be Language.PYTHON enum, got "
+            f"{type(kwargs['language']).__name__}: {kwargs['language']!r}"
+        )
+        assert kwargs["overwrite"] is True
+
+    def test_run_target_volume_copy_uses_sdk_dataclasses(self):
+        """jobs.submit receives SubmitTask / NotebookTask / JobEnvironment
+        dataclasses — not raw dicts. Raw dicts trigger 'dict has no
+        attribute as_dict' inside the SDK."""
+        from databricks.sdk.service.jobs import (
+            JobEnvironment,
+            NotebookTask,
+            SubmitTask,
+        )
+        from migrate.volume_worker import _run_target_volume_copy
+
+        auth = MagicMock()
+        run_obj = MagicMock()
+        run_obj.state.life_cycle_state = "TERMINATED"
+        run_obj.state.result_state = "SUCCESS"
+        task = MagicMock(run_id="task-run-1")
+        run_obj.tasks = [task]
+        auth.target_client.jobs.get_run.return_value = run_obj
+
+        submit_response = MagicMock(run_id="run-1")
+        auth.target_client.jobs.submit.return_value = submit_response
+
+        out = MagicMock()
+        out.notebook_output.result = '{"bytes_copied": 0, "file_count": 0}'
+        auth.target_client.jobs.get_run_output.return_value = out
+
+        _run_target_volume_copy(auth, "/src/x", "/dst/x", "run-name")
+
+        call_kwargs = auth.target_client.jobs.submit.call_args.kwargs
+        tasks_arg = call_kwargs["tasks"]
+        envs_arg = call_kwargs["environments"]
+
+        assert len(tasks_arg) == 1
+        assert isinstance(tasks_arg[0], SubmitTask), (
+            f"tasks[0] must be a SubmitTask dataclass, got "
+            f"{type(tasks_arg[0]).__name__}"
+        )
+        assert isinstance(tasks_arg[0].notebook_task, NotebookTask), (
+            f"notebook_task must be NotebookTask, got "
+            f"{type(tasks_arg[0].notebook_task).__name__}"
+        )
+        assert tasks_arg[0].notebook_task.base_parameters == {
+            "src": "/src/x", "dst": "/dst/x",
+        }
+
+        assert len(envs_arg) == 1
+        assert isinstance(envs_arg[0], JobEnvironment), (
+            f"environments[0] must be a JobEnvironment, got "
+            f"{type(envs_arg[0]).__name__}"
+        )

@@ -1,4 +1,4 @@
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -260,3 +260,238 @@ class TestRlsCmStrategyGating:
         can locate their typo without a log scavenger hunt."""
         with pytest.raises(ValueError, match="'typo_value'"):
             _validate_rls_cm_strategy(self._config("typo_value"))
+
+
+class TestAddRlsCmFromTablesApi:
+    """_add_rls_cm_from_tables_api is the belt-and-braces backup probe:
+    discovery can silently miss row_filter / column_mask rows (information
+    _schema doesn't reliably surface them on every runtime), so setup_sharing
+    also asks the UC Tables API directly for each pending managed table.
+    Without this, tables slip through into the share and Delta Sharing
+    refuses with InvalidParameterValue.
+    """
+
+    def _pending(self, *fqns):
+        return [{"object_name": f} for f in fqns]
+
+    def test_flags_table_with_row_filter(self):
+        from migrate.setup_sharing import _add_rls_cm_from_tables_api
+
+        auth = MagicMock()
+        t = MagicMock()
+        t.row_filter = MagicMock(function_name="c.s.rf", input_column_names=["r"])
+        t.columns = []
+        auth.source_client.tables.get.return_value = t
+
+        rls_cm_fqns: set[str] = set()
+        _add_rls_cm_from_tables_api(
+            auth, self._pending("`c`.`s`.`t1`"), rls_cm_fqns,
+        )
+        assert rls_cm_fqns == {"`c`.`s`.`t1`"}
+        # Called with dot-delimited name (backticks stripped).
+        auth.source_client.tables.get.assert_called_once_with("c.s.t1")
+
+    def test_flags_table_with_column_mask(self):
+        from migrate.setup_sharing import _add_rls_cm_from_tables_api
+
+        auth = MagicMock()
+        t = MagicMock()
+        t.row_filter = None
+        col_masked = MagicMock(mask=MagicMock(function_name="c.s.m"))
+        col_plain = MagicMock(mask=None)
+        t.columns = [col_plain, col_masked]
+        auth.source_client.tables.get.return_value = t
+
+        rls_cm_fqns: set[str] = set()
+        _add_rls_cm_from_tables_api(
+            auth, self._pending("`c`.`s`.`t1`"), rls_cm_fqns,
+        )
+        assert rls_cm_fqns == {"`c`.`s`.`t1`"}
+
+    def test_clean_table_not_flagged(self):
+        from migrate.setup_sharing import _add_rls_cm_from_tables_api
+
+        auth = MagicMock()
+        t = MagicMock()
+        t.row_filter = None
+        t.columns = [MagicMock(mask=None)]
+        auth.source_client.tables.get.return_value = t
+
+        rls_cm_fqns: set[str] = set()
+        _add_rls_cm_from_tables_api(
+            auth, self._pending("`c`.`s`.`clean`"), rls_cm_fqns,
+        )
+        assert rls_cm_fqns == set()
+
+    def test_tolerates_per_table_failure(self):
+        """If tables.get errors for ONE table, the rest still get probed."""
+        from migrate.setup_sharing import _add_rls_cm_from_tables_api
+
+        auth = MagicMock()
+        good = MagicMock()
+        good.row_filter = MagicMock()
+        good.columns = []
+
+        def _get(name: str):
+            if name == "c.s.bad":
+                raise RuntimeError("API blip")
+            return good
+
+        auth.source_client.tables.get.side_effect = _get
+
+        rls_cm_fqns: set[str] = set()
+        _add_rls_cm_from_tables_api(
+            auth, self._pending("`c`.`s`.`bad`", "`c`.`s`.`good`"), rls_cm_fqns,
+        )
+        # good is flagged despite bad throwing.
+        assert rls_cm_fqns == {"`c`.`s`.`good`"}
+
+    def test_preserves_existing_set_contents(self):
+        """Augments the set in place (tracker-sourced entries plus API hits)."""
+        from migrate.setup_sharing import _add_rls_cm_from_tables_api
+
+        auth = MagicMock()
+        t = MagicMock()
+        t.row_filter = MagicMock()
+        t.columns = []
+        auth.source_client.tables.get.return_value = t
+
+        rls_cm_fqns = {"`c`.`s`.`pre_existing`"}
+        _add_rls_cm_from_tables_api(
+            auth, self._pending("`c`.`s`.`t1`"), rls_cm_fqns,
+        )
+        assert rls_cm_fqns == {"`c`.`s`.`pre_existing`", "`c`.`s`.`t1`"}
+
+
+class TestRunSkipsRlsCmTables:
+    """End-to-end (logic only — no real clients) test of setup_sharing.run's
+    RLS/CM skip path.
+
+    With the default ``rls_cm_strategy=''``, any managed table flagged by
+    either ``tracker.get_tables_with_rls_cm()`` or the live Tables API
+    probe should:
+        (a) be excluded from the share payload (shares.update gets the
+            clean tables only),
+        (b) produce a ``skipped_by_rls_cm_policy`` row via
+            ``tracker.append_migration_status``.
+    """
+
+    def _mock_deps(self, rls_cm_fqns=None, pending=None):
+        """Builds the full set of mocks run() touches so we can assert on
+        them without standing up a real workspace.
+        """
+        rls_cm_fqns = rls_cm_fqns or set()
+        pending = pending or []
+
+        config = MagicMock()
+        config.dry_run = False
+        config.include_uc = True
+        config.rls_cm_strategy = ""
+
+        auth = MagicMock()
+        # shares.get returns (existing share reused) for simplicity.
+        auth.source_client.shares.get.return_value = MagicMock(name="cp_migration_share")
+        # recipients.get returns a dummy existing recipient.
+        auth.source_client.recipients.get.return_value = MagicMock(
+            name="cp_migration_recipient_x"
+        )
+        auth.target_client.metastores.summary.return_value = MagicMock(
+            global_metastore_id="azure:region:uuid"
+        )
+        # Tables API returns no-filter tables by default; specific fqns are
+        # flagged via rls_cm_fqns + _add_rls_cm_from_tables_api monkey-patch.
+        def _tables_get(full_name):
+            t = MagicMock()
+            # Only tables in the rls_cm_fqns set carry a row_filter.
+            fqn = "`" + full_name.replace(".", "`.`") + "`"
+            if fqn in rls_cm_fqns:
+                t.row_filter = MagicMock()
+                t.columns = []
+            else:
+                t.row_filter = None
+                t.columns = []
+            return t
+        auth.source_client.tables.get.side_effect = _tables_get
+
+        tracker = MagicMock()
+        tracker.get_pending_objects.return_value = pending
+        tracker.get_tables_with_rls_cm.return_value = set()  # empty — probe populates
+        return config, auth, tracker
+
+    def test_skip_path_records_status_and_excludes_from_share(self):
+        """Two pending tables — one clean, one with RLS. Only clean
+        goes to the share; dirty gets a skipped_by_rls_cm_policy row."""
+        from migrate import setup_sharing
+
+        clean_fqn = "`c`.`s`.`clean`"
+        dirty_fqn = "`c`.`s`.`dirty`"
+        pending = [
+            {"object_name": clean_fqn, "object_type": "managed_table"},
+            {"object_name": dirty_fqn, "object_type": "managed_table"},
+        ]
+
+        # Seed the tracker helper to already flag `dirty`; the Tables API
+        # probe can also populate this — either source suffices.
+        config, auth, tracker = self._mock_deps(
+            rls_cm_fqns={dirty_fqn}, pending=pending,
+        )
+        tracker.get_tables_with_rls_cm.return_value = {dirty_fqn}
+
+        # Patch module-level bindings so run() uses our mocks.
+        with patch("migrate.setup_sharing.MigrationConfig") as cfg_cls, \
+             patch("migrate.setup_sharing.AuthManager", return_value=auth), \
+             patch("migrate.setup_sharing.TrackingManager", return_value=tracker), \
+             patch("migrate.setup_sharing.ensure_target_catalogs_and_schemas"), \
+             patch("migrate.setup_sharing.ensure_share_consumer_catalog"), \
+             patch("migrate.setup_sharing.add_tables_to_share") as add_fn:
+            cfg_cls.from_workspace_file.return_value = config
+            setup_sharing.run(dbutils=MagicMock(), spark=MagicMock())
+
+        # add_tables_to_share must NOT include the dirty table.
+        assert add_fn.call_count == 1
+        _, _, shared_tables = add_fn.call_args[0]
+        shared_fqns = {t["object_name"] for t in shared_tables}
+        assert shared_fqns == {clean_fqn}
+
+        # And migration_status got a skipped_by_rls_cm_policy row for dirty.
+        append_calls = [
+            c.args[0] for c in tracker.append_migration_status.call_args_list
+        ]
+        # Each call passes a list of dicts. Flatten and inspect.
+        all_recorded = [row for call in append_calls for row in call]
+        skipped = [
+            r for r in all_recorded if r["status"] == "skipped_by_rls_cm_policy"
+        ]
+        assert len(skipped) == 1
+        assert skipped[0]["object_name"] == dirty_fqn
+        assert "Delta Sharing" in (skipped[0]["error_message"] or "")
+
+    def test_no_rls_cm_tables_shares_everything(self):
+        """Default green path: no flagged tables, all pending go to share,
+        no skipped_by_rls_cm_policy rows written."""
+        from migrate import setup_sharing
+
+        pending = [
+            {"object_name": "`c`.`s`.`a`", "object_type": "managed_table"},
+            {"object_name": "`c`.`s`.`b`", "object_type": "managed_table"},
+        ]
+        config, auth, tracker = self._mock_deps(rls_cm_fqns=set(), pending=pending)
+
+        with patch("migrate.setup_sharing.MigrationConfig") as cfg_cls, \
+             patch("migrate.setup_sharing.AuthManager", return_value=auth), \
+             patch("migrate.setup_sharing.TrackingManager", return_value=tracker), \
+             patch("migrate.setup_sharing.ensure_target_catalogs_and_schemas"), \
+             patch("migrate.setup_sharing.ensure_share_consumer_catalog"), \
+             patch("migrate.setup_sharing.add_tables_to_share") as add_fn:
+            cfg_cls.from_workspace_file.return_value = config
+            setup_sharing.run(dbutils=MagicMock(), spark=MagicMock())
+
+        shared_fqns = {t["object_name"] for t in add_fn.call_args[0][2]}
+        assert shared_fqns == {"`c`.`s`.`a`", "`c`.`s`.`b`"}
+
+        recorded = [
+            r
+            for call in tracker.append_migration_status.call_args_list
+            for r in call.args[0]
+        ]
+        assert not any(r["status"] == "skipped_by_rls_cm_policy" for r in recorded)

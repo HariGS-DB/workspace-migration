@@ -128,6 +128,63 @@ class TestTrackingManager:
         result = mgr.get_tables_with_rls_cm()
         assert result == {"`cat`.`sch`.`t1`", "`cat`.`sch`.`t2`"}
 
+    def test_get_row_returns_dict_when_found(self, mock_spark, mock_config):
+        """get_row(object_type, object_name) returns the row as a dict on hit."""
+        mgr = TrackingManager(mock_spark, mock_config)
+
+        mock_row = MagicMock()
+        mock_row.asDict.return_value = {
+            "object_name": "`cat`.`sch`.`t`",
+            "object_type": "managed_table",
+            "create_statement": "CREATE TABLE ...",
+        }
+        mock_result = MagicMock()
+        mock_result.collect.return_value = [mock_row]
+        mock_spark.sql.return_value = mock_result
+
+        result = mgr.get_row("managed_table", "`cat`.`sch`.`t`")
+
+        sql_arg = mock_spark.sql.call_args[0][0]
+        assert "managed_table" in sql_arg
+        assert "`cat`.`sch`.`t`" in sql_arg
+        assert "LIMIT 1" in sql_arg
+        assert result is not None
+        assert result["object_name"] == "`cat`.`sch`.`t`"
+        assert result["create_statement"] == "CREATE TABLE ..."
+
+    def test_get_row_returns_none_when_not_found(self, mock_spark, mock_config):
+        """get_row returns None when no row matches (empty collect)."""
+        mgr = TrackingManager(mock_spark, mock_config)
+
+        mock_result = MagicMock()
+        mock_result.collect.return_value = []
+        mock_spark.sql.return_value = mock_result
+
+        result = mgr.get_row("managed_table", "`cat`.`sch`.`missing`")
+        assert result is None
+
+    def test_get_pending_objects_excludes_skipped_by_config(
+        self, mock_spark, mock_config
+    ):
+        """The SQL filter must exclude any status starting with ``skipped`` —
+        the custom statuses (``skipped_by_config``, ``skipped_by_rls_cm_policy``,
+        ``skipped_by_pipeline_migration``) share the prefix so re-runs don't
+        re-process already-decided-skip rows.
+        """
+        mgr = TrackingManager(mock_spark, mock_config)
+        mock_result = MagicMock()
+        mock_result.collect.return_value = []
+        mock_spark.sql.return_value = mock_result
+
+        mgr.get_pending_objects("managed_table")
+
+        sql = mock_spark.sql.call_args[0][0]
+        # Contract: LIKE 'skipped%' pattern matches every skip variant,
+        # not just the legacy plain ``skipped``.
+        assert "NOT LIKE 'skipped%'" in sql
+        # Sanity: ``validated`` explicitly excluded too.
+        assert "!= 'validated'" in sql
+
 
 class TestDiscoveryRowHelpers:
     """Tests for the module-level discovery_row() and discovery_schema() helpers."""
