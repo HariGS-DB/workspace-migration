@@ -62,6 +62,93 @@ else:
             print(f"{row['object_name']}: rows={row['source_row_count']} validated")
 
 # COMMAND ----------
+# --- Phase 1: target data integrity (1.7) ---
+# Beyond ``migration_status`` says ``validated``, verify the target
+# actually has each migrated table with a sensible schema. ``migration_
+# status`` is trusted inside the tool; this assertion proves the trust
+# is earned by cross-checking the authoritative target metastore via
+# the UC Tables API.
+#
+# Checks per validated managed/external table on target:
+#   - Table exists (tables.get doesn't 404).
+#   - Column count matches source discovery.
+#   - Column name set matches source (order/case ignored — UC may
+#     normalize).
+#
+# We skip row-level compare (expensive; covered by source_row_count /
+# target_row_count in migration_status already).
+
+try:
+    from common.auth import AuthManager  # noqa: E402
+    from common.catalog_utils import CatalogExplorer  # noqa: E402
+
+    _auth = AuthManager(config, dbutils)  # noqa: F821
+    _explorer = CatalogExplorer(spark, _auth)  # noqa: F821
+
+    _validated_tables = status_df.filter(
+        "object_type IN ('managed_table', 'external_table') AND status = 'validated'"
+    ).collect()
+
+    _integrity_errors: list[str] = []
+    for _row in _validated_tables:
+        _fqn = _row["object_name"]
+        _parts = _fqn.strip("`").split("`.`")
+        if len(_parts) != 3:
+            continue
+        _cat, _sch, _name = _parts
+
+        # 1. Target table exists?
+        try:
+            _tgt = _auth.target_client.tables.get(f"{_cat}.{_sch}.{_name}")
+        except Exception as _exc:  # noqa: BLE001
+            _integrity_errors.append(
+                f"Target data integrity: {_fqn} missing on target ({_exc})"
+            )
+            continue
+
+        # 2. Compare column name set with source. We query source via
+        #    spark.sql so we don't depend on source_client tables API
+        #    for non-UC fixtures.
+        try:
+            _src_cols = {
+                r.col_name
+                for r in spark.sql(  # type: ignore[name-defined]  # noqa: F821
+                    f"DESCRIBE TABLE {_fqn}"
+                ).collect()
+                if r.col_name and not r.col_name.startswith("#")
+            }
+        except Exception as _exc:  # noqa: BLE001
+            _integrity_errors.append(
+                f"Target data integrity: source DESCRIBE failed for {_fqn} ({_exc})"
+            )
+            continue
+
+        _tgt_cols = {c.name for c in (getattr(_tgt, "columns", None) or [])}
+        if _src_cols != _tgt_cols:
+            _missing_on_tgt = _src_cols - _tgt_cols
+            _extra_on_tgt = _tgt_cols - _src_cols
+            _integrity_errors.append(
+                f"Target data integrity: column-set mismatch for {_fqn}: "
+                f"missing on target={sorted(_missing_on_tgt)}; "
+                f"extra on target={sorted(_extra_on_tgt)}"
+            )
+        else:
+            print(
+                f"Target data integrity validated: {_fqn} "
+                f"({len(_src_cols)} cols match)"
+            )
+
+    if _integrity_errors:
+        error_messages.extend(_integrity_errors)
+    elif not _validated_tables:
+        error_messages.append(
+            "Target data integrity: no validated tables found to verify — "
+            "migrate may have been a no-op."
+        )
+except Exception as _exc:  # noqa: BLE001
+    error_messages.append(f"Target data integrity: check aborted ({_exc})")
+
+# COMMAND ----------
 # --- Phase 2.5 raw-string leak guard ---
 # classify_tables must have mapped MATERIALIZED_VIEW -> 'mv' and
 # STREAMING_TABLE -> 'st'. No rows should carry the raw strings.
