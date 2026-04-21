@@ -6,7 +6,27 @@ resources:
       run_as:
         service_principal_name: ${var.migration_spn_id}
       tasks:
+        - task_key: setup_test_config
+          notebook_task:
+            notebook_path: ../tests/integration/setup_test_config.py
+            # Hive integration test: UC on (setup_sharing still runs for UC
+            # orchestrator), Hive on, DBFS-root migration on. iceberg_strategy
+            # stays empty — no Iceberg fixture on the Hive side.
+            # hive_dbfs_target_path is left empty so the operator-configured
+            # value in the workspace config.yaml (set once after deploy) is
+            # preserved — avoids baking an env-specific ADLS URL into the
+            # repo.
+            base_parameters:
+              include_uc: "true"
+              include_hive: "true"
+              iceberg_strategy: ""
+              rls_cm_strategy: ""
+              migrate_hive_dbfs_root: "true"
+              hive_dbfs_target_path: ""
+
         - task_key: seed_hive
+          depends_on:
+            - task_key: setup_test_config
           notebook_task:
             notebook_path: ../tests/integration/seed_hive_test_data.py
 
@@ -36,6 +56,7 @@ resources:
 
         - task_key: teardown_hive
           depends_on:
+            - task_key: setup_test_config
             - task_key: seed_hive
             - task_key: pre_check
             - task_key: discovery

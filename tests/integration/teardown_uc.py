@@ -44,4 +44,22 @@ try:
 except Exception as e:  # noqa: BLE001
     print(f"Recipient listing skipped: {e}")
 
+# COMMAND ----------
+
+# Restore the pre-test config.yaml (setup_test_config saved a backup at
+# the start of the workflow). Missing backup is harmless — means
+# setup_test_config didn't run, so nothing to restore.
+
+import os  # noqa: E402
+import shutil  # noqa: E402
+from common.config import _resolve_bundle_config_path  # type: ignore[import-not-found]  # noqa: E402
+
+config_path = _resolve_bundle_config_path()
+backup_path = config_path + ".pre-integration-test.bak"
+if os.path.exists(backup_path):
+    shutil.move(backup_path, config_path)
+    print(f"Restored {config_path} from {backup_path}.")
+else:
+    print("No pre-integration-test backup found; config.yaml left as-is.")
+
 print("UC teardown complete.")
