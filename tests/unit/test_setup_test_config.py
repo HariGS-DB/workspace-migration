@@ -65,3 +65,71 @@ class TestSetupTestConfigSourceGuards:
             "hive_dbfs_target_path must be conditionally overridden — "
             "an empty task param should preserve the operator's value."
         )
+
+
+class TestNegativePathInjections:
+    """Integration X.3: source-level checks for the negative-path
+    injection widgets. They must:
+
+    - Declare all three injection widgets (bad_spn_id / unreachable_target /
+      bad_rls_cm) with default "false" so normal UC / Hive integration
+      workflows are unaffected.
+    - Apply each injection AFTER the scope overrides so the corrupted
+      config is what downstream tasks read.
+    - Force ``rls_cm_maintenance_window_confirmed = False`` when the bad
+      rls_cm strategy is injected — the whole point of the scenario is
+      the missing consent, so we can't trust whatever value happened to
+      be in config.yaml.
+    - Bypass the top-of-notebook ``drop_and_restore`` gate ONLY for the
+      bad_rls_cm injection — other callers hitting drop_and_restore must
+      still trip the NotImplementedError guard so operators don't
+      accidentally set it.
+    """
+
+    def test_declares_three_injection_widgets(self):
+        src = _source_text()
+        for name in ("inject_bad_spn_id", "inject_unreachable_target", "inject_bad_rls_cm"):
+            assert f'dbutils.widgets.text("{name}", "false")' in src, (
+                f"Must declare injection widget {name!r} with default 'false' "
+                "so the widget is optional and normal workflows are unaffected."
+            )
+
+    def test_bad_spn_injection_overwrites_spn_client_id(self):
+        src = _source_text()
+        assert 'cfg["spn_client_id"] = "00000000-0000-0000-0000-000000000000"' in src, (
+            "bad_spn injection must overwrite spn_client_id with a "
+            "well-formed-but-wrong UUID so the SDK accepts the shape but "
+            "token exchange fails at pre_check."
+        )
+
+    def test_unreachable_target_injection_overwrites_target_url(self):
+        src = _source_text()
+        assert 'cfg["target_workspace_url"]' in src, (
+            "unreachable_target injection must overwrite target_workspace_url."
+        )
+
+    def test_bad_rls_cm_forces_maintenance_window_false(self):
+        """The scenario's whole premise is the missing consent — we must
+        NOT trust whatever value config.yaml happened to have."""
+        src = _source_text()
+        assert 'cfg["rls_cm_maintenance_window_confirmed"] = False' in src, (
+            "bad_rls_cm injection must force "
+            "rls_cm_maintenance_window_confirmed=False so the setup_sharing "
+            "validator fails for the expected reason."
+        )
+        assert 'cfg["rls_cm_strategy"] = "drop_and_restore"' in src
+
+    def test_bad_rls_cm_bypasses_notimplemented_gate(self):
+        """The normal drop_and_restore gate raises NotImplementedError at
+        the top of the notebook. For bad_rls_cm the failure must land in
+        setup_sharing's validator, not here — so the gate must be
+        conditional on ``inject_bad_rls_cm``."""
+        src = _source_text()
+        # The gate must be an elif — if-then-else flow where the injection
+        # branch short-circuits the NotImplementedError branch.
+        assert "if inject_bad_rls_cm:" in src
+        assert 'elif rls_cm_strategy.lower() == "drop_and_restore":' in src, (
+            "The NotImplementedError gate must be an elif under inject_bad_rls_cm "
+            "so only the injection path skips it — other callers still trip the guard."
+        )
+        assert "raise NotImplementedError" in src
