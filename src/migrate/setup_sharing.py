@@ -139,7 +139,7 @@ def add_tables_to_share(
             source.shares.update(name=share_name, updates=removals)
             logger.info("Removed %d stale object(s) from share '%s'.", len(removals), share_name)
     except Exception as exc:  # noqa: BLE001
-        logger.warning("Could not pre-clean share: %s", exc)
+        logger.warning("Could not pre-clean share: %s", exc, exc_info=True)
     existing_names: set[str] = set()
 
     for i in range(0, len(tables), batch_size):
@@ -270,7 +270,7 @@ def _add_rls_cm_from_tables_api(auth_mgr: AuthManager, pending_tables: list[dict
         try:
             info = source.tables.get(full_name)
         except Exception as exc:  # noqa: BLE001
-            logger.warning("tables.get(%s) failed: %s", full_name, exc)
+            logger.warning("tables.get(%s) failed: %s", full_name, exc, exc_info=True)
             continue
         if getattr(info, "row_filter", None) is not None:
             rls_cm_fqns.add(fqn)

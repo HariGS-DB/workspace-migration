@@ -206,6 +206,7 @@ def run(dbutils, spark) -> None:
                 securable_type,
                 fqn,
                 exc,
+                exc_info=True,
             )
             all_results.append(
                 {

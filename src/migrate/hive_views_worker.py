@@ -198,7 +198,7 @@ def run(dbutils, spark) -> None:
             target_fqn = f"`{config.hive_target_catalog}`.`{parts[1]}`.`{parts[2]}`"
             ddls[source_fqn] = f"CREATE OR REPLACE VIEW {target_fqn} AS {body}"
         except Exception as exc:  # noqa: BLE001
-            logger.warning("Could not get DDL for %s: %s", source_fqn, exc)
+            logger.warning("Could not get DDL for %s: %s", source_fqn, exc, exc_info=True)
             results.append(
                 {
                     "object_name": source_fqn,
