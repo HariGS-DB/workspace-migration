@@ -59,9 +59,19 @@ def _emit_comment(
     auth: AuthManager,
     wh_id: str,
     dry_run: bool,
+    column_name: str | None = None,
 ) -> dict:
-    sql = f"COMMENT ON {securable_type} {fqn} IS '{_escape(comment)}'"
-    obj_key = f"COMMENT_{securable_type}_{fqn}"
+    # Column comments need ALTER TABLE ... ALTER COLUMN ... COMMENT '...';
+    # COMMENT ON COLUMN is not supported by Databricks SQL. Table/Schema/
+    # Catalog/Volume all take the generic COMMENT ON <type> fqn IS '...' form.
+    if securable_type == "COLUMN":
+        if not column_name:
+            raise ValueError("column_name is required for COLUMN comments")
+        sql = f"ALTER TABLE {fqn} ALTER COLUMN `{column_name}` COMMENT '{_escape(comment)}'"
+        obj_key = f"COMMENT_COLUMN_{fqn}.{column_name}"
+    else:
+        sql = f"COMMENT ON {securable_type} {fqn} IS '{_escape(comment)}'"
+        obj_key = f"COMMENT_{securable_type}_{fqn}"
     start = time.time()
     if dry_run:
         logger.info("[DRY RUN] %s", sql)

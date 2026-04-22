@@ -63,6 +63,244 @@ class TestTagsWorker:
         clause = _tag_clause([("owner", "O'Brien")])
         assert clause == "('owner' = 'O''Brien')"
 
+    @patch("migrate.tags_worker.time")
+    @patch("migrate.tags_worker.execute_and_poll")
+    def test_applies_catalog_tag(self, mock_execute, mock_time):
+        """Item 3.1 — CATALOG-level tags must render ``ALTER CATALOG ... SET TAGS``."""
+        from migrate.tags_worker import apply_tag_group
+
+        mock_time.time.side_effect = [100.0, 101.0]
+        mock_execute.return_value = _ok()
+
+        result = apply_tag_group(
+            ("CATALOG", "`prod_cat`", ""),
+            [{"tag_name": "owner", "tag_value": "finance"}],
+            auth=MagicMock(),
+            wh_id="wh-1",
+            dry_run=False,
+        )
+        assert result["status"] == "validated"
+        sql = mock_execute.call_args[0][2]
+        assert "ALTER CATALOG `prod_cat` SET TAGS" in sql
+        assert "'owner' = 'finance'" in sql
+        # No column suffix on the tracking key.
+        assert result["object_name"] == "TAGS_CATALOG_`prod_cat`"
+
+    @patch("migrate.tags_worker.time")
+    @patch("migrate.tags_worker.execute_and_poll")
+    def test_applies_schema_tag(self, mock_execute, mock_time):
+        """Item 3.1 — SCHEMA-level tags must render ``ALTER SCHEMA ... SET TAGS``."""
+        from migrate.tags_worker import apply_tag_group
+
+        mock_time.time.side_effect = [100.0, 101.0]
+        mock_execute.return_value = _ok()
+
+        result = apply_tag_group(
+            ("SCHEMA", "`c`.`gold`", ""),
+            [
+                {"tag_name": "tier", "tag_value": "bronze"},
+                {"tag_name": "pii", "tag_value": "false"},
+            ],
+            auth=MagicMock(),
+            wh_id="wh-1",
+            dry_run=False,
+        )
+        assert result["status"] == "validated"
+        sql = mock_execute.call_args[0][2]
+        assert "ALTER SCHEMA `c`.`gold` SET TAGS" in sql
+        # Two tags land in one ALTER statement (grouping contract).
+        assert "'tier' = 'bronze'" in sql
+        assert "'pii' = 'false'" in sql
+
+    @patch("migrate.tags_worker.time")
+    @patch("migrate.tags_worker.execute_and_poll")
+    def test_applies_volume_tag(self, mock_execute, mock_time):
+        """Item 3.1 — VOLUME-level tags must render ``ALTER VOLUME ... SET TAGS``."""
+        from migrate.tags_worker import apply_tag_group
+
+        mock_time.time.side_effect = [100.0, 101.0]
+        mock_execute.return_value = _ok()
+
+        result = apply_tag_group(
+            ("VOLUME", "`c`.`s`.`landing_vol`", ""),
+            [{"tag_name": "retention_days", "tag_value": "30"}],
+            auth=MagicMock(),
+            wh_id="wh-1",
+            dry_run=False,
+        )
+        assert result["status"] == "validated"
+        sql = mock_execute.call_args[0][2]
+        assert "ALTER VOLUME `c`.`s`.`landing_vol` SET TAGS" in sql
+        assert "'retention_days' = '30'" in sql
+
+
+# ---------------------------------------------------- Comments --------
+
+
+class TestCommentsWorker:
+    """Item 3.5 — ensure ``_emit_comment`` handles every UC securable type,
+    including the two gaps that needed a narrow code fix (COLUMN, VOLUME)."""
+
+    @patch("migrate.comments_worker.time")
+    @patch("migrate.comments_worker.execute_and_poll")
+    def test_emits_catalog_comment(self, mock_execute, mock_time):
+        from migrate.comments_worker import _emit_comment
+
+        mock_time.time.side_effect = [100.0, 100.1]
+        mock_execute.return_value = _ok()
+
+        res = _emit_comment(
+            "CATALOG",
+            "`c`",
+            "finance domain catalog",
+            auth=MagicMock(),
+            wh_id="wh",
+            dry_run=False,
+        )
+        assert res["status"] == "validated"
+        sql = mock_execute.call_args[0][2]
+        assert sql == "COMMENT ON CATALOG `c` IS 'finance domain catalog'"
+
+    @patch("migrate.comments_worker.time")
+    @patch("migrate.comments_worker.execute_and_poll")
+    def test_emits_schema_comment(self, mock_execute, mock_time):
+        from migrate.comments_worker import _emit_comment
+
+        mock_time.time.side_effect = [100.0, 100.1]
+        mock_execute.return_value = _ok()
+
+        res = _emit_comment(
+            "SCHEMA",
+            "`c`.`gold`",
+            "curated gold layer",
+            auth=MagicMock(),
+            wh_id="wh",
+            dry_run=False,
+        )
+        assert res["status"] == "validated"
+        sql = mock_execute.call_args[0][2]
+        assert sql == "COMMENT ON SCHEMA `c`.`gold` IS 'curated gold layer'"
+
+    @patch("migrate.comments_worker.time")
+    @patch("migrate.comments_worker.execute_and_poll")
+    def test_emits_column_comment_uses_alter_table_syntax(self, mock_execute, mock_time):
+        """COMMENT ON COLUMN is NOT valid Databricks SQL — the worker must
+        emit ``ALTER TABLE t ALTER COLUMN c COMMENT '...'`` instead."""
+        from migrate.comments_worker import _emit_comment
+
+        mock_time.time.side_effect = [100.0, 100.2]
+        mock_execute.return_value = _ok()
+
+        res = _emit_comment(
+            "COLUMN",
+            "`c`.`s`.`t`",
+            "social security number",
+            auth=MagicMock(),
+            wh_id="wh",
+            dry_run=False,
+            column_name="ssn",
+        )
+        assert res["status"] == "validated"
+        sql = mock_execute.call_args[0][2]
+        assert "ALTER TABLE `c`.`s`.`t` ALTER COLUMN `ssn` COMMENT " in sql
+        assert "'social security number'" in sql
+        # COMMENT ON COLUMN must never appear — UC rejects it.
+        assert "COMMENT ON COLUMN" not in sql
+        assert res["object_name"] == "COMMENT_COLUMN_`c`.`s`.`t`.ssn"
+
+    def test_column_comment_requires_column_name(self):
+        import pytest
+
+        from migrate.comments_worker import _emit_comment
+
+        with pytest.raises(ValueError, match="column_name is required"):
+            _emit_comment(
+                "COLUMN",
+                "`c`.`s`.`t`",
+                "x",
+                auth=MagicMock(),
+                wh_id="wh",
+                dry_run=False,
+            )
+
+    @patch("migrate.comments_worker.time")
+    @patch("migrate.comments_worker.execute_and_poll")
+    def test_emits_volume_comment(self, mock_execute, mock_time):
+        """VOLUME comments go through the generic ``COMMENT ON VOLUME ... IS ...`` path."""
+        from migrate.comments_worker import _emit_comment
+
+        mock_time.time.side_effect = [100.0, 100.1]
+        mock_execute.return_value = _ok()
+
+        res = _emit_comment(
+            "VOLUME",
+            "`c`.`s`.`landing_vol`",
+            "raw inbound files",
+            auth=MagicMock(),
+            wh_id="wh",
+            dry_run=False,
+        )
+        assert res["status"] == "validated"
+        sql = mock_execute.call_args[0][2]
+        assert sql == "COMMENT ON VOLUME `c`.`s`.`landing_vol` IS 'raw inbound files'"
+        assert res["object_name"] == "COMMENT_VOLUME_`c`.`s`.`landing_vol`"
+
+    @patch("migrate.comments_worker.time")
+    @patch("migrate.comments_worker.execute_and_poll")
+    def test_comment_escapes_single_quotes(self, mock_execute, mock_time):
+        from migrate.comments_worker import _emit_comment
+
+        mock_time.time.side_effect = [100.0, 100.1]
+        mock_execute.return_value = _ok()
+
+        _emit_comment(
+            "TABLE",
+            "`c`.`s`.`t`",
+            "O'Brien's table",
+            auth=MagicMock(),
+            wh_id="wh",
+            dry_run=False,
+        )
+        sql = mock_execute.call_args[0][2]
+        assert "'O''Brien''s table'" in sql
+
+    @patch("migrate.comments_worker.time")
+    @patch("migrate.comments_worker.execute_and_poll")
+    def test_comment_failure_surfaces_error(self, mock_execute, mock_time):
+        from migrate.comments_worker import _emit_comment
+
+        mock_time.time.side_effect = [100.0, 100.2]
+        mock_execute.return_value = _fail("permission denied")
+
+        res = _emit_comment(
+            "VOLUME",
+            "`c`.`s`.`v`",
+            "x",
+            auth=MagicMock(),
+            wh_id="wh",
+            dry_run=False,
+        )
+        assert res["status"] == "failed"
+        assert "permission denied" in res["error_message"]
+
+    @patch("migrate.comments_worker.time")
+    def test_comment_dry_run_skips_execution(self, mock_time):
+        from migrate.comments_worker import _emit_comment
+
+        mock_time.time.side_effect = [100.0, 100.1]
+
+        res = _emit_comment(
+            "COLUMN",
+            "`c`.`s`.`t`",
+            "pii",
+            auth=MagicMock(),
+            wh_id="wh",
+            dry_run=True,
+            column_name="email",
+        )
+        assert res["status"] == "skipped"
+        assert res["error_message"] == "dry_run"
+
 
 # ---------------------------------------------------- Row filters -----
 
@@ -208,9 +446,7 @@ class TestModelsWorker:
     @patch("migrate.models_worker.run_target_file_copy")
     @patch("migrate.models_worker.ensure_copy_notebook_on_target")
     @patch("migrate.models_worker.time")
-    def test_creates_model_with_versions_aliases_and_artifact_copy(
-        self, mock_time, mock_ensure, mock_copy
-    ):
+    def test_creates_model_with_versions_aliases_and_artifact_copy(self, mock_time, mock_ensure, mock_copy):
         from migrate.models_worker import apply_model
 
         mock_time.time.side_effect = [100.0, 110.0]
@@ -276,9 +512,7 @@ class TestModelsWorker:
     @patch("migrate.models_worker.run_target_file_copy")
     @patch("migrate.models_worker.ensure_copy_notebook_on_target")
     @patch("migrate.models_worker.time")
-    def test_artifact_copy_failure_marks_validation_failed(
-        self, mock_time, mock_ensure, mock_copy
-    ):
+    def test_artifact_copy_failure_marks_validation_failed(self, mock_time, mock_ensure, mock_copy):
         """Target SPN can't read source URI → status is validation_failed
         and the offending URI is in the error message."""
         from migrate.models_worker import apply_model
@@ -314,9 +548,7 @@ class TestModelsWorker:
     @patch("migrate.models_worker.run_target_file_copy")
     @patch("migrate.models_worker.ensure_copy_notebook_on_target")
     @patch("migrate.models_worker.time")
-    def test_copy_notebook_upload_failure_skips_artifact_copy(
-        self, mock_time, mock_ensure, mock_copy
-    ):
+    def test_copy_notebook_upload_failure_skips_artifact_copy(self, mock_time, mock_ensure, mock_copy):
         """If the helper notebook can't be uploaded, artifact copy is skipped
         silently and the message flags it — model metadata still migrates."""
         from migrate.models_worker import apply_model
