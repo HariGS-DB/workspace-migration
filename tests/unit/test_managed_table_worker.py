@@ -242,6 +242,75 @@ class TestIcebergManagedTable:
 
     @patch("migrate.managed_table_worker.time")
     @patch("migrate.managed_table_worker.execute_and_poll")
+    def test_iceberg_rerun_after_strategy_flip(self, mock_execute, mock_time):
+        """Backlog 2.5.1 — Iceberg re-run after strategy flip.
+
+        Simulates the two-run operator workflow in a single test to pin the
+        re-run contract end-to-end:
+
+        * Run 1: ``iceberg_strategy=""`` — the same ``table_info`` dict yields
+          ``status='skipped_by_config'`` (the distinct, structured skip reason,
+          NOT plain ``'skipped'`` which operators treat as "intentionally
+          dropped forever").
+        * Run 2: operator flips ``iceberg_strategy='ddl_replay'`` and reruns.
+          The SAME ``table_info`` now flows through the DDL + re-ingest path,
+          executes BOTH the CREATE (``USING ICEBERG``) and the INSERT from the
+          share-consumer catalog, and ends as ``validated``.
+
+        If the worker ever reorders the branches or changes the skip-reason
+        string, this test catches it — and with it, the signal that
+        ``get_pending_objects`` uses to decide "retry this row or not" for
+        Iceberg on the next run. Keeping the emitted status verbatim
+        (``skipped_by_config``) is the single load-bearing contract between
+        the worker and the tracking filter.
+        """
+        from migrate.managed_table_worker import clone_table
+
+        # Enough time.time() values for both runs: start+end per-run, plus
+        # the extra validator call on run 2.
+        mock_time.time.side_effect = [100.0, 100.1, 200.0, 230.0, 260.0]
+        mock_execute.return_value = {"state": "SUCCEEDED", "statement_id": "s"}
+
+        # Same discovery row reused across both runs — the orchestrator
+        # re-reads discovery_inventory each run, so the table_info payload
+        # is identical modulo config.
+        table_info = {
+            "object_name": "`cat`.`sch`.`ice_tbl`",
+            "format": "iceberg",
+            "create_statement": "CREATE TABLE `cat`.`sch`.`ice_tbl` (id INT) USING ICEBERG",
+        }
+
+        # --- Run 1: operator has NOT opted in ---
+        deps1 = self._make_deps(iceberg_strategy="")
+        r1 = clone_table(table_info, **deps1)
+
+        assert r1["status"] == "skipped_by_config", (
+            "First run must emit the structured skip reason so the re-run "
+            "contract stays distinguishable from plain 'skipped'."
+        )
+        assert r1["status"] != "skipped"  # explicit negative assertion — re-run hinges on this
+        # No SQL executed on the skip path.
+        assert mock_execute.call_count == 0
+
+        # --- Run 2: operator flips iceberg_strategy and reruns ---
+        deps2 = self._make_deps(iceberg_strategy="ddl_replay")
+        deps2["validator"].validate_row_count.return_value = {
+            "match": True,
+            "source_count": 3,
+            "target_count": 3,
+        }
+        r2 = clone_table(table_info, **deps2)
+
+        assert r2["status"] == "validated"
+        sqls = [c.args[2] for c in mock_execute.call_args_list]
+        # Both ddl_replay statements must have run on the second pass.
+        assert any("USING ICEBERG" in s for s in sqls), "CREATE DDL not replayed"
+        assert any("INSERT INTO" in s for s in sqls), "Data re-ingest not executed"
+        # Ingest reads from the consumer catalog exposed by the share.
+        assert any("`cp_migration_share_consumer`.`sch`.`ice_tbl`" in s for s in sqls)
+
+    @patch("migrate.managed_table_worker.time")
+    @patch("migrate.managed_table_worker.execute_and_poll")
     def test_delta_format_still_uses_deep_clone(self, mock_execute, mock_time):
         """Regression: explicit format='delta' should behave like no format set."""
         from migrate.managed_table_worker import clone_table
