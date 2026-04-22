@@ -282,6 +282,72 @@ class TestMvStWorkerEdgeCases:
         assert "STREAMING TABLE" in refresh_sqls[0]
         assert "MATERIALIZED VIEW" not in refresh_sqls[0]
 
+    @patch("migrate.mv_st_worker.time")
+    @patch("migrate.mv_st_worker.execute_and_poll")
+    @patch("migrate.mv_st_worker._is_sql_created")
+    def test_st_success_emits_streaming_state_warning(self, mock_is_sql, mock_execute, mock_time):
+        """On ST happy path, error_message carries a ``warning:`` note about
+        streaming source state not transferring. Operators reading
+        migration_status must see the caveat without having to open worker
+        source — this is the only signal that Kafka offsets / Auto Loader
+        checkpoints / CDF cursors are not migrated (Phase 2.5.12)."""
+        from migrate.mv_st_worker import migrate_mv_st
+
+        mock_time.time.side_effect = [100.0, 100.5]
+        mock_is_sql.return_value = (True, "")
+        mock_execute.return_value = {"state": "SUCCEEDED", "statement_id": "s"}
+
+        deps = self._deps()
+        obj = {
+            "object_name": "`c`.`s`.`st_ok`",
+            "object_type": "st",
+            "pipeline_id": "p1",
+            "create_statement": "CREATE STREAMING TABLE `c`.`s`.`st_ok` AS SELECT 1",
+        }
+        result = migrate_mv_st(obj, **deps)
+
+        assert result["status"] == "validated"
+        assert result["error_message"] is not None, (
+            "ST happy path must carry a streaming-state warning in error_message"
+        )
+        msg = result["error_message"].lower()
+        assert "warning" in msg
+        assert "stream" in msg
+        assert "state" in msg or "offset" in msg or "checkpoint" in msg
+
+    @patch("migrate.mv_st_worker.time")
+    @patch("migrate.mv_st_worker.execute_and_poll")
+    @patch("migrate.mv_st_worker._is_sql_created")
+    def test_st_refresh_failure_preserves_streaming_warning(self, mock_is_sql, mock_execute, mock_time):
+        """REFRESH failure + streaming caveat must coexist in error_message.
+        Don't clobber the refresh-failure message with just the warning, and
+        don't drop the streaming caveat just because refresh failed."""
+        from migrate.mv_st_worker import migrate_mv_st
+
+        mock_time.time.side_effect = [100.0, 100.5]
+        mock_is_sql.return_value = (True, "")
+        mock_execute.side_effect = [
+            {"state": "SUCCEEDED", "statement_id": "s-create"},
+            {"state": "FAILED", "error": "PIPELINE_BUSY", "statement_id": "s-refresh"},
+        ]
+
+        deps = self._deps()
+        obj = {
+            "object_name": "`c`.`s`.`st_err`",
+            "object_type": "st",
+            "pipeline_id": "p1",
+            "create_statement": "CREATE STREAMING TABLE `c`.`s`.`st_err` AS SELECT 1",
+        }
+        result = migrate_mv_st(obj, **deps)
+
+        assert result["status"] == "validated"
+        msg = result["error_message"]
+        assert msg is not None
+        assert "REFRESH failed" in msg
+        assert "PIPELINE_BUSY" in msg
+        # Streaming caveat must survive alongside the refresh-failure note
+        assert "stream" in msg.lower()
+
 
 class TestIcebergSkipByConfigBehaviorContract:
     """Iceberg skip uses ``skipped_by_config`` (not plain ``skipped``) so

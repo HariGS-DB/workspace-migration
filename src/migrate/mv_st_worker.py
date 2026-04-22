@@ -115,6 +115,19 @@ def _replay_mv_st_ddl(
     refresh_keyword = "MATERIALIZED VIEW" if obj_type == "mv" else "STREAMING TABLE"
     refresh_sql = f"REFRESH {refresh_keyword} {obj_name}"
 
+    # Streaming-state warning: for STREAMING TABLE, DDL replay rebuilds the
+    # table on target, but source stream state (Kafka offsets, Auto Loader
+    # checkpoints, Delta CDF cursors) does NOT transfer. The target restarts
+    # its stream from the source's CURRENT position — any in-flight or
+    # unacknowledged records at migration time may be duplicated or missed.
+    # Surface this in error_message so operators see the caveat in
+    # migration_status without having to read worker source.
+    streaming_note = (
+        "warning: streaming source state (Kafka offsets, Auto Loader "
+        "checkpoints, Delta CDF cursors) does NOT transfer — target stream "
+        "restarts from source's current position"
+    )
+
     if dry_run:
         logger.info("[DRY RUN] Would execute: %s", create_stmt)
         logger.info("[DRY RUN] Would execute: %s", refresh_sql)
@@ -131,10 +144,12 @@ def _replay_mv_st_ddl(
     logger.info("Refreshing %s on target: %s", obj_type, obj_name)
     refresh = execute_and_poll(auth, wh_id, refresh_sql)
     if refresh["state"] != "SUCCEEDED":
-        return (
-            "validated",
-            f"created but REFRESH failed: {refresh.get('error', refresh['state'])}",
-        )
+        refresh_err = f"created but REFRESH failed: {refresh.get('error', refresh['state'])}"
+        if obj_type == "st":
+            refresh_err = f"{refresh_err}; {streaming_note}"
+        return "validated", refresh_err
+    if obj_type == "st":
+        return "validated", streaming_note
     return "validated", None
 
 
