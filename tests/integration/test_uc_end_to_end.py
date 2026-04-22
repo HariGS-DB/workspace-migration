@@ -587,6 +587,212 @@ else:
     print("1.13 missing-principal grant: fixture not seeded; skipping.")
 
 # COMMAND ----------
+# --- 3.15: Catalog / schema / volume tags ---
+# Tags applied to non-table securables (CATALOG, SCHEMA, VOLUME) must
+# discover and replay on target through tags_worker's generic branch.
+# We check that each securable_type carries at least one validated tag row.
+_has_non_table_tags = dbutils.jobs.taskValues.get(  # type: ignore[name-defined]  # noqa: F821
+    taskKey="seed_uc", key="has_non_table_tags", debugValue="false"
+)
+if str(_has_non_table_tags).lower() == "true":
+    _validated_tag_rows = full_status.filter("object_type = 'tag' AND status = 'validated'").collect()
+    # tags_worker writes object_name = f"TAGS_{securable_type}_{fqn}[.col]"
+    _tag_names = [r["object_name"] for r in _validated_tag_rows]
+    _cat_tag_hit = any(n.startswith("TAGS_CATALOG_") and "integration_test_src" in n for n in _tag_names)
+    _sch_tag_hit = any(n.startswith("TAGS_SCHEMA_") and "test_schema" in n for n in _tag_names)
+    _vol_tag_hit = any(n.startswith("TAGS_VOLUME_") and "test_volume" in n for n in _tag_names)
+    if not _cat_tag_hit:
+        error_messages.append("3.15 tags: no validated CATALOG tag row (expected TAGS_CATALOG_*integration_test_src*).")
+    if not _sch_tag_hit:
+        error_messages.append("3.15 tags: no validated SCHEMA tag row (expected TAGS_SCHEMA_*test_schema*).")
+    if not _vol_tag_hit:
+        error_messages.append("3.15 tags: no validated VOLUME tag row (expected TAGS_VOLUME_*test_volume*).")
+    if _cat_tag_hit and _sch_tag_hit and _vol_tag_hit:
+        print("3.15 tags validated: CATALOG / SCHEMA / VOLUME all replayed on target.")
+else:
+    print("3.15 tags: non-table tags not seeded; skipping.")
+
+# COMMAND ----------
+# --- 3.17: Column comment + volume comment ---
+# Column comments require ``ALTER TABLE ... ALTER COLUMN ... COMMENT`` on
+# target (COMMENT ON COLUMN is not valid Databricks SQL). Volume comments
+# go through the generic ``COMMENT ON VOLUME`` path. Both come from the
+# extended comments_worker.run() iteration added alongside this fixture.
+
+_has_col_cmt = dbutils.jobs.taskValues.get(  # type: ignore[name-defined]  # noqa: F821
+    taskKey="seed_uc", key="has_column_comment", debugValue="false"
+)
+if str(_has_col_cmt).lower() == "true":
+    _col_cmt_rows = full_status.filter(
+        "object_type = 'comment' AND status = 'validated' AND object_name LIKE 'COMMENT_COLUMN_%'"
+    ).collect()
+    if not _col_cmt_rows:
+        error_messages.append(
+            "3.17 column comment: no validated COMMENT_COLUMN_* row — "
+            "comments_worker did not replay the column comment via ALTER TABLE ... ALTER COLUMN."
+        )
+    else:
+        _amount_hit = any("managed_orders" in r["object_name"] and ".amount" in r["object_name"] for r in _col_cmt_rows)
+        if not _amount_hit:
+            error_messages.append(
+                f"3.17 column comment: COMMENT_COLUMN row(s) present but none for "
+                f"managed_orders.amount. Got: {[r['object_name'] for r in _col_cmt_rows]}"
+            )
+        else:
+            # Verify on target: DESCRIBE TABLE should show the comment on the column.
+            try:
+                _desc = spark.sql(  # noqa: F821
+                    "DESCRIBE TABLE integration_test_src.test_schema.managed_orders"
+                ).collect()
+                _amount_row = next((r for r in _desc if r.col_name == "amount"), None)
+                _amount_comment = getattr(_amount_row, "comment", None) if _amount_row else None
+                if not _amount_comment or "GBP" not in _amount_comment:
+                    error_messages.append(
+                        f"3.17 column comment: target managed_orders.amount comment is "
+                        f"{_amount_comment!r}, expected to contain 'GBP'."
+                    )
+                else:
+                    print(f"3.17 column comment validated: target carries comment {_amount_comment!r}.")
+            except Exception as _exc:  # noqa: BLE001
+                error_messages.append(f"3.17 column comment: target DESCRIBE failed: {_exc}")
+else:
+    print("3.17 column comment: not seeded; skipping.")
+
+_has_vol_cmt = dbutils.jobs.taskValues.get(  # type: ignore[name-defined]  # noqa: F821
+    taskKey="seed_uc", key="has_volume_comment", debugValue="false"
+)
+if str(_has_vol_cmt).lower() == "true":
+    _vol_cmt_rows = full_status.filter(
+        "object_type = 'comment' AND status = 'validated' AND object_name LIKE 'COMMENT_VOLUME_%'"
+    ).collect()
+    _vol_hit = any("test_volume" in r["object_name"] for r in _vol_cmt_rows)
+    if not _vol_hit:
+        error_messages.append(
+            "3.17 volume comment: no validated COMMENT_VOLUME_*test_volume* row — "
+            "comments_worker did not replay the volume comment."
+        )
+    else:
+        print(f"3.17 volume comment validated: {len(_vol_cmt_rows)} volume comment row(s) replayed.")
+else:
+    print("3.17 volume comment: not seeded; skipping.")
+
+# COMMAND ----------
+# --- 3.19: Registered model with 1 version + 1 alias, no artifacts ---
+# models_worker creates the shell, version metadata, and alias on target.
+# With an empty source URI (no artifact bytes), the artifact copy block
+# is a no-op — we expect status=validated and the artifact byte count
+# reported in error_message to be zero.
+
+_has_rm = dbutils.jobs.taskValues.get(  # type: ignore[name-defined]  # noqa: F821
+    taskKey="seed_uc", key="has_registered_model", debugValue="false"
+)
+if str(_has_rm).lower() == "true":
+    _rm_fqn = dbutils.jobs.taskValues.get(  # type: ignore[name-defined]  # noqa: F821
+        taskKey="seed_uc", key="registered_model_fqn", debugValue=""
+    )
+    _rm_alias = dbutils.jobs.taskValues.get(  # type: ignore[name-defined]  # noqa: F821
+        taskKey="seed_uc", key="registered_model_alias", debugValue=""
+    )
+    _rm_rows = full_status.filter(f"object_type = 'registered_model' AND object_name LIKE '%{_rm_fqn}%'").collect()
+    if not _rm_rows:
+        error_messages.append(f"3.19 registered model: no migration_status row for {_rm_fqn}.")
+    else:
+        _rm_status = _rm_rows[0]["status"]
+        _rm_err = _rm_rows[0]["error_message"] or ""
+        if _rm_status != "validated":
+            error_messages.append(
+                f"3.19 registered model: status is {_rm_status!r}, expected 'validated'. error={_rm_err!r}"
+            )
+        else:
+            # With no artifact URI, byte count should be 0.
+            if "0 file(s), 0 byte(s)" not in _rm_err:
+                error_messages.append(
+                    f"3.19 registered model: expected empty artifact message "
+                    f"('0 file(s), 0 byte(s) copied.'), got {_rm_err!r}."
+                )
+            # Verify on target: model exists with alias.
+            try:
+                from common.auth import AuthManager  # noqa: E402
+
+                _auth_m = AuthManager(config, dbutils)  # noqa: F821
+                _tgt_model = _auth_m.target_client.registered_models.get(full_name=_rm_fqn)
+                _aliases = [a.alias_name for a in (_tgt_model.aliases or [])]
+                if _rm_alias not in _aliases:
+                    error_messages.append(
+                        f"3.19 registered model: target model aliases are {_aliases}, expected {_rm_alias!r}."
+                    )
+                else:
+                    print(f"3.19 registered model validated: {_rm_fqn} with alias {_rm_alias!r} on target.")
+            except Exception as _exc:  # noqa: BLE001
+                error_messages.append(f"3.19 registered model: target lookup failed: {_exc}")
+else:
+    print("3.19 registered model: not seeded; skipping.")
+
+# COMMAND ----------
+# --- 3.24: Customer-defined Delta share ---
+# sharing_worker recreates the share shell + recipient on target. The
+# tool's internal ``cp_migration_share`` is excluded at discovery time
+# via list_shares(exclude_names=...), so this customer share flows
+# through unaffected.
+
+_has_cs = dbutils.jobs.taskValues.get(  # type: ignore[name-defined]  # noqa: F821
+    taskKey="seed_uc", key="has_customer_share", debugValue="false"
+)
+if str(_has_cs).lower() == "true":
+    _cs_name = dbutils.jobs.taskValues.get(  # type: ignore[name-defined]  # noqa: F821
+        taskKey="seed_uc", key="customer_share_name", debugValue=""
+    )
+    _cr_name = dbutils.jobs.taskValues.get(  # type: ignore[name-defined]  # noqa: F821
+        taskKey="seed_uc", key="customer_recipient_name", debugValue=""
+    )
+
+    _share_rows = full_status.filter(f"object_type = 'share' AND object_name = 'SHARE_{_cs_name}'").collect()
+    _rcpt_rows = full_status.filter(f"object_type = 'recipient' AND object_name = 'RECIPIENT_{_cr_name}'").collect()
+    if not _share_rows:
+        error_messages.append(f"3.24 customer share: no migration_status row for SHARE_{_cs_name}.")
+    elif _share_rows[0]["status"] != "validated":
+        error_messages.append(
+            f"3.24 customer share: SHARE_{_cs_name} status is "
+            f"{_share_rows[0]['status']!r}, expected 'validated'. "
+            f"error={_share_rows[0]['error_message']!r}"
+        )
+    if not _rcpt_rows:
+        error_messages.append(f"3.24 customer share: no migration_status row for RECIPIENT_{_cr_name}.")
+    elif _rcpt_rows[0]["status"] != "validated":
+        error_messages.append(
+            f"3.24 customer share: RECIPIENT_{_cr_name} status is "
+            f"{_rcpt_rows[0]['status']!r}, expected 'validated'. "
+            f"error={_rcpt_rows[0]['error_message']!r}"
+        )
+
+    if _share_rows and _share_rows[0]["status"] == "validated":
+        # Verify via target_client.shares.get
+        try:
+            from common.auth import AuthManager  # noqa: E402
+
+            _auth_s = AuthManager(config, dbutils)  # noqa: F821
+            _tgt_share = _auth_s.target_client.shares.get(name=_cs_name, include_shared_data=True)
+            _shared_objects = list(_tgt_share.objects or [])
+            if not _shared_objects:
+                error_messages.append(f"3.24 customer share: target share '{_cs_name}' has no objects attached.")
+            else:
+                _obj_names = [o.name for o in _shared_objects]
+                if not any("managed_orders" in (n or "") for n in _obj_names):
+                    error_messages.append(
+                        f"3.24 customer share: target share '{_cs_name}' objects are "
+                        f"{_obj_names}, expected to include managed_orders."
+                    )
+                else:
+                    print(
+                        f"3.24 customer share validated: target share '{_cs_name}' carries "
+                        f"{len(_shared_objects)} object(s) including managed_orders."
+                    )
+        except Exception as _exc:  # noqa: BLE001
+            error_messages.append(f"3.24 customer share: target shares.get failed: {_exc}")
+else:
+    print("3.24 customer share: not seeded; skipping.")
+
+# COMMAND ----------
 
 if error_messages:
     raise AssertionError(

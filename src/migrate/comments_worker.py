@@ -192,6 +192,71 @@ def run(dbutils, spark) -> None:
                         )
                     )
 
+    # Column comments — Delta DEEP CLONE preserves column metadata for
+    # managed Delta tables, but external tables and non-Delta tables need
+    # explicit replay. We iterate every UC table we discovered and replay
+    # any column with a non-null comment. Delta managed-table columns will
+    # usually already carry the comment on target; re-issuing the ALTER
+    # TABLE is idempotent.
+    all_tables = spark.sql(
+        f"SELECT object_name FROM "
+        f"{config.tracking_catalog}.{config.tracking_schema}.discovery_inventory "
+        f"WHERE source_type = 'uc' AND object_type IN ('external_table','managed_table')"
+    ).collect()
+    for row in all_tables:
+        parts = row.object_name.strip("`").split("`.`")
+        if len(parts) != 3:
+            continue
+        catalog, schema, name = parts
+        with _SuppressLog(results, row.object_name, "COLUMN"):
+            col_meta = spark.sql(
+                f"SELECT column_name, comment FROM `{catalog}`.information_schema.columns "
+                f"WHERE table_schema='{schema}' AND table_name='{name}' AND comment IS NOT NULL"
+            ).collect()
+            for c in col_meta:
+                if c.comment:
+                    results.append(
+                        _emit_comment(
+                            "COLUMN",
+                            row.object_name,
+                            c.comment,
+                            auth=auth,
+                            wh_id=wh_id,
+                            dry_run=config.dry_run,
+                            column_name=c.column_name,
+                        )
+                    )
+
+    # Volume comments — the volume_worker creates the target volume shell
+    # but does not copy the ``COMMENT`` clause, so replay here via
+    # information_schema.volumes.
+    vol_rows = spark.sql(
+        f"SELECT object_name FROM "
+        f"{config.tracking_catalog}.{config.tracking_schema}.discovery_inventory "
+        f"WHERE source_type = 'uc' AND object_type = 'volume'"
+    ).collect()
+    for row in vol_rows:
+        parts = row.object_name.strip("`").split("`.`")
+        if len(parts) != 3:
+            continue
+        catalog, schema, name = parts
+        with _SuppressLog(results, row.object_name, "VOLUME"):
+            vol_meta = spark.sql(
+                f"SELECT comment FROM `{catalog}`.information_schema.volumes "
+                f"WHERE volume_schema='{schema}' AND volume_name='{name}'"
+            ).collect()
+            if vol_meta and vol_meta[0].comment:
+                results.append(
+                    _emit_comment(
+                        "VOLUME",
+                        row.object_name,
+                        vol_meta[0].comment,
+                        auth=auth,
+                        wh_id=wh_id,
+                        dry_run=config.dry_run,
+                    )
+                )
+
     if results:
         tracker.append_migration_status(results)
     logger.info(

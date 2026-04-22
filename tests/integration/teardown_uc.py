@@ -82,7 +82,8 @@ except Exception as _exc:  # noqa: BLE001
 
 # Clean up Delta Share created during UC migration
 w = WorkspaceClient()
-for share_name in ("cp_migration_share",):
+# Tool-owned share + customer-defined share from 3.24 fixture.
+for share_name in ("cp_migration_share", "integration_test_customer_share"):
     try:
         w.shares.delete(share_name)
         print(f"Deleted share '{share_name}'.")
@@ -91,7 +92,9 @@ for share_name in ("cp_migration_share",):
 
 try:
     for recipient in w.recipients.list():
-        if recipient.name and "cp_migration_recipient_" in recipient.name:
+        if recipient.name and (
+            "cp_migration_recipient_" in recipient.name or recipient.name == "integration_test_recipient"
+        ):
             try:
                 w.recipients.delete(recipient.name)
                 print(f"Deleted recipient '{recipient.name}'.")
@@ -99,6 +102,31 @@ try:
                 print(f"Recipient '{recipient.name}' cleanup skipped: {e}")
 except Exception as e:  # noqa: BLE001
     print(f"Recipient listing skipped: {e}")
+
+# Drop the customer-defined share + recipient on TARGET too so the next
+# run's sharing_worker can recreate them cleanly (create fails with
+# "already exists" otherwise, which the worker tolerates but leaves
+# stale cross-run state).
+try:
+    _auth_td = AuthManager(config, dbutils)  # noqa: F821
+    for _share in ("integration_test_customer_share",):
+        try:
+            _auth_td.target_client.shares.delete(_share)
+            print(f"Target: deleted share '{_share}'.")
+        except Exception as _exc:  # noqa: BLE001
+            print(f"Target: share '{_share}' cleanup skipped: {_exc}")
+    for _rcpt in ("integration_test_recipient",):
+        try:
+            _auth_td.target_client.recipients.delete(_rcpt)
+            print(f"Target: deleted recipient '{_rcpt}'.")
+        except Exception as _exc:  # noqa: BLE001
+            print(f"Target: recipient '{_rcpt}' cleanup skipped: {_exc}")
+except Exception as _exc:  # noqa: BLE001
+    print(f"Target share/recipient cleanup skipped: {_exc}")
+
+# Registered model is nested inside integration_test_src which we
+# already drop CASCADE above — source and target model rows disappear
+# with the catalog drop. No explicit delete needed.
 
 # COMMAND ----------
 
