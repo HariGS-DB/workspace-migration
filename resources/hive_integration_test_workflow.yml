@@ -23,6 +23,18 @@ resources:
               rls_cm_strategy: ""
               migrate_hive_dbfs_root: "true"
               hive_dbfs_target_path: ""
+              # batch_size=5 with 12 batch_tbl_* fixtures forces the
+              # orchestrator to emit 3 DBFS-root batches (integration
+              # item 2.14). Kept low to also stay under the for_each
+              # 3000-byte input limit for a batch's JSON payload.
+              batch_size: "5"
+              # Restrict UC discovery to integration_test_src so the
+              # Hive cross-catalog-view fixture's parallel UC catalog
+              # (integration_test_hive_ucref) is NOT discovered and
+              # migrated. Hive integration doesn't seed integration_test_src
+              # on source, so UC discovery finds nothing — matches the
+              # pre-2.11 implicit behavior.
+              catalog_filter: "integration_test_src"
 
         - task_key: seed_hive
           depends_on:
