@@ -99,7 +99,8 @@ databricks bundle deploy -t dev
 | `scope.include_uc` | no | `true` | Discover + migrate UC objects |
 | `scope.include_hive` | no | `false` | Discover + migrate `hive_metastore` objects. Opt-in. |
 | `iceberg_strategy` | no | `""` | `""` skips Iceberg managed tables (marking `skipped_by_config`). `"ddl_replay"` opts into the Option A path — rebuild schema + re-ingest via `cp_migration_share`. Loses snapshot history / time travel / branches + tags. |
-| `rls_cm_strategy` | no | `""` | Managed tables carrying legacy row filter / column mask. `""` skips them (marking `skipped_by_rls_cm_policy`). `"drop_and_restore"` is declared but NOT YET IMPLEMENTED — setup_sharing raises `NotImplementedError` so operators don't migrate unsafely. |
+| `rls_cm_strategy` | no | `""` | Managed tables carrying legacy row filter / column mask. `""` skips them (marking `skipped_by_rls_cm_policy`). `"drop_and_restore"` temporarily drops the RLS/CM on source, DEEP CLONEs via the share, and re-applies after — requires `rls_cm_maintenance_window_confirmed=true`. |
+| `rls_cm_maintenance_window_confirmed` | conditional | `false` | Operator consent gate for `rls_cm_strategy='drop_and_restore'`. Must be `true` to opt in — the strategy exposes the source table to unfiltered/unmasked reads during each DEEP CLONE. Only appropriate for maintenance-window migrations. |
 | `migrate_hive_dbfs_root` | no | `false` | Enables `hive_managed_dbfs_worker` — copies DBFS-root bytes to `hive_dbfs_target_path` and registers the target table as EXTERNAL |
 | `hive_dbfs_target_path` | conditional | `""` | ADLS/S3/GCS path where DBFS-root bytes land on target. Required when `migrate_hive_dbfs_root=true`. The SPN needs `READ_FILES`/`WRITE_FILES`/`CREATE_EXTERNAL_TABLE` on the external location that owns this path. |
 | `hive_target_catalog` | no | `hive_upgraded` | Target catalog name for Hive-to-UC migration. Created during migrate if missing. |
@@ -194,26 +195,35 @@ depending on whether a prior migration created it).
    means after the migration (e.g. point queries at source during
    cutover, or rebuild from upstream).
 
-3. **Opt into `rls_cm_strategy: drop_and_restore`** — *NOT YET
-   IMPLEMENTED*. The planned flow is:
-   - On source: save the current RLS/CM definition, then
-     `ALTER TABLE ... DROP ROW FILTER` / `DROP MASK`.
-   - Add the table to the migration share and DEEP CLONE to target.
-   - On source: reapply the saved RLS/CM definition.
-   - On target: the existing `row_filters_worker` / `column_masks_worker`
-     apply the filter/mask from discovery_inventory.
+3. **Opt into `rls_cm_strategy: drop_and_restore`** with
+   `rls_cm_maintenance_window_confirmed: true`. The flow:
+   - `setup_sharing` captures the current RLS/CM definition (row filter
+     function + input columns; per-column mask functions + using columns)
+     into `rls_cm_manifest`, then `ALTER TABLE ... DROP ROW FILTER` /
+     `DROP MASK` on source.
+   - The table enters `cp_migration_share` like any normal table and
+     `managed_table_worker` DEEP CLONEs it to target.
+   - After all DEEP CLONEs finish, the new `restore_rls_cm` task
+     re-applies the saved definitions on source and stamps
+     `restored_at` in the manifest. Runs with `ALL_DONE` so source is
+     restored even when an upstream clone failed.
+   - On target: `row_filters_worker` / `column_masks_worker` apply the
+     filter/mask from `discovery_inventory` as usual.
 
    **Risk**: between the source drop and the source restore, the table
-   is unprotected. Any concurrent reader on source can see unfiltered,
-   unmasked data. Window is typically seconds to minutes per table
-   depending on DEEP CLONE duration. This path will only be appropriate
-   for maintenance-window migrations, not live ones. The implementation
-   will include a tracker-backed recovery harness so a crashed migration
-   auto-restores source state on restart.
+   is unprotected. Any concurrent reader on source sees unfiltered,
+   unmasked data. Window ≈ total migrate wall-clock per table (in
+   parallel). Only appropriate for maintenance-window migrations —
+   hence the `rls_cm_maintenance_window_confirmed` consent gate.
 
-   The config flag is accepted today but raises `NotImplementedError`
-   at `setup_sharing` time so nobody silently flips it on before the
-   implementation lands.
+   **Crash recovery**: if the migration crashes between strip and
+   restore, the next `setup_sharing` invocation scans
+   `rls_cm_manifest` for rows with `restored_at IS NULL`, re-applies
+   those policies **before** processing any new tables, and stamps the
+   manifest. A restore that itself fails records `restore_failed_at` +
+   `restore_error` on that row for manual follow-up; the loop
+   continues with the next table — one bad table doesn't block
+   healing the rest.
 
 ## Architecture
 
