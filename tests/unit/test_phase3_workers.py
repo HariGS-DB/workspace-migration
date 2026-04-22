@@ -205,23 +205,34 @@ class TestMonitorsWorker:
 
 
 class TestModelsWorker:
+    @patch("migrate.models_worker.run_target_file_copy")
+    @patch("migrate.models_worker.ensure_copy_notebook_on_target")
     @patch("migrate.models_worker.time")
-    def test_creates_model_with_versions_and_aliases(self, mock_time):
+    def test_creates_model_with_versions_aliases_and_artifact_copy(
+        self, mock_time, mock_ensure, mock_copy
+    ):
         from migrate.models_worker import apply_model
 
         mock_time.time.side_effect = [100.0, 110.0]
+        mock_copy.return_value = {"bytes_copied": 12345, "file_count": 3}
         auth = MagicMock()
-        # registered_models.create + model_versions.create succeed
         auth.target_client.registered_models.create.return_value = MagicMock()
-        auth.target_client.model_versions.create.return_value = MagicMock()
+        created_version = MagicMock()
+        created_version.storage_location = "abfss://target/.../m1/v1"
+        auth.target_client.model_versions.create.return_value = created_version
         auth.target_client.registered_models.set_alias.return_value = MagicMock()
 
         results = apply_model(
             {
                 "model_fqn": "c.s.m1",
-                "storage_location": "abfss://.../m1",
+                "storage_location": "abfss://source/.../m1",
                 "versions": [
-                    {"version": 1, "source": "run:/abc/art", "aliases": ["prod"]},
+                    {
+                        "version": 1,
+                        "source": "run:/abc/art",
+                        "storage_location": "abfss://source/.../m1/v1",
+                        "aliases": ["prod"],
+                    },
                 ],
             },
             auth=auth,
@@ -229,17 +240,28 @@ class TestModelsWorker:
         )
         assert len(results) == 1
         assert results[0]["status"] == "validated"
+        # Artifact-copy outcome surfaced in the message.
+        assert "3 file(s)" in results[0]["error_message"]
+        assert "12345 byte(s)" in results[0]["error_message"]
+        # Copy helper called with source URI → target allocated path.
+        mock_copy.assert_called_once()
+        call_kwargs = mock_copy.call_args.kwargs
+        assert call_kwargs["src_path"] == "abfss://source/.../m1/v1"
+        assert call_kwargs["dst_path"] == "abfss://target/.../m1/v1"
         auth.target_client.registered_models.set_alias.assert_called_once_with(
             full_name="c.s.m1",
             alias="prod",
             version_num=1,
         )
 
+    @patch("migrate.models_worker.run_target_file_copy")
+    @patch("migrate.models_worker.ensure_copy_notebook_on_target")
     @patch("migrate.models_worker.time")
-    def test_idempotent_on_already_exists(self, mock_time):
+    def test_idempotent_on_already_exists(self, mock_time, mock_ensure, mock_copy):
         from migrate.models_worker import apply_model
 
         mock_time.time.side_effect = [100.0, 101.0]
+        mock_copy.return_value = {"bytes_copied": 0, "file_count": 0}
         auth = MagicMock()
         auth.target_client.registered_models.create.side_effect = Exception("RESOURCE_ALREADY_EXISTS")
         auth.target_client.model_versions.create.return_value = MagicMock()
@@ -250,6 +272,73 @@ class TestModelsWorker:
             dry_run=False,
         )
         assert results[0]["status"] == "validated"
+
+    @patch("migrate.models_worker.run_target_file_copy")
+    @patch("migrate.models_worker.ensure_copy_notebook_on_target")
+    @patch("migrate.models_worker.time")
+    def test_artifact_copy_failure_marks_validation_failed(
+        self, mock_time, mock_ensure, mock_copy
+    ):
+        """Target SPN can't read source URI → status is validation_failed
+        and the offending URI is in the error message."""
+        from migrate.models_worker import apply_model
+
+        mock_time.time.side_effect = [100.0, 105.0]
+        mock_copy.side_effect = RuntimeError(
+            "Target copy job failed (model_artifact_copy__c.s.m1__v1): PERMISSION_DENIED"
+        )
+        auth = MagicMock()
+        created_version = MagicMock()
+        created_version.storage_location = "abfss://target/.../m1/v1"
+        auth.target_client.registered_models.create.return_value = MagicMock()
+        auth.target_client.model_versions.create.return_value = created_version
+
+        results = apply_model(
+            {
+                "model_fqn": "c.s.m1",
+                "versions": [
+                    {
+                        "version": 1,
+                        "storage_location": "abfss://source/.../m1/v1",
+                        "aliases": [],
+                    }
+                ],
+            },
+            auth=auth,
+            dry_run=False,
+        )
+        assert results[0]["status"] == "validation_failed"
+        assert "artifact copy failed" in results[0]["error_message"]
+        assert "abfss://source/.../m1/v1" in results[0]["error_message"]
+
+    @patch("migrate.models_worker.run_target_file_copy")
+    @patch("migrate.models_worker.ensure_copy_notebook_on_target")
+    @patch("migrate.models_worker.time")
+    def test_copy_notebook_upload_failure_skips_artifact_copy(
+        self, mock_time, mock_ensure, mock_copy
+    ):
+        """If the helper notebook can't be uploaded, artifact copy is skipped
+        silently and the message flags it — model metadata still migrates."""
+        from migrate.models_worker import apply_model
+
+        mock_time.time.side_effect = [100.0, 101.0]
+        mock_ensure.side_effect = Exception("workspace.import_ failed")
+        auth = MagicMock()
+        auth.target_client.registered_models.create.return_value = MagicMock()
+        auth.target_client.model_versions.create.return_value = MagicMock()
+
+        results = apply_model(
+            {
+                "model_fqn": "c.s.m1",
+                "versions": [{"version": 1, "storage_location": "abfss://src/v1"}],
+            },
+            auth=auth,
+            dry_run=False,
+        )
+        # Still validated — artifact copy is best-effort.
+        assert results[0]["status"] == "validated"
+        assert "artifacts NOT copied" in results[0]["error_message"]
+        mock_copy.assert_not_called()
 
 
 # ---------------------------------------------------- Connections -----
