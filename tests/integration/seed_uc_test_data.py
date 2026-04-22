@@ -490,5 +490,121 @@ dbutils.jobs.taskValues.set(  # type: ignore[name-defined]  # noqa: F821
 )
 
 # COMMAND ----------
+# --- 2.5.10: Managed volume with nested directory tree ---
+# A second managed volume with files at /a/b/c/file.txt + /a/b/d/other.txt.
+# The volume copy notebook recurses via dbutils.fs.cp, so nested paths must
+# land on target with their directory structure preserved. Records the
+# expected file count + total byte count as task values so the assertion
+# can verify exact parity on target (not just "volume exists").
+_NESTED_VOLUME_FILES = {
+    "a/b/c/file.txt": b"nested-file-1: phase-2.5.10 marker\n",
+    "a/b/d/other.txt": b"nested-file-2: second branch of directory tree\n",
+    "a/top_level.txt": b"top-level-file in nested_volume root\n",
+}
+_has_nested_volume = False
+try:
+    spark.sql(  # noqa: F821
+        "CREATE VOLUME IF NOT EXISTS integration_test_src.test_schema.nested_volume"
+    )
+    for _rel_path, _content in _NESTED_VOLUME_FILES.items():
+        dbutils.fs.put(  # type: ignore[name-defined]  # noqa: F821
+            f"/Volumes/integration_test_src/test_schema/nested_volume/{_rel_path}",
+            _content.decode(),
+            overwrite=True,
+        )
+    _has_nested_volume = True
+    print(f"Seeded nested_volume with {len(_NESTED_VOLUME_FILES)} file(s) across a nested tree.")
+except Exception as _exc:  # noqa: BLE001
+    print(f"Skipped nested volume seed: {_exc}")
+dbutils.jobs.taskValues.set(  # type: ignore[name-defined]  # noqa: F821
+    key="has_nested_volume", value="true" if _has_nested_volume else "false"
+)
+dbutils.jobs.taskValues.set(  # type: ignore[name-defined]  # noqa: F821
+    key="nested_volume_file_count", value=str(len(_NESTED_VOLUME_FILES))
+)
+dbutils.jobs.taskValues.set(  # type: ignore[name-defined]  # noqa: F821
+    key="nested_volume_total_bytes",
+    value=str(sum(len(_b) for _b in _NESTED_VOLUME_FILES.values())),
+)
+
+# COMMAND ----------
+# --- 2.5.9: Iceberg re-run fixture (skipped_by_config -> validated) ---
+# A separate Iceberg table used exclusively to exercise the re-pickup
+# contract after a prior run marked it ``skipped_by_config``. Approach:
+#
+#   1. Seed creates ``iceberg_replay_target`` (distinct from iceberg_sales
+#      so the base Phase 2.5.B assertion is unaffected).
+#   2. Seed ensures tracking tables exist, then INSERTs a synthetic
+#      ``skipped_by_config`` row for it into migration_status with a
+#      deliberately-past migrated_at timestamp. This simulates "a prior
+#      run with iceberg_strategy=''".
+#   3. The real migrate task runs with iceberg_strategy=``ddl_replay``
+#      (set by setup_test_config). get_pending_objects' filter excludes
+#      ('validated', 'skipped_by_pipeline_migration') — ``skipped_by_
+#      config`` is NOT terminal, so the table re-enters the pending pool.
+#   4. managed_table_worker migrates it and writes a new ``validated``
+#      row with a later migrated_at.
+#   5. Assertion: migration_status history for iceberg_replay_target
+#      contains BOTH the seeded skipped_by_config row AND a later
+#      validated row. get_latest_migration_status returns validated.
+
+_has_iceberg_replay = False
+try:
+    spark.sql(  # noqa: F821
+        """
+        CREATE OR REPLACE TABLE integration_test_src.test_schema.iceberg_replay_target (
+            record_id INT,
+            payload STRING
+        ) USING ICEBERG
+        """
+    )
+    spark.sql(  # noqa: F821
+        """
+        INSERT INTO integration_test_src.test_schema.iceberg_replay_target VALUES
+            (1, 'replay-row-1'),
+            (2, 'replay-row-2')
+        """
+    )
+    _has_iceberg_replay = True
+
+    # Ensure tracking schema/tables exist before inserting into them.
+    # Discovery.init_tracking_tables() runs a bit later in the workflow,
+    # but creating the tables here is idempotent (CREATE IF NOT EXISTS).
+    from common.tracking import TrackingManager  # noqa: E402
+
+    _tracker_seed = TrackingManager(spark, config)  # noqa: F821
+    _tracker_seed.init_tracking_tables()
+
+    # Pre-insert a ``skipped_by_config`` row for the Iceberg table so the
+    # subsequent migrate task sees it as a flag-gated skip and re-picks it
+    # up. Use append_migration_status so the row shape matches exactly
+    # what the worker writes (same schema, same current_timestamp-stamped
+    # migrated_at; it'll be earlier than the post-migrate row written next).
+    _tracker_seed.append_migration_status(
+        [
+            {
+                "object_name": "`integration_test_src`.`test_schema`.`iceberg_replay_target`",
+                "object_type": "managed_table",
+                "status": "skipped_by_config",
+                "error_message": (
+                    "Iceberg migration not enabled. (seeded by integration test "
+                    "for 2.5.9 re-run transition)"
+                ),
+                "job_run_id": None,
+                "task_run_id": None,
+                "source_row_count": None,
+                "target_row_count": None,
+                "duration_seconds": 0.0,
+            }
+        ]
+    )
+    print("Seeded iceberg_replay_target + synthetic skipped_by_config row for 2.5.9 re-run test.")
+except Exception as _exc:  # noqa: BLE001
+    print(f"Skipped Iceberg re-run fixture seed: {_exc}")
+dbutils.jobs.taskValues.set(  # type: ignore[name-defined]  # noqa: F821
+    key="has_iceberg_replay", value="true" if _has_iceberg_replay else "false"
+)
+
+# COMMAND ----------
 
 print("UC seed data created successfully.")
