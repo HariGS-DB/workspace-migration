@@ -491,4 +491,171 @@ dbutils.jobs.taskValues.set(  # type: ignore[name-defined]  # noqa: F821
 
 # COMMAND ----------
 
+# --- 3.15: Tags on catalog / schema / volume ---
+# PR #25 added unit coverage for tags_worker at catalog/schema/volume
+# level; this integration fixture exercises the same path end-to-end.
+# Discovery picks up each tag via list_tags(); tags_worker renders one
+# ALTER per (securable_type, fqn, column) group and replays on target.
+
+_has_non_table_tags = False
+try:
+    spark.sql(  # noqa: F821
+        "ALTER CATALOG integration_test_src SET TAGS ('scope' = 'integration', 'tier' = 'gold')"
+    )
+    spark.sql(  # noqa: F821
+        "ALTER SCHEMA integration_test_src.test_schema SET TAGS ('owner' = 'platform', 'pii' = 'false')"
+    )
+    spark.sql(  # noqa: F821
+        "ALTER VOLUME integration_test_src.test_schema.test_volume SET TAGS ('purpose' = 'landing')"
+    )
+    _has_non_table_tags = True
+    print("Applied tags to catalog / schema / volume (3.15 fixture).")
+except Exception as _exc:  # noqa: BLE001
+    print(f"Skipped non-table tag seed (unsupported on this runtime): {_exc}")
+dbutils.jobs.taskValues.set(  # type: ignore[name-defined]  # noqa: F821
+    key="has_non_table_tags",
+    value="true" if _has_non_table_tags else "false",
+)
+
+# COMMAND ----------
+
+# --- 3.17: Column comment on managed_orders.amount + volume comment ---
+# PR #25 fixed the COLUMN branch in comments_worker to emit
+# ``ALTER TABLE ... ALTER COLUMN ... COMMENT '...'`` instead of the
+# invalid ``COMMENT ON COLUMN``. The worker also now iterates volumes.
+# This fixture exercises both paths end-to-end.
+
+_has_column_comment = False
+_has_volume_comment = False
+try:
+    spark.sql(  # noqa: F821
+        "ALTER TABLE integration_test_src.test_schema.managed_orders ALTER COLUMN amount COMMENT 'order amount in GBP'"
+    )
+    _has_column_comment = True
+    print("Applied column comment on managed_orders.amount.")
+except Exception as _exc:  # noqa: BLE001
+    print(f"Skipped column comment seed: {_exc}")
+try:
+    spark.sql(  # noqa: F821
+        "COMMENT ON VOLUME integration_test_src.test_schema.test_volume IS 'Integration test landing volume'"
+    )
+    _has_volume_comment = True
+    print("Applied comment on test_volume.")
+except Exception as _exc:  # noqa: BLE001
+    print(f"Skipped volume comment seed: {_exc}")
+dbutils.jobs.taskValues.set(  # type: ignore[name-defined]  # noqa: F821
+    key="has_column_comment", value="true" if _has_column_comment else "false"
+)
+dbutils.jobs.taskValues.set(  # type: ignore[name-defined]  # noqa: F821
+    key="has_volume_comment", value="true" if _has_volume_comment else "false"
+)
+
+# COMMAND ----------
+
+# --- 3.19: Registered model with 1 version + 1 alias (no artifacts) ---
+# models_worker creates the shell, version metadata, and alias on target.
+# No artifact URI is provided, so artifact copy is a no-op — the version
+# is pure metadata. 3.20 (artifact copy) is covered in a parallel lane.
+
+import contextlib  # noqa: E402
+
+from databricks.sdk import WorkspaceClient  # noqa: E402
+
+_w_seed = WorkspaceClient()
+_has_registered_model = False
+_MODEL_CATALOG = "integration_test_src"
+_MODEL_SCHEMA = "test_schema"
+_MODEL_NAME = "integration_test_model"
+_MODEL_ALIAS = "champion"
+try:
+    # Idempotent: delete any pre-existing model so the seed is deterministic.
+    with contextlib.suppress(Exception):
+        _w_seed.registered_models.delete(f"{_MODEL_CATALOG}.{_MODEL_SCHEMA}.{_MODEL_NAME}")
+    _w_seed.registered_models.create(
+        catalog_name=_MODEL_CATALOG,
+        schema_name=_MODEL_SCHEMA,
+        name=_MODEL_NAME,
+        comment="Integration test fixture — scoped metadata only, no artifacts",
+    )
+    # Create version with empty source (metadata only; artifact copy path
+    # is 3.20, out of scope for this item).
+    _created_version = _w_seed.model_versions.create(
+        catalog_name=_MODEL_CATALOG,
+        schema_name=_MODEL_SCHEMA,
+        model_name=_MODEL_NAME,
+        source="",  # intentionally empty — no artifact bytes to copy
+    )
+    _w_seed.registered_models.set_alias(
+        full_name=f"{_MODEL_CATALOG}.{_MODEL_SCHEMA}.{_MODEL_NAME}",
+        alias=_MODEL_ALIAS,
+        version_num=int(_created_version.version),
+    )
+    _has_registered_model = True
+    print(f"Created registered model {_MODEL_NAME} v{_created_version.version} with alias '{_MODEL_ALIAS}'.")
+except Exception as _exc:  # noqa: BLE001
+    print(f"Skipped registered model seed: {_exc}")
+dbutils.jobs.taskValues.set(  # type: ignore[name-defined]  # noqa: F821
+    key="has_registered_model",
+    value="true" if _has_registered_model else "false",
+)
+dbutils.jobs.taskValues.set(  # type: ignore[name-defined]  # noqa: F821
+    key="registered_model_fqn",
+    value=f"{_MODEL_CATALOG}.{_MODEL_SCHEMA}.{_MODEL_NAME}",
+)
+dbutils.jobs.taskValues.set(  # type: ignore[name-defined]  # noqa: F821
+    key="registered_model_alias", value=_MODEL_ALIAS
+)
+
+# COMMAND ----------
+
+# --- 3.24: Customer-defined Delta share + recipient ---
+# Distinct from the tool's internal ``cp_migration_share``. Discovery's
+# list_shares() excludes that one by name; the customer share flows
+# through normally. sharing_worker.run() recreates the share shell +
+# recipient on target, then ALTER SHARE ADDs each object.
+
+_CUSTOMER_SHARE = "integration_test_customer_share"
+_CUSTOMER_RECIPIENT = "integration_test_recipient"
+_has_customer_share = False
+try:
+    # Clean up any leftovers from prior runs so the seed is deterministic.
+    with contextlib.suppress(Exception):
+        _w_seed.shares.delete(_CUSTOMER_SHARE)
+    with contextlib.suppress(Exception):
+        _w_seed.recipients.delete(_CUSTOMER_RECIPIENT)
+
+    from databricks.sdk.service.sharing import AuthenticationType  # noqa: E402
+
+    _w_seed.recipients.create(
+        name=_CUSTOMER_RECIPIENT,
+        authentication_type=AuthenticationType.TOKEN,
+        comment="Integration test recipient (3.24)",
+    )
+    _w_seed.shares.create(
+        name=_CUSTOMER_SHARE,
+        comment="Integration test customer-defined share (3.24)",
+    )
+    # Add managed_orders to the share. sharing_worker uses ALTER SHARE ADD
+    # TABLE on target, so we mirror that shape on source. Note: tables
+    # with row filter / column mask are rejected by Delta Sharing, so we
+    # use managed_orders (no RLS/CM) rather than external_customers.
+    spark.sql(  # noqa: F821
+        f"ALTER SHARE `{_CUSTOMER_SHARE}` ADD TABLE integration_test_src.test_schema.managed_orders"
+    )
+    _has_customer_share = True
+    print(f"Created customer share '{_CUSTOMER_SHARE}' with recipient '{_CUSTOMER_RECIPIENT}'.")
+except Exception as _exc:  # noqa: BLE001
+    print(f"Skipped customer share seed: {_exc}")
+dbutils.jobs.taskValues.set(  # type: ignore[name-defined]  # noqa: F821
+    key="has_customer_share", value="true" if _has_customer_share else "false"
+)
+dbutils.jobs.taskValues.set(  # type: ignore[name-defined]  # noqa: F821
+    key="customer_share_name", value=_CUSTOMER_SHARE
+)
+dbutils.jobs.taskValues.set(  # type: ignore[name-defined]  # noqa: F821
+    key="customer_recipient_name", value=_CUSTOMER_RECIPIENT
+)
+
+# COMMAND ----------
+
 print("UC seed data created successfully.")
