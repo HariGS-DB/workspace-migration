@@ -19,9 +19,16 @@
 #   include_uc               — scope.include_uc
 #   include_hive             — scope.include_hive
 #   iceberg_strategy         — "" or "ddl_replay"
-#   rls_cm_strategy          — "" (skip) only; drop_and_restore isn't
-#                              implemented yet so we refuse here to keep
-#                              operators from setting it accidentally.
+#   rls_cm_strategy          — "" (skip) or "drop_and_restore". The
+#                              ``drop_and_restore`` path requires
+#                              ``rls_cm_maintenance_window_confirmed=true``
+#                              (belt-and-braces informed-consent gate,
+#                              matching setup_sharing's own check).
+#   rls_cm_maintenance_window_confirmed
+#                            — "true" / "false". Required alongside
+#                              ``rls_cm_strategy=drop_and_restore`` because
+#                              that path briefly strips RLS/CM on source
+#                              during each table's DEEP CLONE.
 #   migrate_hive_dbfs_root   — "true" / "false"
 #   hive_dbfs_target_path    — ADLS URL for Hive DBFS-root migration; may
 #                              be empty when ``migrate_hive_dbfs_root`` is
@@ -103,6 +110,7 @@ dbutils.widgets.text("include_uc", "true")  # noqa: F821
 dbutils.widgets.text("include_hive", "false")  # noqa: F821
 dbutils.widgets.text("iceberg_strategy", "")  # noqa: F821
 dbutils.widgets.text("rls_cm_strategy", "")  # noqa: F821
+dbutils.widgets.text("rls_cm_maintenance_window_confirmed", "false")  # noqa: F821
 dbutils.widgets.text("migrate_hive_dbfs_root", "false")  # noqa: F821
 dbutils.widgets.text("hive_dbfs_target_path", "")  # noqa: F821
 dbutils.widgets.text("batch_size", "")  # noqa: F821
@@ -126,6 +134,9 @@ include_uc = _get_bool("include_uc", "true")
 include_hive = _get_bool("include_hive", "false")
 iceberg_strategy = _get_str("iceberg_strategy", "")
 rls_cm_strategy = _get_str("rls_cm_strategy", "")
+rls_cm_maintenance_window_confirmed = _get_bool(
+    "rls_cm_maintenance_window_confirmed", "false"
+)
 migrate_hive_dbfs_root = _get_bool("migrate_hive_dbfs_root", "false")
 hive_dbfs_target_path = _get_str("hive_dbfs_target_path", "")
 batch_size_raw = _get_str("batch_size", "")
@@ -136,15 +147,26 @@ inject_bad_spn_id = _get_bool("inject_bad_spn_id", "false")
 inject_unreachable_target = _get_bool("inject_unreachable_target", "false")
 inject_bad_rls_cm = _get_bool("inject_bad_rls_cm", "false")
 
-# The ``inject_bad_rls_cm`` scenario deliberately lets
-# rls_cm_strategy=drop_and_restore through this gate so the failure
-# lands in ``setup_sharing._validate_rls_cm_strategy`` (where the
-# maintenance-window consent gate lives). Any OTHER caller hitting
-# drop_and_restore still trips this guard.
+# The ``inject_bad_rls_cm`` scenario (X.3.4) deliberately forces
+# rls_cm_strategy=drop_and_restore WITHOUT the maintenance-window
+# confirmation so the failure lands in
+# ``setup_sharing._validate_rls_cm_strategy``.
 if inject_bad_rls_cm:
     rls_cm_strategy = "drop_and_restore"
-elif rls_cm_strategy.lower() == "drop_and_restore":
-    raise NotImplementedError("rls_cm_strategy='drop_and_restore' is not yet implemented — see README.")
+    rls_cm_maintenance_window_confirmed = False
+elif (
+    rls_cm_strategy.lower() == "drop_and_restore"
+    and not rls_cm_maintenance_window_confirmed
+):
+    # Belt-and-braces: setup_sharing ALREADY gates drop_and_restore on
+    # the confirmation flag — matching the gate here fails misconfig
+    # fast, before any side effects.
+    raise ValueError(
+        "rls_cm_strategy='drop_and_restore' requires "
+        "rls_cm_maintenance_window_confirmed=true. That path briefly strips "
+        "RLS/CM on the source table during each DEEP CLONE, so it's gated "
+        "behind an explicit operator confirmation."
+    )
 
 # COMMAND ----------
 
@@ -157,6 +179,7 @@ scope["include_uc"] = include_uc
 scope["include_hive"] = include_hive
 cfg["iceberg_strategy"] = iceberg_strategy
 cfg["rls_cm_strategy"] = rls_cm_strategy
+cfg["rls_cm_maintenance_window_confirmed"] = rls_cm_maintenance_window_confirmed
 cfg["migrate_hive_dbfs_root"] = migrate_hive_dbfs_root
 if hive_dbfs_target_path:
     cfg["hive_dbfs_target_path"] = hive_dbfs_target_path
@@ -200,7 +223,8 @@ print(
     f"  scope.include_uc         = {include_uc}\n"
     f"  scope.include_hive       = {include_hive}\n"
     f"  iceberg_strategy         = {iceberg_strategy!r}\n"
-    f"  rls_cm_strategy          = {cfg.get('rls_cm_strategy', '')!r}\n"
+    f"  rls_cm_strategy          = {rls_cm_strategy!r}\n"
+    f"  rls_cm_maintenance_window_confirmed = {rls_cm_maintenance_window_confirmed}\n"
     f"  migrate_hive_dbfs_root   = {migrate_hive_dbfs_root}\n"
     f"  hive_dbfs_target_path    = {cfg.get('hive_dbfs_target_path', '')!r}\n"
     f"  batch_size               = {cfg.get('batch_size', '(unchanged)')}\n"
