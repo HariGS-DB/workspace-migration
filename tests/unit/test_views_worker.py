@@ -212,3 +212,119 @@ class TestViewsWorkerComplexDdls:
         migrate_view({"object_name": "`cat`.`sch`.`rank_orders`"}, **deps)
         replayed = mock_execute.call_args[0][2]
         assert "ROW_NUMBER() OVER (PARTITION BY customer_id ORDER BY amount DESC)" in replayed
+
+
+class TestViewsWorkerRetryLoop:
+    """Covers the retry-on-failure loop in ``views_worker.run()`` added
+    to compensate for imperfect topological sort (view_table_usage
+    doesn't exist in UC). A view that fails because its upstream wasn't
+    created yet should succeed on a later pass.
+    """
+
+    def test_retry_picks_up_view_when_upstream_lands_on_later_pass(self):
+        """v_b fails pass 1 (upstream v_a not yet there), succeeds pass 2."""
+        from migrate import views_worker
+
+        # attempts for v_a and v_b, in order
+        # pass 1: v_a ok, v_b fails. pass 2: v_b ok.
+        call_log: list[str] = []
+
+        def fake_migrate_view(view_info, **_kwargs):
+            fqn = view_info["object_name"]
+            call_log.append(fqn)
+            if fqn == "`c`.`s`.`v_b`" and call_log.count(fqn) == 1:
+                return {
+                    "object_name": fqn,
+                    "object_type": "view",
+                    "status": "failed",
+                    "error_message": "TABLE_OR_VIEW_NOT_FOUND v_a",
+                    "duration_seconds": 0.1,
+                }
+            return {
+                "object_name": fqn,
+                "object_type": "view",
+                "status": "validated",
+                "error_message": None,
+                "duration_seconds": 0.1,
+            }
+
+        import json
+        dbutils = MagicMock()
+        dbutils.jobs.taskValues.get.return_value = json.dumps([
+            {"object_name": "`c`.`s`.`v_a`"},
+            {"object_name": "`c`.`s`.`v_b`"},
+        ])
+        spark = MagicMock()
+
+        cfg = MagicMock()
+        cfg.include_uc = True
+        cfg.dry_run = False
+
+        with patch.object(views_worker.MigrationConfig, "from_workspace_file", return_value=cfg), \
+             patch.object(views_worker, "AuthManager"), \
+             patch.object(views_worker, "TrackingManager") as mock_tm, \
+             patch.object(views_worker, "find_warehouse", return_value="wh"), \
+             patch.object(views_worker, "CatalogExplorer") as mock_exp, \
+             patch.object(views_worker, "migrate_view", side_effect=fake_migrate_view):
+            mock_exp.return_value.resolve_view_dependency_order.side_effect = lambda v: list(v)
+            views_worker.run(dbutils, spark)
+
+        # v_b should have been attempted twice — pass 1 fail, pass 2 ok
+        assert call_log.count("`c`.`s`.`v_b`") == 2
+        # final tracking call should contain validated status for both
+        final_results = mock_tm.return_value.append_migration_status.call_args_list[-1][0][0]
+        statuses = {r["object_name"]: r["status"] for r in final_results}
+        assert statuses["`c`.`s`.`v_a`"] == "validated"
+        assert statuses["`c`.`s`.`v_b`"] == "validated"
+
+    def test_retry_stops_when_no_progress(self):
+        """v_b keeps failing — loop bails after one no-progress pass so we
+        don't spin forever.
+        """
+        from migrate import views_worker
+
+        call_count = {"v_b": 0}
+
+        def fake_migrate_view(view_info, **_kwargs):
+            fqn = view_info["object_name"]
+            if fqn == "`c`.`s`.`v_b`":
+                call_count["v_b"] += 1
+                return {
+                    "object_name": fqn,
+                    "object_type": "view",
+                    "status": "failed",
+                    "error_message": "TABLE_OR_VIEW_NOT_FOUND permanent",
+                    "duration_seconds": 0.1,
+                }
+            return {
+                "object_name": fqn,
+                "object_type": "view",
+                "status": "validated",
+                "error_message": None,
+                "duration_seconds": 0.1,
+            }
+
+        import json
+        dbutils = MagicMock()
+        dbutils.jobs.taskValues.get.return_value = json.dumps([
+            {"object_name": "`c`.`s`.`v_a`"},
+            {"object_name": "`c`.`s`.`v_b`"},
+        ])
+        spark = MagicMock()
+
+        cfg = MagicMock()
+        cfg.include_uc = True
+        cfg.dry_run = False
+
+        with patch.object(views_worker.MigrationConfig, "from_workspace_file", return_value=cfg), \
+             patch.object(views_worker, "AuthManager"), \
+             patch.object(views_worker, "TrackingManager"), \
+             patch.object(views_worker, "find_warehouse", return_value="wh"), \
+             patch.object(views_worker, "CatalogExplorer") as mock_exp, \
+             patch.object(views_worker, "migrate_view", side_effect=fake_migrate_view):
+            mock_exp.return_value.resolve_view_dependency_order.side_effect = lambda v: list(v)
+            views_worker.run(dbutils, spark)
+
+        # pass 1: both attempted (v_a ok, v_b fail). pass 2: v_b retried and fails.
+        # pass 2 had no progress -> stop. So v_b attempted 2 times.
+        assert call_count["v_b"] == 2

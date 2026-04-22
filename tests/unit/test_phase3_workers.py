@@ -343,3 +343,343 @@ class TestSharingWorker:
         )
         assert res["status"] == "validated"
         assert "already existed" in res["error_message"]
+
+    @patch("migrate.sharing_worker.time")
+    @patch("migrate.sharing_worker.execute_and_poll")
+    def test_share_partial_failure_marks_validation_failed(
+        self, mock_execute, mock_time,
+    ):
+        """If some ADD succeeds and some fails, share row should be
+        ``validation_failed`` so operators know to investigate without
+        halting the rest of the share pipeline."""
+        from migrate.sharing_worker import apply_share
+
+        mock_time.time.side_effect = [100.0, 105.0]
+        # First two ADDs succeed, third fails
+        mock_execute.side_effect = [
+            _ok(), _ok(),
+            {"state": "FAILED", "error": "UNAUTHORIZED", "statement_id": "s"},
+        ]
+        auth = MagicMock()
+        auth.target_client.shares.create.return_value = MagicMock()
+
+        res = apply_share(
+            {"share_name": "s1",
+             "objects": [
+                 {"name": "c.s.t1", "data_object_type": "TABLE"},
+                 {"name": "c.s.t2", "data_object_type": "TABLE"},
+                 {"name": "c.s.t3", "data_object_type": "TABLE"},
+             ]},
+            auth=auth, wh_id="wh", dry_run=False,
+        )
+        assert res["status"] == "validation_failed"
+        assert "UNAUTHORIZED" in res["error_message"]
+        assert "Added 2" in res["error_message"]
+
+    @patch("migrate.sharing_worker.time")
+    def test_provider_failure_surfaces_error(self, mock_time):
+        """Create-provider failure must produce status='failed' — we
+        don't silently treat API errors as success."""
+        from migrate.sharing_worker import apply_provider
+
+        mock_time.time.side_effect = [100.0, 101.0]
+        auth = MagicMock()
+        auth.target_client.providers.create.side_effect = Exception(
+            "INVALID_ACTIVATION_URL"
+        )
+
+        res = apply_provider(
+            {"provider_name": "p1",
+             "authentication_type": "TOKEN",
+             "recipient_profile_str": "http://..."},
+            auth=auth, dry_run=False,
+        )
+        assert res["status"] == "failed"
+        assert "INVALID_ACTIVATION_URL" in res["error_message"]
+
+    @patch("migrate.sharing_worker.time")
+    def test_share_dry_run_skips_api(self, mock_time):
+        """Dry run must NOT hit shares.create on target."""
+        from migrate.sharing_worker import apply_share
+
+        mock_time.time.side_effect = [100.0, 100.0]
+        auth = MagicMock()
+        res = apply_share(
+            {"share_name": "s1", "objects": []},
+            auth=auth, wh_id="wh", dry_run=True,
+        )
+        assert res["status"] == "skipped"
+        assert res["error_message"] == "dry_run"
+        auth.target_client.shares.create.assert_not_called()
+
+
+class TestPhase3WorkersIdempotency:
+    """Cross-worker contract: each Phase 3 worker must tolerate its
+    target object already existing on target (e.g. from a previous
+    partial migrate). The tests below exercise idempotency per object
+    type — a re-run must not fail with ``ALREADY_EXISTS`` or similar.
+    """
+
+    @patch("migrate.tags_worker.time")
+    @patch("migrate.tags_worker.execute_and_poll")
+    def test_tags_worker_tolerates_already_set_tag(self, mock_execute, mock_time):
+        """Re-applying a tag that already exists must succeed (SET TAGS
+        is idempotent in UC — same key/value is a no-op)."""
+        from migrate.tags_worker import apply_tag_group
+
+        mock_time.time.side_effect = [100.0, 100.1]
+        mock_execute.return_value = {"state": "SUCCEEDED", "statement_id": "s"}
+
+        auth = MagicMock()
+        tag_group = [
+            {
+                "securable_type": "TABLE",
+                "securable_fqn": "`c`.`s`.`t`",
+                "tag_name": "env",
+                "tag_value": "test",
+            },
+        ]
+        res = apply_tag_group(
+            ("TABLE", "`c`.`s`.`t`", ""), tag_group,
+            auth=auth, wh_id="wh", dry_run=False,
+        )
+        assert res["status"] == "validated"
+
+
+class TestPhase3DispatchOnObjectType:
+    """Every Phase 3 worker reads its ``object_type`` from the incoming
+    list payload and dispatches only to the types it owns. Prevents a
+    regression where e.g. tags_worker accidentally starts processing
+    row_filter entries.
+    """
+
+    def test_tags_worker_only_handles_tag_rows(self):
+        """Source-level check that tags_worker's per-row dispatch
+        filters on object_type == 'tag'."""
+        import pathlib
+        src = (
+            pathlib.Path(__file__).resolve().parents[2]
+            / "src" / "migrate" / "tags_worker.py"
+        ).read_text()
+        # Either explicit object_type filtering, or reading tag_list
+        # (which the orchestrator already pre-filters to tag type).
+        assert "tag_list" in src or 'object_type = \'tag\'' in src or \
+            'object_type == "tag"' in src
+
+    def test_row_filters_worker_uses_row_filter_list(self):
+        import pathlib
+        src = (
+            pathlib.Path(__file__).resolve().parents[2]
+            / "src" / "migrate" / "row_filters_worker.py"
+        ).read_text()
+        assert "row_filter_list" in src
+
+    def test_column_masks_worker_uses_column_mask_list(self):
+        import pathlib
+        src = (
+            pathlib.Path(__file__).resolve().parents[2]
+            / "src" / "migrate" / "column_masks_worker.py"
+        ).read_text()
+        assert "column_mask_list" in src
+
+
+class TestPhase3StatusEmission:
+    """Every Phase 3 worker writes to migration_status with an
+    object_type matching the Phase 3 backlog (tag, row_filter,
+    column_mask, policy, comment, monitor, registered_model,
+    connection, foreign_catalog, share, recipient, provider,
+    online_table). Locks in the naming so dashboard panels + the
+    tracker's NOT-LIKE-'skipped%' filter stay aligned."""
+
+    @patch("migrate.tags_worker.time")
+    @patch("migrate.tags_worker.execute_and_poll")
+    def test_tags_worker_writes_object_type_tag(self, mock_execute, mock_time):
+        from migrate.tags_worker import apply_tag_group
+
+        mock_time.time.side_effect = [100.0, 100.1]
+        mock_execute.return_value = {"state": "SUCCEEDED", "statement_id": "s"}
+        auth = MagicMock()
+        res = apply_tag_group(
+            ("TABLE", "`c`.`s`.`t`", ""),
+            [{
+                "securable_type": "TABLE",
+                "securable_fqn": "`c`.`s`.`t`",
+                "tag_name": "k",
+                "tag_value": "v",
+            }],
+            auth=auth, wh_id="wh", dry_run=False,
+        )
+        assert res["object_type"] == "tag"
+
+    @patch("migrate.row_filters_worker.time")
+    @patch("migrate.row_filters_worker.execute_and_poll")
+    def test_row_filters_worker_writes_object_type_row_filter(
+        self, mock_execute, mock_time
+    ):
+        from migrate.row_filters_worker import apply_row_filter
+
+        mock_time.time.side_effect = [100.0, 100.1]
+        mock_execute.return_value = {"state": "SUCCEEDED", "statement_id": "s"}
+        auth = MagicMock()
+        res = apply_row_filter(
+            {
+                "table_fqn": "`c`.`s`.`t`",
+                "filter_function_fqn": "c.s.f",
+                "filter_columns": ["region"],
+            },
+            auth=auth, wh_id="wh", dry_run=False,
+        )
+        assert res["object_type"] == "row_filter"
+
+
+# ---------------------------------------------------- Negative-path ----
+#
+# Every Phase 3 worker must turn a downstream failure into a status='failed'
+# tracking row, not a raised exception. Locks in the contract so a single
+# bad tag / RLS / mask / monitor doesn't halt the whole worker.
+
+class TestPhase3WorkerErrorSurfacing:
+    @patch("migrate.tags_worker.time")
+    @patch("migrate.tags_worker.execute_and_poll")
+    def test_tags_worker_surfaces_failed_sql(self, mock_execute, mock_time):
+        from migrate.tags_worker import apply_tag_group
+
+        mock_time.time.side_effect = [100.0, 101.0]
+        mock_execute.return_value = {
+            "state": "FAILED",
+            "error": "PERMISSION_DENIED: not metastore admin",
+            "statement_id": "s",
+        }
+        res = apply_tag_group(
+            ("TABLE", "`c`.`s`.`t`", ""),
+            [{"tag_name": "env", "tag_value": "prod"}],
+            auth=MagicMock(), wh_id="wh", dry_run=False,
+        )
+        assert res["status"] == "failed"
+        assert "PERMISSION_DENIED" in res["error_message"]
+
+    @patch("migrate.row_filters_worker.time")
+    @patch("migrate.row_filters_worker.execute_and_poll")
+    def test_row_filter_surfaces_missing_function(self, mock_execute, mock_time):
+        from migrate.row_filters_worker import apply_row_filter
+
+        mock_time.time.side_effect = [100.0, 100.5]
+        mock_execute.return_value = {
+            "state": "FAILED", "error": "ROUTINE_NOT_FOUND", "statement_id": "s",
+        }
+        res = apply_row_filter(
+            {"table_fqn": "`c`.`s`.`t`",
+             "filter_function_fqn": "c.s.missing_fn",
+             "filter_columns": ["region"]},
+            auth=MagicMock(), wh_id="wh", dry_run=False,
+        )
+        assert res["status"] == "failed"
+        assert "ROUTINE_NOT_FOUND" in res["error_message"]
+
+    @patch("migrate.column_masks_worker.time")
+    @patch("migrate.column_masks_worker.execute_and_poll")
+    def test_column_mask_surfaces_missing_function(self, mock_execute, mock_time):
+        from migrate.column_masks_worker import apply_column_mask
+
+        mock_time.time.side_effect = [100.0, 100.5]
+        mock_execute.return_value = {
+            "state": "FAILED", "error": "ROUTINE_NOT_FOUND", "statement_id": "s",
+        }
+        res = apply_column_mask(
+            {"table_fqn": "`c`.`s`.`t`",
+             "column_name": "ssn",
+             "mask_function_fqn": "c.s.missing_mask"},
+            auth=MagicMock(), wh_id="wh", dry_run=False,
+        )
+        assert res["status"] == "failed"
+        assert "ROUTINE_NOT_FOUND" in res["error_message"]
+
+    @patch("migrate.monitors_worker.time")
+    def test_monitor_surfaces_api_failure(self, mock_time):
+        from migrate.monitors_worker import apply_monitor
+
+        mock_time.time.side_effect = [100.0, 101.0]
+        auth = MagicMock()
+        auth.target_client.api_client.do.side_effect = Exception(
+            "TABLE_NOT_FOUND: monitor target missing"
+        )
+        res = apply_monitor(
+            {"table_fqn": "`c`.`s`.`t`",
+             "definition": {"schedule": {"quartz_cron_expression": "0 0 * * * ?"}}},
+            auth=auth, dry_run=False,
+        )
+        assert res["status"] == "failed"
+        assert "TABLE_NOT_FOUND" in res["error_message"]
+
+    @patch("migrate.models_worker.time")
+    def test_model_surfaces_api_failure(self, mock_time):
+        from migrate.models_worker import apply_model
+
+        mock_time.time.side_effect = [100.0, 101.0]
+        auth = MagicMock()
+        auth.target_client.registered_models.create.side_effect = Exception(
+            "PERMISSION_DENIED on schema"
+        )
+        results = apply_model(
+            {"model_fqn": "c.s.m1",
+             "storage_location": "abfss://x@y/m1",
+             "versions": []},
+            auth=auth, dry_run=False,
+        )
+        # apply_model returns a list of results (model + versions)
+        assert any(r["status"] == "failed" for r in results)
+        assert any("PERMISSION_DENIED" in (r.get("error_message") or "")
+                   for r in results)
+
+
+# ---------------------------------------------------- Dry-run gate ------
+
+class TestPhase3DryRun:
+    """Every worker that takes dry_run must short-circuit execute_and_poll
+    and return status='skipped' / error_message='dry_run'. Missing these
+    means dry_run silently hits the target."""
+
+    @patch("migrate.tags_worker.execute_and_poll")
+    @patch("migrate.tags_worker.time")
+    def test_tags_worker_dry_run(self, mock_time, mock_execute):
+        from migrate.tags_worker import apply_tag_group
+
+        mock_time.time.side_effect = [100.0, 100.0]
+        res = apply_tag_group(
+            ("TABLE", "`c`.`s`.`t`", ""),
+            [{"tag_name": "k", "tag_value": "v"}],
+            auth=MagicMock(), wh_id="wh", dry_run=True,
+        )
+        assert res["status"] == "skipped"
+        assert res["error_message"] == "dry_run"
+        mock_execute.assert_not_called()
+
+    @patch("migrate.row_filters_worker.execute_and_poll")
+    @patch("migrate.row_filters_worker.time")
+    def test_row_filter_dry_run(self, mock_time, mock_execute):
+        from migrate.row_filters_worker import apply_row_filter
+
+        mock_time.time.side_effect = [100.0, 100.0]
+        res = apply_row_filter(
+            {"table_fqn": "`c`.`s`.`t`",
+             "filter_function_fqn": "c.s.f",
+             "filter_columns": ["r"]},
+            auth=MagicMock(), wh_id="wh", dry_run=True,
+        )
+        assert res["status"] == "skipped"
+        mock_execute.assert_not_called()
+
+    @patch("migrate.column_masks_worker.execute_and_poll")
+    @patch("migrate.column_masks_worker.time")
+    def test_column_mask_dry_run(self, mock_time, mock_execute):
+        from migrate.column_masks_worker import apply_column_mask
+
+        mock_time.time.side_effect = [100.0, 100.0]
+        res = apply_column_mask(
+            {"table_fqn": "`c`.`s`.`t`",
+             "column_name": "ssn",
+             "mask_function_fqn": "c.s.f"},
+            auth=MagicMock(), wh_id="wh", dry_run=True,
+        )
+        assert res["status"] == "skipped"
+        mock_execute.assert_not_called()

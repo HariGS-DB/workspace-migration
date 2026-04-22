@@ -149,3 +149,62 @@ spn_secret_key: spn-secret
     def test_from_workspace_file_raises_on_missing_file(self, tmp_path):
         with pytest.raises(FileNotFoundError):
             MigrationConfig.from_workspace_file(str(tmp_path / "does-not-exist.yaml"))
+
+    def test_iceberg_strategy_ddl_replay_is_accepted(self, tmp_path):
+        """Setting iceberg_strategy='ddl_replay' opts into Option A path —
+        managed_table_worker checks this flag. An unset flag blocks Iceberg.
+        """
+        path = _write(tmp_path, """
+source_workspace_url: https://src.azuredatabricks.net
+target_workspace_url: https://tgt.azuredatabricks.net
+spn_client_id: client-id
+spn_secret_scope: migration
+spn_secret_key: spn-secret
+iceberg_strategy: ddl_replay
+""")
+        config = MigrationConfig.from_workspace_file(str(path))
+        assert config.iceberg_strategy == "ddl_replay"
+
+    def test_rls_cm_strategy_drop_and_restore_is_accepted(self, tmp_path):
+        """rls_cm_strategy='drop_and_restore' must round-trip for Phase 2.5.B
+        so the dispatch check in managed_table_worker can branch on it."""
+        path = _write(tmp_path, """
+source_workspace_url: https://src.azuredatabricks.net
+target_workspace_url: https://tgt.azuredatabricks.net
+spn_client_id: client-id
+spn_secret_scope: migration
+spn_secret_key: spn-secret
+rls_cm_strategy: drop_and_restore
+""")
+        config = MigrationConfig.from_workspace_file(str(path))
+        assert config.rls_cm_strategy == "drop_and_restore"
+
+    def test_scope_missing_defaults_uc_only(self, tmp_path):
+        """When scope block is missing, include_uc defaults True, include_hive False —
+        prevents accidental Hive enumeration on UC-only migrations.
+        """
+        path = _write(tmp_path, """
+source_workspace_url: https://src.azuredatabricks.net
+target_workspace_url: https://tgt.azuredatabricks.net
+spn_client_id: client-id
+spn_secret_scope: migration
+spn_secret_key: spn-secret
+""")
+        config = MigrationConfig.from_workspace_file(str(path))
+        assert config.include_uc is True
+        assert config.include_hive is False
+
+    def test_batch_size_coerced_to_int(self, tmp_path):
+        """YAML may deserialise ``batch_size: 100`` as int or str depending
+        on style; MigrationConfig must coerce to int so batching math works."""
+        path = _write(tmp_path, """
+source_workspace_url: https://src.azuredatabricks.net
+target_workspace_url: https://tgt.azuredatabricks.net
+spn_client_id: client-id
+spn_secret_scope: migration
+spn_secret_key: spn-secret
+batch_size: "100"
+""")
+        config = MigrationConfig.from_workspace_file(str(path))
+        assert config.batch_size == 100
+        assert isinstance(config.batch_size, int)

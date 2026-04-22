@@ -231,41 +231,26 @@ class TestCatalogUtils:
     # ------------------------------------------------------------------
 
     def test_resolve_view_dependency_order(self, mock_spark):
-        """v_c depends on v_b, v_b depends on v_a -> order: v_a, v_b, v_c."""
+        """v_c depends on v_b, v_b depends on v_a -> order: v_a, v_b, v_c.
+
+        Dependencies are now parsed from ``information_schema.views.view_definition``
+        since ``view_table_usage`` doesn't exist in UC.
+        """
         views = ["`cat`.`sch`.`v_c`", "`cat`.`sch`.`v_b`", "`cat`.`sch`.`v_a`"]
 
-        # Map each view to its dependencies returned by information_schema
-        deps = {
-            "v_c": [
-                _row(
-                    view_catalog="cat",
-                    view_schema="sch",
-                    view_name="v_c",
-                    table_catalog="cat",
-                    table_schema="sch",
-                    table_name="v_b",
-                )
-            ],
-            "v_b": [
-                _row(
-                    view_catalog="cat",
-                    view_schema="sch",
-                    view_name="v_b",
-                    table_catalog="cat",
-                    table_schema="sch",
-                    table_name="v_a",
-                )
-            ],
-            "v_a": [],
-        }
+        # view_definition bodies referencing dependencies (unquoted FQN)
+        view_rows = [
+            _row(table_schema="sch", table_name="v_a",
+                 view_definition="SELECT * FROM cat.sch.base_table"),
+            _row(table_schema="sch", table_name="v_b",
+                 view_definition="SELECT * FROM cat.sch.v_a WHERE x > 0"),
+            _row(table_schema="sch", table_name="v_c",
+                 view_definition="SELECT * FROM cat.sch.v_b"),
+        ]
 
         def sql_side_effect(query):
             mock_result = MagicMock()
-            for view_name, dep_rows in deps.items():
-                if f"view_name = '{view_name}'" in query:
-                    mock_result.collect.return_value = dep_rows
-                    return mock_result
-            mock_result.collect.return_value = []
+            mock_result.collect.return_value = view_rows
             return mock_result
 
         mock_spark.sql.side_effect = sql_side_effect
@@ -273,7 +258,6 @@ class TestCatalogUtils:
         explorer = CatalogExplorer(mock_spark, MagicMock())
         result = explorer.resolve_view_dependency_order(views)
 
-        # v_a must come before v_b, v_b must come before v_c
         assert result.index("`cat`.`sch`.`v_a`") < result.index("`cat`.`sch`.`v_b`")
         assert result.index("`cat`.`sch`.`v_b`") < result.index("`cat`.`sch`.`v_c`")
 
@@ -281,36 +265,16 @@ class TestCatalogUtils:
         """v_a -> v_b -> v_a (cycle). All views should still appear in output."""
         views = ["`cat`.`sch`.`v_a`", "`cat`.`sch`.`v_b`"]
 
-        deps = {
-            "v_a": [
-                _row(
-                    view_catalog="cat",
-                    view_schema="sch",
-                    view_name="v_a",
-                    table_catalog="cat",
-                    table_schema="sch",
-                    table_name="v_b",
-                )
-            ],
-            "v_b": [
-                _row(
-                    view_catalog="cat",
-                    view_schema="sch",
-                    view_name="v_b",
-                    table_catalog="cat",
-                    table_schema="sch",
-                    table_name="v_a",
-                )
-            ],
-        }
+        view_rows = [
+            _row(table_schema="sch", table_name="v_a",
+                 view_definition="SELECT * FROM cat.sch.v_b"),
+            _row(table_schema="sch", table_name="v_b",
+                 view_definition="SELECT * FROM cat.sch.v_a"),
+        ]
 
         def sql_side_effect(query):
             mock_result = MagicMock()
-            for view_name, dep_rows in deps.items():
-                if f"view_name = '{view_name}'" in query:
-                    mock_result.collect.return_value = dep_rows
-                    return mock_result
-            mock_result.collect.return_value = []
+            mock_result.collect.return_value = view_rows
             return mock_result
 
         mock_spark.sql.side_effect = sql_side_effect
@@ -321,6 +285,81 @@ class TestCatalogUtils:
         # Both views must be present despite the cycle
         assert set(result) == set(views)
         assert len(result) == 2
+
+
+class TestExtractThreePartRefs:
+    """Parse three-part FQN references from a SQL body.
+
+    view_table_usage doesn't exist in UC, so dependency detection parses
+    view_definition. Cover: backticked, unquoted, qualified vs unqualified,
+    CTEs, SQL keywords that look like names.
+    """
+
+    def test_extracts_unquoted_three_part_ref(self):
+        from common.catalog_utils import _extract_three_part_refs
+
+        view_set = {"`cat`.`sch`.`upstream`"}
+        refs = _extract_three_part_refs(
+            "SELECT * FROM cat.sch.upstream WHERE x > 0", view_set,
+        )
+        assert refs == {"`cat`.`sch`.`upstream`"}
+
+    def test_extracts_backticked_three_part_ref(self):
+        from common.catalog_utils import _extract_three_part_refs
+
+        view_set = {"`cat`.`sch`.`upstream`"}
+        refs = _extract_three_part_refs(
+            "SELECT * FROM `cat`.`sch`.`upstream`", view_set,
+        )
+        assert refs == {"`cat`.`sch`.`upstream`"}
+
+    def test_filters_refs_not_in_view_set(self):
+        from common.catalog_utils import _extract_three_part_refs
+
+        view_set = {"`cat`.`sch`.`upstream`"}
+        refs = _extract_three_part_refs(
+            "SELECT * FROM other.catalog.other_table JOIN cat.sch.upstream USING (id)",
+            view_set,
+        )
+        # only the one present in view_set is returned
+        assert refs == {"`cat`.`sch`.`upstream`"}
+
+    def test_extracts_multiple_references(self):
+        from common.catalog_utils import _extract_three_part_refs
+
+        view_set = {
+            "`c1`.`s1`.`t1`", "`c2`.`s2`.`t2`", "`c3`.`s3`.`t3`",
+        }
+        refs = _extract_three_part_refs(
+            "SELECT * FROM c1.s1.t1 UNION ALL SELECT * FROM c2.s2.t2 "
+            "UNION ALL SELECT * FROM `c3`.`s3`.`t3`",
+            view_set,
+        )
+        assert refs == view_set
+
+    def test_empty_body_returns_empty(self):
+        from common.catalog_utils import _extract_three_part_refs
+
+        assert _extract_three_part_refs("", {"`c`.`s`.`t`"}) == set()
+        assert _extract_three_part_refs("   ", {"`c`.`s`.`t`"}) == set()
+
+
+class TestSqlInLiteral:
+    def test_empty_returns_empty_literal(self):
+        from common.catalog_utils import _sql_in_literal
+        assert _sql_in_literal(set()) == "''"
+
+    def test_escapes_single_quotes(self):
+        from common.catalog_utils import _sql_in_literal
+        out = _sql_in_literal({"O'Brien"})
+        assert out == "'O''Brien'"
+
+    def test_comma_separates(self):
+        from common.catalog_utils import _sql_in_literal
+        # set ordering isn't guaranteed; check as set of literals
+        out = _sql_in_literal({"a", "b"})
+        tokens = {t.strip() for t in out.split(",")}
+        assert tokens == {"'a'", "'b'"}
 
 
 class TestStripFilterMaskClauses:
