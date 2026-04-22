@@ -44,10 +44,14 @@ migrations, account consolidations, or moving between Azure regions.
 ## Usage
 
 `config.yaml` ships in the repo with **placeholder values only** so the
-source tree never carries environment-specific identifiers. The
-authoritative config is the copy on the workspace at
-`${workspace.file_path}/config.yaml`, which DAB refreshes from the repo
-on every deploy.
+source tree never carries environment-specific identifiers. Operators
+fill in real values in their **local** `config.yaml` before deploying;
+`databricks bundle deploy` syncs that local copy to the workspace at
+`${workspace.file_path}/config.yaml`.
+
+> **Don't edit the workspace copy directly.** The workspace copy is a
+> mirror of your local copy — any workspace-side edit will be
+> overwritten by the next `bundle deploy`. Edit locally and redeploy.
 
 ### Required deploy-time variables
 
@@ -100,35 +104,26 @@ databricks bundle deploy -t dev
 | `hive_dbfs_target_path` | conditional | `""` | ADLS/S3/GCS path where DBFS-root bytes land on target. Required when `migrate_hive_dbfs_root=true`. The SPN needs `READ_FILES`/`WRITE_FILES`/`CREATE_EXTERNAL_TABLE` on the external location that owns this path. |
 | `hive_target_catalog` | no | `hive_upgraded` | Target catalog name for Hive-to-UC migration. Created during migrate if missing. |
 
-> **Note on `config.yaml` lifecycle**: the file is synced from the repo
-> into `${workspace.file_path}/config.yaml` on every `bundle deploy` —
-> operator edits in the workspace are overwritten. Either maintain your
-> real values in a local copy and re-paste after each deploy, or treat
-> the repo copy as the source of truth and commit your values to a
-> fork. A future improvement (tracked in the backlog) will stop the
-> deploy from clobbering operator edits.
-
 ### Deploy + configure flow
 
 1. Clone this repo
-2. `databricks bundle deploy -t dev --var migration_spn_id=<your-app-id>`
-   (uploads `config.yaml` with placeholders to the workspace)
-3. In the workspace, edit `${workspace.file_path}/config.yaml` with real
-   values:
+2. Edit the local `config.yaml` with real values (or keep your own
+   filled-in copy out-of-tree and copy it in before each deploy):
    - `source_workspace_url` / `target_workspace_url`
    - `spn_client_id` + `spn_secret_scope`/`spn_secret_key` (OAuth service
      principal with access to both workspaces)
    - `scope.include_uc` / `scope.include_hive`
    - optional: `catalog_filter`, `schema_filter`, `iceberg_strategy`,
      `migrate_hive_dbfs_root`, `hive_dbfs_target_path`
+3. `databricks bundle deploy -t dev --var migration_spn_id=<your-app-id>`
+   (syncs your local `config.yaml` to the workspace along with the
+   workflow definitions)
 4. Run the `pre_check` workflow to validate connectivity and grants
 5. Run `discovery` to inventory source objects
 6. Run `migrate` to replay on target
 
-> **Note:** a subsequent `databricks bundle deploy` will overwrite the
-> workspace `config.yaml` with the placeholder version again. Re-apply
-> your edits after each deploy, or maintain your real values in an
-> out-of-repo copy that you paste in when needed.
+To change values later, edit your local `config.yaml` and redeploy —
+**don't edit the workspace copy** (it's a mirror and gets overwritten).
 
 ### Running the integration tests
 

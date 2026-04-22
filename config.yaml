@@ -1,18 +1,21 @@
 # ------------------------------------------------------------
 # Migration configuration — PLACEHOLDERS ONLY.
 #
-# This file is shipped in the bundle with placeholder values so the
-# repo never carries environment-specific identifiers. DAB syncs it to
-# ``${workspace.file_path}/config.yaml`` on every ``databricks bundle
-# deploy``; before running any migration or integration test, edit the
-# workspace copy with real values (source/target workspace URLs, SPN
-# application ID, hive_dbfs_target_path, etc).
+# THIS FILE is the source of truth. Edit the values BELOW in your
+# local clone, then ``databricks bundle deploy`` syncs your edits to
+# ``${workspace.file_path}/config.yaml`` in the workspace.
 #
-# For integration testing, the expected flow is:
-#   1. ``databricks bundle deploy -t dev`` (ships this file as-is)
-#   2. Edit ``${workspace.file_path}/config.yaml`` in the workspace
-#      with your test-env values
-#   3. Trigger ``uc_integration_test`` / ``hive_integration_test``
+# DO NOT edit the workspace copy directly — ``bundle deploy`` is a
+# one-way sync that mirrors this local file, so any workspace-side
+# edit will be overwritten on the next deploy.
+#
+# For integration testing:
+#   1. Edit this file with real source/target URLs, SPN values, and
+#      ``hive_dbfs_target_path``.
+#   2. ``databricks bundle deploy -t dev``
+#   3. Trigger ``uc_integration_test`` / ``hive_integration_test``.
+#      The workflows back up + restore the workspace config.yaml
+#      around their per-test overrides; your local file is untouched.
 #
 # See config.example.yaml for a fully-commented reference.
 #
