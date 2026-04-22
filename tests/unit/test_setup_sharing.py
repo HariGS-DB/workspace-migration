@@ -229,9 +229,10 @@ class TestRlsCmStrategyGating:
     orphan shares / recipients on source.
     """
 
-    def _config(self, strategy: str) -> MagicMock:
+    def _config(self, strategy: str, confirmed: bool = False) -> MagicMock:
         config = MagicMock()
         config.rls_cm_strategy = strategy
+        config.rls_cm_maintenance_window_confirmed = confirmed
         return config
 
     def test_empty_strategy_returns_empty(self):
@@ -245,15 +246,24 @@ class TestRlsCmStrategyGating:
     def test_whitespace_strategy_treated_as_empty(self):
         assert _validate_rls_cm_strategy(self._config("   ")) == ""
 
-    def test_drop_and_restore_raises_not_implemented(self):
-        with pytest.raises(NotImplementedError, match="not yet implemented"):
-            _validate_rls_cm_strategy(self._config("drop_and_restore"))
+    def test_drop_and_restore_without_consent_raises_value_error(self):
+        """Operator must flip ``rls_cm_maintenance_window_confirmed=true``
+        to opt into drop_and_restore — validator refuses otherwise."""
+        with pytest.raises(ValueError, match="rls_cm_maintenance_window_confirmed"):
+            _validate_rls_cm_strategy(self._config("drop_and_restore", confirmed=False))
 
-    def test_drop_and_restore_mixed_case_still_raises(self):
-        """Validator normalizes casing so a typo like ``Drop_And_Restore``
-        still trips the gate — no silent fall-through into skip mode."""
-        with pytest.raises(NotImplementedError):
-            _validate_rls_cm_strategy(self._config("Drop_And_Restore"))
+    def test_drop_and_restore_with_consent_returns_normalized(self):
+        """With consent flag set, validator returns normalized strategy."""
+        assert (
+            _validate_rls_cm_strategy(self._config("drop_and_restore", confirmed=True))
+            == "drop_and_restore"
+        )
+
+    def test_drop_and_restore_mixed_case_still_requires_consent(self):
+        """Validator normalizes casing; ``Drop_And_Restore`` without consent
+        still trips the gate."""
+        with pytest.raises(ValueError):
+            _validate_rls_cm_strategy(self._config("Drop_And_Restore", confirmed=False))
 
     def test_unknown_value_raises_value_error(self):
         with pytest.raises(ValueError, match="Unknown rls_cm_strategy"):
