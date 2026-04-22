@@ -4,6 +4,7 @@
 
 # Bootstrap: put the bundle's `src/` dir on sys.path so `from common...` imports resolve
 import sys  # noqa: E402
+
 try:
     _ctx = dbutils.notebook.entry_point.getDbutils().notebook().getContext()  # noqa: F821
     _nb = _ctx.notebookPath().get()
@@ -274,8 +275,147 @@ except Exception as _exc:  # noqa: BLE001
 
 # COMMAND ----------
 
+# --- 3.16 ABAC policy fixture ---
+# ABAC policies are a Unity Catalog preview feature with evolving SQL. If
+# the workspace doesn't have the preview enabled, SET ABAC POLICY returns
+# a syntax error; we catch it and skip gracefully so the assertion step
+# can skip too.
+_has_abac = False
+_abac_skip_reason = ""
+try:
+    # First create the user-defined filter function the policy references.
+    spark.sql(  # noqa: F821
+        """
+        CREATE OR REPLACE FUNCTION integration_test_src.test_schema.abac_region_filter(region STRING)
+        RETURNS BOOLEAN
+        RETURN region = 'US' OR is_account_group_member('admins')
+        """
+    )
+    # SQL shape per 2025-03 preview docs: ALTER TABLE ... SET ABAC POLICY <name>
+    # FILTER USING <function>(<col>). Older shape: CREATE POLICY <name> ON <t>
+    # FILTER USING <fn>(<col>). Try the newer ALTER form first, then fall back
+    # to CREATE POLICY if the parser rejects it.
+    try:
+        spark.sql(  # noqa: F821
+            """
+            ALTER TABLE integration_test_src.test_schema.managed_orders
+            SET ABAC POLICY abac_region_policy FILTER USING
+            integration_test_src.test_schema.abac_region_filter(region)
+            """
+        )
+    except Exception as _inner:  # noqa: BLE001
+        spark.sql(  # noqa: F821
+            """
+            CREATE POLICY abac_region_policy ON integration_test_src.test_schema.managed_orders
+            FILTER USING integration_test_src.test_schema.abac_region_filter(region)
+            """
+        )
+    _has_abac = True
+    print("Applied ABAC policy abac_region_policy.")
+except Exception as _exc:  # noqa: BLE001
+    _abac_skip_reason = str(_exc)[:300]
+    print(
+        f"Skipped ABAC seed — preview not available on this workspace. "
+        f"Reason: {_abac_skip_reason}"
+    )
+dbutils.jobs.taskValues.set(  # type: ignore[name-defined]  # noqa: F821
+    key="has_abac", value="true" if _has_abac else "false"
+)
+dbutils.jobs.taskValues.set(  # type: ignore[name-defined]  # noqa: F821
+    key="abac_skip_reason", value=_abac_skip_reason
+)
+
+# COMMAND ----------
+
+# --- 3.20 Registered model with an artifact file ---
+# Create a registered model, register a version, and upload a tiny file to
+# the version's storage_location so models_worker has bytes to copy.
+_has_model_artifact = False
+_model_bytes = 0
+_model_version_num = 0
+try:
+    from common.auth import AuthManager  # noqa: E402
+    from common.config import MigrationConfig as _MigrationConfig  # noqa: E402
+
+    _model_cfg = _MigrationConfig.from_workspace_file()
+    _model_auth = AuthManager(_model_cfg, dbutils)  # noqa: F821
+    _model_client = _model_auth.source_client
+
+    # Create (or re-use) the registered model
+    _model_fqn = "integration_test_src.test_schema.integration_model"
+    try:
+        _model_client.registered_models.create(
+            catalog_name="integration_test_src",
+            schema_name="test_schema",
+            name="integration_model",
+            comment="Integration-test registered model (3.20)",
+        )
+    except Exception as _exc:  # noqa: BLE001
+        if "already" not in str(_exc).lower():
+            raise
+
+    # Create a model version via SDK so UC allocates a storage_location
+    _version = _model_client.model_versions.create(
+        catalog_name="integration_test_src",
+        schema_name="test_schema",
+        model_name="integration_model",
+        source="integration-test-seed",  # placeholder source URI
+    )
+    _model_version_num = int(_version.version)
+    _storage_location = getattr(_version, "storage_location", None)
+    if not _storage_location:
+        raise RuntimeError("Model version has no storage_location")
+
+    # Upload a tiny artifact file into the version's storage_location
+    _REQS = b"# integration-test marker\npandas==2.2.0\n"
+    _marker_path = _storage_location.rstrip("/") + "/requirements.txt"
+    dbutils.fs.put(_marker_path, _REQS.decode(), overwrite=True)  # type: ignore[name-defined]  # noqa: F821
+    _model_bytes = len(_REQS)
+    _has_model_artifact = True
+    print(
+        f"Seeded registered model {_model_fqn} v{_model_version_num} with "
+        f"{_model_bytes} bytes at {_storage_location}"
+    )
+except Exception as _exc:  # noqa: BLE001
+    print(f"Skipped model artifact seed: {_exc}")
+
+dbutils.jobs.taskValues.set(  # type: ignore[name-defined]  # noqa: F821
+    key="has_model_artifact", value="true" if _has_model_artifact else "false"
+)
+dbutils.jobs.taskValues.set(  # type: ignore[name-defined]  # noqa: F821
+    key="model_artifact_bytes", value=str(_model_bytes)
+)
+
+# COMMAND ----------
+
+# --- P.1 drop_and_restore RLS/CM fixture ---
+# The row filter and column mask created above (tasks 29 / 30) are the
+# fixture. drop_and_restore only activates when config.rls_cm_strategy is
+# set; when that's the case setup_sharing will strip them, managed_table
+# DEEP CLONE runs, then restore_rls_cm reapplies on source. The assertion
+# step inspects rls_cm_manifest + re-checks source tables.
+_has_rls_cm_fixture = bool(_has_row_filter and _has_column_mask)
+dbutils.jobs.taskValues.set(  # type: ignore[name-defined]  # noqa: F821
+    key="has_rls_cm_fixture", value="true" if _has_rls_cm_fixture else "false"
+)
+# Capture the active rls_cm_strategy so the assertion step can know whether
+# to run the manifest checks. (Note: the strategy is read from config.yaml
+# at workflow runtime; this just mirrors it for debugging.)
+try:
+    from common.config import MigrationConfig as _RlsMigrationConfig  # noqa: E402
+
+    _rls_cfg = _RlsMigrationConfig.from_workspace_file()
+    dbutils.jobs.taskValues.set(  # type: ignore[name-defined]  # noqa: F821
+        key="rls_cm_strategy", value=_rls_cfg.rls_cm_strategy or ""
+    )
+except Exception:  # noqa: BLE001
+    pass
+
+# COMMAND ----------
+
 # Grant the migration SPN permissions to read the source catalog.
 from common.config import MigrationConfig  # noqa: E402
+
 config = MigrationConfig.from_workspace_file()
 if config.spn_client_id:
     spark.sql(  # noqa: F821
