@@ -28,6 +28,33 @@ class TestTrackingManager:
         assert "metadata_json STRING" in discovery_ddl
         assert "format STRING" in discovery_ddl
 
+    def test_write_discovery_inventory_uses_merge(self, mock_spark, mock_config):
+        """Concurrent discovery must not collide via mode('overwrite').
+        write_discovery_inventory uses MERGE INTO keyed on the object
+        triple. Verify the SQL shape — no full-table overwrite, and
+        all three key columns are on the ON clause."""
+        mgr = TrackingManager(mock_spark, mock_config)
+        mock_df = MagicMock()
+        mgr.write_discovery_inventory(mock_df)
+
+        # Must stage via temp view.
+        mock_df.createOrReplaceTempView.assert_called_once()
+
+        # Must issue a MERGE statement — NOT an overwrite write.
+        sql_calls = [c.args[0] for c in mock_spark.sql.call_args_list]
+        merge_sql = next((s for s in sql_calls if "MERGE INTO" in s), None)
+        assert merge_sql is not None, (
+            "write_discovery_inventory must use MERGE INTO — overwrite "
+            "causes DELTA_CONCURRENT_APPEND on concurrent discovery runs."
+        )
+        # All three key columns must appear in the ON clause.
+        for key in ("object_name", "object_type", "source_type"):
+            assert f"t.{key}  = s.{key}" in merge_sql or f"t.{key} = s.{key}" in merge_sql, (
+                f"MERGE ON clause missing {key} — concurrent runs from different source_types would collide."
+            )
+        # Must NOT call the old overwrite write path.
+        mock_df.write.mode.assert_not_called()
+
     def test_append_migration_status(self, mock_spark, mock_config):
         mgr = TrackingManager(mock_spark, mock_config)
 

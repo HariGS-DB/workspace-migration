@@ -433,8 +433,7 @@ config = MigrationConfig.from_workspace_file()
 if config.spn_client_id:
     for _cat in ("integration_test_src", "integration_test_src_b"):
         spark.sql(  # noqa: F821
-            f"GRANT USE CATALOG, USE SCHEMA, SELECT, EXECUTE, READ VOLUME "
-            f"ON CATALOG {_cat} TO `{config.spn_client_id}`"
+            f"GRANT USE CATALOG, USE SCHEMA, SELECT, EXECUTE, READ VOLUME ON CATALOG {_cat} TO `{config.spn_client_id}`"
         )
         print(f"Granted migration SPN {config.spn_client_id} perms on {_cat}.")
 

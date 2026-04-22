@@ -153,8 +153,59 @@ class TrackingManager:
         """)
 
     def write_discovery_inventory(self, df: DataFrame) -> None:
-        """Overwrite the discovery inventory table with the given DataFrame."""
-        df.write.mode("overwrite").option("mergeSchema", "true").saveAsTable(f"{self._fqn}.discovery_inventory")
+        """Upsert the discovery inventory with this run's DataFrame.
+
+        Uses Delta MERGE INTO keyed on (object_name, object_type,
+        source_type). Two concurrent migrations against the same
+        tracking catalog no longer collide — each one upserts its
+        own keys, and overlapping keys (e.g. same source workspace)
+        end up with whichever run's scan landed last, not a failed
+        DELTA_CONCURRENT_APPEND.
+
+        Prior behaviour was ``mode("overwrite").saveAsTable(...)``
+        which replaced the whole table per run. Side-effect: objects
+        present in a previous scan but not this one were dropped.
+        MERGE preserves them. Operators who want the old "fresh-scan-
+        only" behaviour can truncate ``discovery_inventory`` before
+        discovery runs.
+        """
+        # Stage new rows under a session-local temp view so we can
+        # write the MERGE as pure SQL (Delta's Python merge API works
+        # but leaves less tidy lineage).
+        staging_view = "_staging_discovery_inventory"
+        df.createOrReplaceTempView(staging_view)
+        merge_cols = (
+            "object_name",
+            "object_type",
+            "source_type",
+            "catalog_name",
+            "schema_name",
+            "row_count",
+            "size_bytes",
+            "is_dlt_managed",
+            "pipeline_id",
+            "create_statement",
+            "data_category",
+            "table_type",
+            "provider",
+            "storage_location",
+            "format",
+            "metadata_json",
+            "discovered_at",
+        )
+        key_cols = ("object_name", "object_type", "source_type")
+        update_set = ", ".join(f"t.{c} = s.{c}" for c in merge_cols if c not in key_cols)
+        insert_cols = ", ".join(merge_cols)
+        insert_vals = ", ".join(f"s.{c}" for c in merge_cols)
+        self.spark.sql(f"""
+            MERGE INTO {self._fqn}.discovery_inventory t
+            USING {staging_view} s
+            ON  t.object_name  = s.object_name
+            AND t.object_type  = s.object_type
+            AND t.source_type  = s.source_type
+            WHEN MATCHED THEN UPDATE SET {update_set}
+            WHEN NOT MATCHED THEN INSERT ({insert_cols}) VALUES ({insert_vals})
+        """)
 
     def append_migration_status(self, records: list[dict]) -> None:
         """Append migration status records with a current timestamp."""
