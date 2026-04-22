@@ -133,3 +133,27 @@ spn_secret_key: spn-secret
     def test_from_workspace_file_raises_on_missing_file(self, tmp_path):
         with pytest.raises(FileNotFoundError):
             MigrationConfig.from_workspace_file(str(tmp_path / "does-not-exist.yaml"))
+
+    def test_rls_cm_defaults_are_conservative(self):
+        """P.1 drop_and_restore is off by default so existing runs are unaffected."""
+        config = MigrationConfig(
+            source_workspace_url="https://src.azuredatabricks.net",
+            target_workspace_url="https://tgt.azuredatabricks.net",
+            spn_client_id="c", spn_secret_scope="s", spn_secret_key="k",
+        )
+        assert config.rls_cm_strategy == ""
+        assert config.rls_cm_maintenance_window_confirmed is False
+
+    def test_from_workspace_file_reads_rls_cm_strategy(self, tmp_path):
+        path = _write(tmp_path, """
+source_workspace_url: https://src.azuredatabricks.net
+target_workspace_url: https://tgt.azuredatabricks.net
+spn_client_id: c
+spn_secret_scope: s
+spn_secret_key: k
+rls_cm_strategy: drop_and_restore
+rls_cm_maintenance_window_confirmed: true
+""")
+        config = MigrationConfig.from_workspace_file(str(path))
+        assert config.rls_cm_strategy == "drop_and_restore"
+        assert config.rls_cm_maintenance_window_confirmed is True

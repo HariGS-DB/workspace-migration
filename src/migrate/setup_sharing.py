@@ -4,6 +4,7 @@
 
 # Bootstrap: put the bundle's `src/` dir on sys.path so `from common...` imports resolve
 import sys  # noqa: E402
+
 try:
     _ctx = dbutils.notebook.entry_point.getDbutils().notebook().getContext()  # noqa: F821
     _nb = _ctx.notebookPath().get()
@@ -27,6 +28,7 @@ from databricks.sdk.service.sharing import (
     SharedDataObjectUpdate,
     SharedDataObjectUpdateAction,
 )
+
 try:
     from databricks.sdk.service.sharing import SharedDataObjectDataObjectType as _DataObjectType  # type: ignore
     _TABLE_TYPE: object = _DataObjectType.TABLE
@@ -35,7 +37,9 @@ except ImportError:
 
 from common.auth import AuthManager
 from common.config import MigrationConfig
+from common.sql_utils import find_warehouse
 from common.tracking import TrackingManager
+from migrate.rls_cm import strip_policies_from_source
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("setup_sharing")
@@ -250,6 +254,28 @@ def run(dbutils, spark) -> None:  # noqa: ARG001
     spark_session = spark
     tracker = TrackingManager(spark_session, config)
 
+    # 0. (P.1) drop_and_restore: strip row filters and column masks from
+    # source tables BEFORE creating the share so target sees unfiltered data.
+    # Manifest rows are written first so a crash mid-strip still leaves a
+    # breadcrumb for the restore worker to reapply.
+    if config.rls_cm_strategy == "drop_and_restore":
+        if not config.rls_cm_maintenance_window_confirmed:
+            raise RuntimeError(
+                "rls_cm_strategy='drop_and_restore' requires "
+                "rls_cm_maintenance_window_confirmed=true in config.yaml. "
+                "Aborting — writes during the drop/restore window would "
+                "bypass policies."
+            )
+        tracker.init_rls_cm_manifest()
+        wh_id = find_warehouse(auth)
+        logger.info("P.1 drop_and_restore: stripping row filters + column masks from source.")
+        strip_policies_from_source(
+            spark_session, auth, tracker,
+            catalogs=config.catalog_filter or _list_source_catalogs(auth),
+            schemas=config.schema_filter or None,
+            wh_id=wh_id, dry_run=config.dry_run,
+        )
+
     # 1. Create or get the delta share on source
     share = get_or_create_share(auth, SHARE_NAME, dry_run=config.dry_run)
 
@@ -290,6 +316,21 @@ def run(dbutils, spark) -> None:  # noqa: ARG001
     ensure_share_consumer_catalog(auth, SHARE_NAME, config.dry_run)
 
     logger.info("Delta sharing setup complete.")
+
+
+def _list_source_catalogs(auth_mgr: AuthManager) -> list[str]:
+    """Return user catalog names on source (exclude system/hive/__db_internal/samples).
+
+    Used as a default scope for drop_and_restore when config.catalog_filter
+    is empty.
+    """
+    try:
+        catalogs = list(auth_mgr.source_client.catalogs.list())
+        exclude = {"system", "hive_metastore", "__databricks_internal", "samples"}
+        return [c.name for c in catalogs if c.name and c.name not in exclude]
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Could not list source catalogs: %s", exc)
+        return []
 
 
 def ensure_share_consumer_catalog(auth_mgr: AuthManager, share_name: str, dry_run: bool) -> None:

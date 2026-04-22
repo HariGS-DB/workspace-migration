@@ -52,6 +52,16 @@ resources:
                 base_parameters:
                   batch: "{{input}}"
 
+        # P.1 drop_and_restore: re-apply row filters + column masks on source
+        # once managed tables have been DEEP CLONEd on target. No-op when
+        # rls_cm_strategy is empty or the maintenance window flag is false
+        # — worker gates internally.
+        - task_key: restore_rls_cm
+          depends_on:
+            - task_key: migrate_managed_tables
+          notebook_task:
+            notebook_path: ../src/migrate/restore_rls_cm.py
+
         - task_key: migrate_functions
           depends_on:
             - task_key: migrate_managed_tables
@@ -246,6 +256,7 @@ resources:
             - task_key: migrate_policies
             - task_key: migrate_row_filters
             - task_key: migrate_column_masks
+            - task_key: restore_rls_cm
             - task_key: migrate_comments
             - task_key: migrate_monitors
             - task_key: migrate_models

@@ -56,7 +56,12 @@ def discovery_row(
 def discovery_schema() -> StructType:
     """StructType used when writing to discovery_inventory."""
     from pyspark.sql.types import (
-        BooleanType, LongType, StringType, StructField, StructType, TimestampType,
+        BooleanType,
+        LongType,
+        StringType,
+        StructField,
+        StructType,
+        TimestampType,
     )
     return StructType([
         StructField("object_name", StringType(), True),
@@ -144,6 +149,23 @@ class TrackingManager:
             ) USING DELTA
         """)
 
+        # Phase 3 P.1: RLS / CM drop_and_restore manifest. One row per
+        # (table, policy_kind, target_col_or_null) pair stripped from
+        # source during setup_sharing; stamped with restored_at when
+        # re-applied post-migration. Null restored_at => unfinished
+        # restoration — the restore worker will re-run.
+        self.spark.sql(f"""
+            CREATE TABLE IF NOT EXISTS {self._fqn}.rls_cm_manifest (
+                table_fqn STRING,
+                policy_kind STRING,
+                target_column STRING,
+                function_fqn STRING,
+                using_columns STRING,
+                stripped_at TIMESTAMP,
+                restored_at TIMESTAMP
+            ) USING DELTA
+        """)
+
     def write_discovery_inventory(self, df: DataFrame) -> None:
         """Overwrite the discovery inventory table with the given DataFrame."""
         df.write.mode("overwrite").option("mergeSchema", "true").saveAsTable(
@@ -194,6 +216,76 @@ class TrackingManager:
                 FROM {self._fqn}.migration_status
             )
             WHERE rn = 1
+        """)
+
+    # ------------------------------------------------------------------
+    # RLS / CM manifest (Phase 3 P.1)
+    # ------------------------------------------------------------------
+
+    def init_rls_cm_manifest(self) -> None:
+        """Ensure the rls_cm_manifest table exists — idempotent helper so
+        setup_sharing can call this without running the full tracking init.
+        """
+        self.spark.sql(f"CREATE CATALOG IF NOT EXISTS {self._catalog}")
+        self.spark.sql(f"CREATE SCHEMA IF NOT EXISTS {self._fqn}")
+        self.spark.sql(f"""
+            CREATE TABLE IF NOT EXISTS {self._fqn}.rls_cm_manifest (
+                table_fqn STRING,
+                policy_kind STRING,
+                target_column STRING,
+                function_fqn STRING,
+                using_columns STRING,
+                stripped_at TIMESTAMP,
+                restored_at TIMESTAMP
+            ) USING DELTA
+        """)
+
+    def append_rls_cm_manifest(self, records: list[dict]) -> None:
+        """Append manifest rows with stripped_at=now, restored_at=NULL."""
+        from pyspark.sql.functions import current_timestamp, lit
+        from pyspark.sql.types import StringType, StructField, StructType
+
+        schema = StructType([
+            StructField("table_fqn", StringType(), True),
+            StructField("policy_kind", StringType(), True),
+            StructField("target_column", StringType(), True),
+            StructField("function_fqn", StringType(), True),
+            StructField("using_columns", StringType(), True),
+        ])
+        field_names = [f.name for f in schema.fields]
+        normalized = [{k: r.get(k) for k in field_names} for r in records]
+        df = self.spark.createDataFrame(normalized, schema=schema)
+        df = df.withColumn("stripped_at", current_timestamp())
+        df = df.withColumn("restored_at", lit(None).cast("timestamp"))
+        df.write.mode("append").saveAsTable(f"{self._fqn}.rls_cm_manifest")
+
+    def get_unrestored_manifest(self) -> list[dict]:
+        """Return manifest rows where restored_at IS NULL (oldest first)."""
+        rows = self.spark.sql(f"""
+            SELECT table_fqn, policy_kind, target_column,
+                   function_fqn, using_columns, stripped_at
+            FROM {self._fqn}.rls_cm_manifest
+            WHERE restored_at IS NULL
+            ORDER BY stripped_at ASC
+        """).collect()
+        return [row.asDict() for row in rows]
+
+    def stamp_manifest_restored(
+        self, table_fqn: str, policy_kind: str, target_column: str | None,
+    ) -> None:
+        """Mark a manifest row restored_at=now. Matches by composite key."""
+        col_clause = (
+            f"target_column = '{target_column}'"
+            if target_column is not None
+            else "target_column IS NULL"
+        )
+        self.spark.sql(f"""
+            UPDATE {self._fqn}.rls_cm_manifest
+            SET restored_at = current_timestamp()
+            WHERE table_fqn = '{table_fqn}'
+              AND policy_kind = '{policy_kind}'
+              AND {col_clause}
+              AND restored_at IS NULL
         """)
 
     def get_pending_objects(self, object_type: str) -> list[dict]:

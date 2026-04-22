@@ -101,6 +101,17 @@ class MigrationConfig:
     migrate_hive_dbfs_root: bool = False
     hive_dbfs_target_path: str = ""
     hive_target_catalog: str = "hive_upgraded"
+    # Row-filter / column-mask strategy (Phase 3 P.1).
+    # "" (default) — leave policies on source untouched; DEEP CLONE inherits
+    #    a copy on target via share (current behaviour).
+    # "drop_and_restore" — strip policies from source tables during
+    #    setup_sharing (so share includes unfiltered data), DEEP CLONE on
+    #    target, then re-apply policies on source. Requires a confirmed
+    #    maintenance window since writes during the drop/restore window
+    #    bypass policies. Must set rls_cm_maintenance_window_confirmed=true
+    #    to opt in — otherwise the workflow aborts to protect the customer.
+    rls_cm_strategy: str = ""
+    rls_cm_maintenance_window_confirmed: bool = False
 
     @classmethod
     def from_workspace_file(cls, path: str | None = None) -> MigrationConfig:
@@ -155,4 +166,8 @@ class MigrationConfig:
             migrate_hive_dbfs_root=_coerce_bool(raw.get("migrate_hive_dbfs_root")),
             hive_dbfs_target_path=str(raw.get("hive_dbfs_target_path", "")),
             hive_target_catalog=str(raw.get("hive_target_catalog", "hive_upgraded")),
+            rls_cm_strategy=str(raw.get("rls_cm_strategy", "")),
+            rls_cm_maintenance_window_confirmed=_coerce_bool(
+                raw.get("rls_cm_maintenance_window_confirmed")
+            ),
         )

@@ -48,3 +48,16 @@ tracking_schema: cp_migration
 migrate_hive_dbfs_root: false
 hive_dbfs_target_path: ""
 hive_target_catalog: hive_upgraded
+
+# --- Row filter / column mask strategy (Phase 3 P.1) ---
+# "" (default) — leave policies on source untouched; target gets a policy-
+#     filtered copy of the data via Delta Share. No maintenance window
+#     needed, but target data matches what the migration SPN can read
+#     (i.e. filters are applied to the share consumer).
+# "drop_and_restore" — strip row filters and column masks from source
+#     tables before sharing so the target sees unfiltered data; re-apply
+#     afterwards. Requires ``rls_cm_maintenance_window_confirmed: true``
+#     because writes during the drop/restore window temporarily bypass
+#     policies. Use this ONLY during a maintenance window.
+rls_cm_strategy: ""
+rls_cm_maintenance_window_confirmed: false
