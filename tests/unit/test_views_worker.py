@@ -249,23 +249,28 @@ class TestViewsWorkerRetryLoop:
             }
 
         import json
+
         dbutils = MagicMock()
-        dbutils.jobs.taskValues.get.return_value = json.dumps([
-            {"object_name": "`c`.`s`.`v_a`"},
-            {"object_name": "`c`.`s`.`v_b`"},
-        ])
+        dbutils.jobs.taskValues.get.return_value = json.dumps(
+            [
+                {"object_name": "`c`.`s`.`v_a`"},
+                {"object_name": "`c`.`s`.`v_b`"},
+            ]
+        )
         spark = MagicMock()
 
         cfg = MagicMock()
         cfg.include_uc = True
         cfg.dry_run = False
 
-        with patch.object(views_worker.MigrationConfig, "from_workspace_file", return_value=cfg), \
-             patch.object(views_worker, "AuthManager"), \
-             patch.object(views_worker, "TrackingManager") as mock_tm, \
-             patch.object(views_worker, "find_warehouse", return_value="wh"), \
-             patch.object(views_worker, "CatalogExplorer") as mock_exp, \
-             patch.object(views_worker, "migrate_view", side_effect=fake_migrate_view):
+        with (
+            patch.object(views_worker.MigrationConfig, "from_workspace_file", return_value=cfg),
+            patch.object(views_worker, "AuthManager"),
+            patch.object(views_worker, "TrackingManager") as mock_tm,
+            patch.object(views_worker, "find_warehouse", return_value="wh"),
+            patch.object(views_worker, "CatalogExplorer") as mock_exp,
+            patch.object(views_worker, "migrate_view", side_effect=fake_migrate_view),
+        ):
             mock_exp.return_value.resolve_view_dependency_order.side_effect = lambda v: list(v)
             views_worker.run(dbutils, spark)
 
@@ -305,23 +310,28 @@ class TestViewsWorkerRetryLoop:
             }
 
         import json
+
         dbutils = MagicMock()
-        dbutils.jobs.taskValues.get.return_value = json.dumps([
-            {"object_name": "`c`.`s`.`v_a`"},
-            {"object_name": "`c`.`s`.`v_b`"},
-        ])
+        dbutils.jobs.taskValues.get.return_value = json.dumps(
+            [
+                {"object_name": "`c`.`s`.`v_a`"},
+                {"object_name": "`c`.`s`.`v_b`"},
+            ]
+        )
         spark = MagicMock()
 
         cfg = MagicMock()
         cfg.include_uc = True
         cfg.dry_run = False
 
-        with patch.object(views_worker.MigrationConfig, "from_workspace_file", return_value=cfg), \
-             patch.object(views_worker, "AuthManager"), \
-             patch.object(views_worker, "TrackingManager"), \
-             patch.object(views_worker, "find_warehouse", return_value="wh"), \
-             patch.object(views_worker, "CatalogExplorer") as mock_exp, \
-             patch.object(views_worker, "migrate_view", side_effect=fake_migrate_view):
+        with (
+            patch.object(views_worker.MigrationConfig, "from_workspace_file", return_value=cfg),
+            patch.object(views_worker, "AuthManager"),
+            patch.object(views_worker, "TrackingManager"),
+            patch.object(views_worker, "find_warehouse", return_value="wh"),
+            patch.object(views_worker, "CatalogExplorer") as mock_exp,
+            patch.object(views_worker, "migrate_view", side_effect=fake_migrate_view),
+        ):
             mock_exp.return_value.resolve_view_dependency_order.side_effect = lambda v: list(v)
             views_worker.run(dbutils, spark)
 

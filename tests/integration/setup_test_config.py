@@ -32,10 +32,10 @@
 import shutil
 
 # COMMAND ----------
-
 # Bootstrap so we can reuse MigrationConfig's resolver for the config
 # path (keeps "where does config.yaml live" in one place).
 import sys  # noqa: E402
+
 try:
     _ctx = dbutils.notebook.entry_point.getDbutils().notebook().getContext()  # noqa: F821
     _nb = _ctx.notebookPath().get()
@@ -48,6 +48,7 @@ except NameError:
 # COMMAND ----------
 
 import yaml  # noqa: E402
+
 from common.config import _resolve_bundle_config_path  # type: ignore[import-not-found]  # noqa: E402
 
 config_path = _resolve_bundle_config_path()
@@ -57,6 +58,7 @@ backup_path = config_path + ".pre-integration-test.bak"
 # (e.g. a previous run crashed before teardown), keep the older backup
 # — it represents the pre-test "real" config.
 import os  # noqa: E402
+
 if not os.path.exists(backup_path):
     shutil.copy2(config_path, backup_path)
     print(f"Backed up {config_path} -> {backup_path}")
@@ -92,9 +94,7 @@ hive_dbfs_target_path = _get_str("hive_dbfs_target_path", "")
 # but catching it at config-setup keeps us from doing a bunch of I/O
 # before failing).
 if rls_cm_strategy.lower() == "drop_and_restore":
-    raise NotImplementedError(
-        "rls_cm_strategy='drop_and_restore' is not yet implemented — see README."
-    )
+    raise NotImplementedError("rls_cm_strategy='drop_and_restore' is not yet implemented — see README.")
 
 # COMMAND ----------
 

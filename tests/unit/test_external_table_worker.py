@@ -168,7 +168,9 @@ class TestExternalTableWorkerStripsFilterMask:
         )
         deps["explorer"].get_create_statement.return_value = dirty_ddl
         deps["validator"].validate_row_count.return_value = {
-            "match": True, "source_count": 1, "target_count": 1,
+            "match": True,
+            "source_count": 1,
+            "target_count": 1,
         }
 
         table_info = {"object_name": "`c`.`s`.`t`"}
@@ -176,12 +178,8 @@ class TestExternalTableWorkerStripsFilterMask:
 
         executed_sql = mock_execute.call_args[0][2]
         # Both filter and mask clauses must be gone.
-        assert "ROW FILTER" not in executed_sql, (
-            f"WITH ROW FILTER clause leaked into replayed DDL: {executed_sql}"
-        )
-        assert "MASK" not in executed_sql, (
-            f"Inline MASK clause leaked into replayed DDL: {executed_sql}"
-        )
+        assert "ROW FILTER" not in executed_sql, f"WITH ROW FILTER clause leaked into replayed DDL: {executed_sql}"
+        assert "MASK" not in executed_sql, f"Inline MASK clause leaked into replayed DDL: {executed_sql}"
         # But the core CREATE remains.
         assert "CREATE TABLE" in executed_sql
         assert "LOCATION" in executed_sql
@@ -223,15 +221,15 @@ class TestExternalTableWorkerPreservesPartitioning:
         )
         deps["explorer"].get_create_statement.return_value = dirty_ddl
         deps["validator"].validate_row_count.return_value = {
-            "match": True, "source_count": 0, "target_count": 0,
+            "match": True,
+            "source_count": 0,
+            "target_count": 0,
         }
 
         migrate_external_table({"object_name": "`c`.`s`.`events`"}, **deps)
 
         replayed = mock_execute.call_args[0][2]
-        assert "PARTITIONED BY (region, event_date)" in replayed, (
-            f"PARTITIONED BY clause stripped: {replayed}"
-        )
+        assert "PARTITIONED BY (region, event_date)" in replayed, f"PARTITIONED BY clause stripped: {replayed}"
         # LOCATION also preserved.
         assert "LOCATION 'abfss://x@y.dfs.core.windows.net/events'" in replayed
         # CREATE TABLE → CREATE TABLE IF NOT EXISTS, not OR REPLACE.
@@ -257,7 +255,9 @@ class TestExternalTableWorkerPreservesPartitioning:
         )
         deps["explorer"].get_create_statement.return_value = dirty_ddl
         deps["validator"].validate_row_count.return_value = {
-            "match": True, "source_count": 0, "target_count": 0,
+            "match": True,
+            "source_count": 0,
+            "target_count": 0,
         }
 
         migrate_external_table({"object_name": "`c`.`s`.`orders`"}, **deps)
@@ -288,7 +288,9 @@ class TestExternalTableWorkerPreservesPartitioning:
         )
         deps["explorer"].get_create_statement.return_value = dirty_ddl
         deps["validator"].validate_row_count.return_value = {
-            "match": True, "source_count": 0, "target_count": 0,
+            "match": True,
+            "source_count": 0,
+            "target_count": 0,
         }
 
         migrate_external_table({"object_name": "`c`.`s`.`events`"}, **deps)

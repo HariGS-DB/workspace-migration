@@ -3,8 +3,10 @@
 # COMMAND ----------
 
 from __future__ import annotations  # noqa: E402
+
 # Bootstrap: put the bundle's `src/` dir on sys.path so `from common...` imports resolve
 import sys  # noqa: E402
+
 try:
     _ctx = dbutils.notebook.entry_point.getDbutils().notebook().getContext()  # noqa: F821
     _nb = _ctx.notebookPath().get()
@@ -30,6 +32,11 @@ from common.tracking import TrackingManager
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("views_worker")
+
+# Number of passes views_worker will retry still-failing views. Covers
+# the case where resolve_view_dependency_order misses an edge (e.g. a
+# view that references a table via dynamic SQL that regex can't parse).
+_MAX_RETRY_PASSES = 3
 
 
 # COMMAND ----------
@@ -163,11 +170,10 @@ def run(dbutils, spark) -> None:
     # view fails with TABLE_OR_VIEW_NOT_FOUND on pass N, its upstream may land
     # on pass N+1. Stop when a full pass produces no additional successes.
 
-    MAX_RETRY_PASSES = 3
     pending_fqns: list[str] = list(ordered_fqns)
     final_by_fqn: dict[str, dict] = {}
 
-    for pass_num in range(1, MAX_RETRY_PASSES + 1):
+    for pass_num in range(1, _MAX_RETRY_PASSES + 1):
         next_pending: list[str] = []
         pass_progress = False
         for fqn in pending_fqns:
@@ -178,8 +184,11 @@ def run(dbutils, spark) -> None:
             try:
                 res = migrate_view(
                     view_info,
-                    config=config, auth=auth, tracker=tracker,
-                    explorer=explorer, wh_id=wh_id,
+                    config=config,
+                    auth=auth,
+                    tracker=tracker,
+                    explorer=explorer,
+                    wh_id=wh_id,
                 )
             except Exception as exc:  # noqa: BLE001
                 res = {
@@ -201,14 +210,18 @@ def run(dbutils, spark) -> None:
                 final_by_fqn[fqn] = res
                 next_pending.append(fqn)
             logger.info(
-                "View %s -> %s (pass %d)", res["object_name"], res["status"], pass_num,
+                "View %s -> %s (pass %d)",
+                res["object_name"],
+                res["status"],
+                pass_num,
             )
         if not next_pending:
             break
         if not pass_progress:
             logger.warning(
                 "No view made progress on pass %d; %d still failing, giving up.",
-                pass_num, len(next_pending),
+                pass_num,
+                len(next_pending),
             )
             break
         pending_fqns = next_pending

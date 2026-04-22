@@ -3,8 +3,10 @@
 # COMMAND ----------
 
 from __future__ import annotations  # noqa: E402
+
 # Bootstrap: put the bundle's `src/` dir on sys.path so `from common...` imports resolve
 import sys  # noqa: E402
+
 try:
     _ctx = dbutils.notebook.entry_point.getDbutils().notebook().getContext()  # noqa: F821
     _nb = _ctx.notebookPath().get()
@@ -137,10 +139,7 @@ def clone_table(
                 "duration_seconds": time.time() - start,
             }
 
-        insert_sql = (
-            f"INSERT INTO {target_fqn} "
-            f"SELECT * FROM `{consumer_catalog}`.`{schema}`.`{table}`"
-        )
+        insert_sql = f"INSERT INTO {target_fqn} SELECT * FROM `{consumer_catalog}`.`{schema}`.`{table}`"
 
         if config.dry_run:
             duration = time.time() - start
@@ -181,9 +180,10 @@ def clone_table(
         try:
             validation = validator.validate_row_count(obj_name, target_fqn)
             status = "validated" if validation["match"] else "validation_failed"
-            err = None if validation["match"] else (
-                f"Row count mismatch: source={validation['source_count']}, "
-                f"target={validation['target_count']}"
+            err = (
+                None
+                if validation["match"]
+                else (f"Row count mismatch: source={validation['source_count']}, target={validation['target_count']}")
             )
             return {
                 "object_name": obj_name,

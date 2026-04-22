@@ -5,6 +5,7 @@ TABLE bodies to ``<target_catalog>.x.y`` so migrated views resolve
 on target. An incorrect rewrite here was the root cause of the
 TABLE_OR_VIEW_NOT_FOUND fallout we hit mid-session earlier.
 """
+
 from __future__ import annotations
 
 from unittest.mock import MagicMock
@@ -32,10 +33,7 @@ class TestRewriteHiveNamespace:
         assert "hive_upgraded.schema.table" in out
 
     def test_rewrites_both_forms_in_same_sql(self):
-        sql = (
-            "SELECT a.col, b.col FROM `hive_metastore`.`s`.`a` a "
-            "JOIN hive_metastore.s.b b ON a.id = b.id"
-        )
+        sql = "SELECT a.col, b.col FROM `hive_metastore`.`s`.`a` a JOIN hive_metastore.s.b b ON a.id = b.id"
         out = rewrite_hive_namespace(sql, "hive_upgraded")
         # Both occurrences rewritten.
         assert "`hive_metastore`" not in out
@@ -56,14 +54,10 @@ class TestRewriteHiveNamespace:
 
 class TestRewriteHiveFqn:
     def test_backticked_fqn(self):
-        assert rewrite_hive_fqn(
-            "`hive_metastore`.`s`.`t`", "hive_upgraded"
-        ) == "`hive_upgraded`.`s`.`t`"
+        assert rewrite_hive_fqn("`hive_metastore`.`s`.`t`", "hive_upgraded") == "`hive_upgraded`.`s`.`t`"
 
     def test_dotted_fqn(self):
-        assert rewrite_hive_fqn(
-            "hive_metastore.s.t", "hive_upgraded"
-        ) == "`hive_upgraded`.`s`.`t`"
+        assert rewrite_hive_fqn("hive_metastore.s.t", "hive_upgraded") == "`hive_upgraded`.`s`.`t`"
 
     def test_non_hive_fqn_passes_through(self):
         """A non-hive FQN is returned unchanged — ensures the helper
@@ -82,9 +76,7 @@ class TestEnsureTargetCatalogAndSchema:
         ensure_target_catalog_and_schema(spark, "hive_upgraded", "sch")
         calls = [c.args[0] for c in spark.sql.call_args_list]
         assert any("CREATE CATALOG IF NOT EXISTS `hive_upgraded`" in s for s in calls)
-        assert any(
-            "CREATE SCHEMA IF NOT EXISTS `hive_upgraded`.`sch`" in s for s in calls
-        )
+        assert any("CREATE SCHEMA IF NOT EXISTS `hive_upgraded`.`sch`" in s for s in calls)
 
 
 class TestHiveToUcPrivilegeMap:

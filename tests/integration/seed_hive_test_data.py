@@ -4,6 +4,7 @@
 
 # Bootstrap: put the bundle's `src/` dir on sys.path so `from common...` imports resolve
 import sys  # noqa: E402
+
 try:
     _ctx = dbutils.notebook.entry_point.getDbutils().notebook().getContext()  # noqa: F821
     _nb = _ctx.notebookPath().get()
@@ -160,8 +161,7 @@ dbutils.jobs.taskValues.set(  # type: ignore[name-defined]  # noqa: F821
 _has_hive_grant = False
 try:
     spark.sql(  # noqa: F821
-        "GRANT SELECT ON SCHEMA hive_metastore.integration_test_hive "
-        "TO `account users`"
+        "GRANT SELECT ON SCHEMA hive_metastore.integration_test_hive TO `account users`"
     )
     _has_hive_grant = True
     print("Granted SELECT on Hive schema to `account users`.")

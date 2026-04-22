@@ -84,8 +84,12 @@ class TestSetupSharing:
 
         # Find the "add" update call (after any pre-clean remove call)
         calls = auth.source_client.shares.update.call_args_list
-        add_calls = [c for c in calls if c.kwargs.get("updates")
-                     and any(u.action.value == "ADD" for u in c.kwargs["updates"] if hasattr(u.action, "value"))]
+        add_calls = [
+            c
+            for c in calls
+            if c.kwargs.get("updates")
+            and any(u.action.value == "ADD" for u in c.kwargs["updates"] if hasattr(u.action, "value"))
+        ]
         assert add_calls, "shares.update was never called with an ADD"
         updates = add_calls[-1].kwargs["updates"]
         names = [u.data_object.name for u in updates]
@@ -285,7 +289,9 @@ class TestAddRlsCmFromTablesApi:
 
         rls_cm_fqns: set[str] = set()
         _add_rls_cm_from_tables_api(
-            auth, self._pending("`c`.`s`.`t1`"), rls_cm_fqns,
+            auth,
+            self._pending("`c`.`s`.`t1`"),
+            rls_cm_fqns,
         )
         assert rls_cm_fqns == {"`c`.`s`.`t1`"}
         # Called with dot-delimited name (backticks stripped).
@@ -304,7 +310,9 @@ class TestAddRlsCmFromTablesApi:
 
         rls_cm_fqns: set[str] = set()
         _add_rls_cm_from_tables_api(
-            auth, self._pending("`c`.`s`.`t1`"), rls_cm_fqns,
+            auth,
+            self._pending("`c`.`s`.`t1`"),
+            rls_cm_fqns,
         )
         assert rls_cm_fqns == {"`c`.`s`.`t1`"}
 
@@ -319,7 +327,9 @@ class TestAddRlsCmFromTablesApi:
 
         rls_cm_fqns: set[str] = set()
         _add_rls_cm_from_tables_api(
-            auth, self._pending("`c`.`s`.`clean`"), rls_cm_fqns,
+            auth,
+            self._pending("`c`.`s`.`clean`"),
+            rls_cm_fqns,
         )
         assert rls_cm_fqns == set()
 
@@ -341,7 +351,9 @@ class TestAddRlsCmFromTablesApi:
 
         rls_cm_fqns: set[str] = set()
         _add_rls_cm_from_tables_api(
-            auth, self._pending("`c`.`s`.`bad`", "`c`.`s`.`good`"), rls_cm_fqns,
+            auth,
+            self._pending("`c`.`s`.`bad`", "`c`.`s`.`good`"),
+            rls_cm_fqns,
         )
         # good is flagged despite bad throwing.
         assert rls_cm_fqns == {"`c`.`s`.`good`"}
@@ -358,7 +370,9 @@ class TestAddRlsCmFromTablesApi:
 
         rls_cm_fqns = {"`c`.`s`.`pre_existing`"}
         _add_rls_cm_from_tables_api(
-            auth, self._pending("`c`.`s`.`t1`"), rls_cm_fqns,
+            auth,
+            self._pending("`c`.`s`.`t1`"),
+            rls_cm_fqns,
         )
         assert rls_cm_fqns == {"`c`.`s`.`pre_existing`", "`c`.`s`.`t1`"}
 
@@ -392,12 +406,9 @@ class TestRunSkipsRlsCmTables:
         # shares.get returns (existing share reused) for simplicity.
         auth.source_client.shares.get.return_value = MagicMock(name="cp_migration_share")
         # recipients.get returns a dummy existing recipient.
-        auth.source_client.recipients.get.return_value = MagicMock(
-            name="cp_migration_recipient_x"
-        )
-        auth.target_client.metastores.summary.return_value = MagicMock(
-            global_metastore_id="azure:region:uuid"
-        )
+        auth.source_client.recipients.get.return_value = MagicMock(name="cp_migration_recipient_x")
+        auth.target_client.metastores.summary.return_value = MagicMock(global_metastore_id="azure:region:uuid")
+
         # Tables API returns no-filter tables by default; specific fqns are
         # flagged via rls_cm_fqns + _add_rls_cm_from_tables_api monkey-patch.
         def _tables_get(full_name):
@@ -411,6 +422,7 @@ class TestRunSkipsRlsCmTables:
                 t.row_filter = None
                 t.columns = []
             return t
+
         auth.source_client.tables.get.side_effect = _tables_get
 
         tracker = MagicMock()
@@ -433,17 +445,20 @@ class TestRunSkipsRlsCmTables:
         # Seed the tracker helper to already flag `dirty`; the Tables API
         # probe can also populate this — either source suffices.
         config, auth, tracker = self._mock_deps(
-            rls_cm_fqns={dirty_fqn}, pending=pending,
+            rls_cm_fqns={dirty_fqn},
+            pending=pending,
         )
         tracker.get_tables_with_rls_cm.return_value = {dirty_fqn}
 
         # Patch module-level bindings so run() uses our mocks.
-        with patch("migrate.setup_sharing.MigrationConfig") as cfg_cls, \
-             patch("migrate.setup_sharing.AuthManager", return_value=auth), \
-             patch("migrate.setup_sharing.TrackingManager", return_value=tracker), \
-             patch("migrate.setup_sharing.ensure_target_catalogs_and_schemas"), \
-             patch("migrate.setup_sharing.ensure_share_consumer_catalog"), \
-             patch("migrate.setup_sharing.add_tables_to_share") as add_fn:
+        with (
+            patch("migrate.setup_sharing.MigrationConfig") as cfg_cls,
+            patch("migrate.setup_sharing.AuthManager", return_value=auth),
+            patch("migrate.setup_sharing.TrackingManager", return_value=tracker),
+            patch("migrate.setup_sharing.ensure_target_catalogs_and_schemas"),
+            patch("migrate.setup_sharing.ensure_share_consumer_catalog"),
+            patch("migrate.setup_sharing.add_tables_to_share") as add_fn,
+        ):
             cfg_cls.from_workspace_file.return_value = config
             setup_sharing.run(dbutils=MagicMock(), spark=MagicMock())
 
@@ -454,14 +469,10 @@ class TestRunSkipsRlsCmTables:
         assert shared_fqns == {clean_fqn}
 
         # And migration_status got a skipped_by_rls_cm_policy row for dirty.
-        append_calls = [
-            c.args[0] for c in tracker.append_migration_status.call_args_list
-        ]
+        append_calls = [c.args[0] for c in tracker.append_migration_status.call_args_list]
         # Each call passes a list of dicts. Flatten and inspect.
         all_recorded = [row for call in append_calls for row in call]
-        skipped = [
-            r for r in all_recorded if r["status"] == "skipped_by_rls_cm_policy"
-        ]
+        skipped = [r for r in all_recorded if r["status"] == "skipped_by_rls_cm_policy"]
         assert len(skipped) == 1
         assert skipped[0]["object_name"] == dirty_fqn
         assert "Delta Sharing" in (skipped[0]["error_message"] or "")
@@ -477,21 +488,19 @@ class TestRunSkipsRlsCmTables:
         ]
         config, auth, tracker = self._mock_deps(rls_cm_fqns=set(), pending=pending)
 
-        with patch("migrate.setup_sharing.MigrationConfig") as cfg_cls, \
-             patch("migrate.setup_sharing.AuthManager", return_value=auth), \
-             patch("migrate.setup_sharing.TrackingManager", return_value=tracker), \
-             patch("migrate.setup_sharing.ensure_target_catalogs_and_schemas"), \
-             patch("migrate.setup_sharing.ensure_share_consumer_catalog"), \
-             patch("migrate.setup_sharing.add_tables_to_share") as add_fn:
+        with (
+            patch("migrate.setup_sharing.MigrationConfig") as cfg_cls,
+            patch("migrate.setup_sharing.AuthManager", return_value=auth),
+            patch("migrate.setup_sharing.TrackingManager", return_value=tracker),
+            patch("migrate.setup_sharing.ensure_target_catalogs_and_schemas"),
+            patch("migrate.setup_sharing.ensure_share_consumer_catalog"),
+            patch("migrate.setup_sharing.add_tables_to_share") as add_fn,
+        ):
             cfg_cls.from_workspace_file.return_value = config
             setup_sharing.run(dbutils=MagicMock(), spark=MagicMock())
 
         shared_fqns = {t["object_name"] for t in add_fn.call_args[0][2]}
         assert shared_fqns == {"`c`.`s`.`a`", "`c`.`s`.`b`"}
 
-        recorded = [
-            r
-            for call in tracker.append_migration_status.call_args_list
-            for r in call.args[0]
-        ]
+        recorded = [r for call in tracker.append_migration_status.call_args_list for r in call.args[0]]
         assert not any(r["status"] == "skipped_by_rls_cm_policy" for r in recorded)

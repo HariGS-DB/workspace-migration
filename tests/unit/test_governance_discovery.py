@@ -4,6 +4,7 @@ Covers the 11 new list_* methods on CatalogExplorer. Each helper mocks
 either spark.sql or the source Databricks SDK client; REST-based helpers
 assert the try/except safety net returns [] on failure.
 """
+
 from __future__ import annotations
 
 from unittest.mock import MagicMock
@@ -27,26 +28,46 @@ class TestListTags:
         def sql_side_effect(query):
             result = MagicMock()
             if "catalog_tags" in query:
-                result.collect.return_value = [_row(
-                    catalog_name="c", tag_name="env", tag_value="prod",
-                )]
+                result.collect.return_value = [
+                    _row(
+                        catalog_name="c",
+                        tag_name="env",
+                        tag_value="prod",
+                    )
+                ]
             elif "schema_tags" in query:
-                result.collect.return_value = [_row(
-                    schema_name="s", tag_name="team", tag_value="data",
-                )]
+                result.collect.return_value = [
+                    _row(
+                        schema_name="s",
+                        tag_name="team",
+                        tag_value="data",
+                    )
+                ]
             elif "table_tags" in query:
-                result.collect.return_value = [_row(
-                    table_name="t", tag_name="owner", tag_value="alice",
-                )]
+                result.collect.return_value = [
+                    _row(
+                        table_name="t",
+                        tag_name="owner",
+                        tag_value="alice",
+                    )
+                ]
             elif "column_tags" in query:
-                result.collect.return_value = [_row(
-                    table_name="t", column_name="email",
-                    tag_name="pii", tag_value="true",
-                )]
+                result.collect.return_value = [
+                    _row(
+                        table_name="t",
+                        column_name="email",
+                        tag_name="pii",
+                        tag_value="true",
+                    )
+                ]
             elif "volume_tags" in query:
-                result.collect.return_value = [_row(
-                    volume_name="v", tag_name="purpose", tag_value="raw",
-                )]
+                result.collect.return_value = [
+                    _row(
+                        volume_name="v",
+                        tag_name="purpose",
+                        tag_value="raw",
+                    )
+                ]
             else:
                 result.collect.return_value = []
             return result
@@ -165,9 +186,7 @@ class TestListMonitors:
         auth.source_client.api_client.do.side_effect = do
         explorer = _explorer(MagicMock(), auth)
 
-        monitors = explorer.list_monitors(
-            ["`c`.`s`.`orders`", "`c`.`s`.`no_monitor`"]
-        )
+        monitors = explorer.list_monitors(["`c`.`s`.`orders`", "`c`.`s`.`no_monitor`"])
         assert len(monitors) == 1
         assert monitors[0]["table_fqn"] == "`c`.`s`.`orders`"
 

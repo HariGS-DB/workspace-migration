@@ -192,9 +192,7 @@ class TestMvStWorkerEdgeCases:
     @patch("migrate.mv_st_worker.time")
     @patch("migrate.mv_st_worker.execute_and_poll")
     @patch("migrate.mv_st_worker._is_sql_created")
-    def test_refresh_failure_still_validates_with_note(
-        self, mock_is_sql, mock_execute, mock_time
-    ):
+    def test_refresh_failure_still_validates_with_note(self, mock_is_sql, mock_execute, mock_time):
         """CREATE succeeds but subsequent REFRESH fails — the table
         exists on target (lossless) so we mark ``validated`` but record
         the REFRESH failure in error_message for operator visibility.
@@ -224,9 +222,7 @@ class TestMvStWorkerEdgeCases:
 
     @patch("migrate.mv_st_worker.time")
     @patch("migrate.mv_st_worker._is_sql_created")
-    def test_dlt_defined_mv_is_skipped_by_pipeline_migration(
-        self, mock_is_sql, mock_time
-    ):
+    def test_dlt_defined_mv_is_skipped_by_pipeline_migration(self, mock_is_sql, mock_time):
         """An MV whose pipeline has non-empty libraries is DLT-owned →
         skip with ``skipped_by_pipeline_migration`` so the DLT-pipeline
         migration tool handles it later. No CREATE issued on target."""
@@ -261,9 +257,7 @@ class TestMvStWorkerEdgeCases:
     @patch("migrate.mv_st_worker.time")
     @patch("migrate.mv_st_worker.execute_and_poll")
     @patch("migrate.mv_st_worker._is_sql_created")
-    def test_st_uses_streaming_refresh_keyword(
-        self, mock_is_sql, mock_execute, mock_time
-    ):
+    def test_st_uses_streaming_refresh_keyword(self, mock_is_sql, mock_execute, mock_time):
         """Streaming tables get ``REFRESH STREAMING TABLE`` (not
         ``REFRESH MATERIALIZED VIEW``). Locks in the syntax pick."""
         from migrate.mv_st_worker import migrate_mv_st

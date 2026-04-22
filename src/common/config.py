@@ -31,7 +31,6 @@ def _coerce_bool(raw: object) -> bool:
     return str(raw).strip().lower() in ("true", "1", "yes")
 
 
-
 def _resolve_bundle_config_path() -> str:
     """Resolve config.yaml path from the running notebook's own workspace path.
 
@@ -142,10 +141,7 @@ class MigrationConfig:
 
         missing = [k for k in REQUIRED_FIELDS if not raw.get(k)]
         if missing:
-            msg = (
-                f"Required config fields missing or empty in {resolved}: {missing}. "
-                f"Edit the file and re-run."
-            )
+            msg = f"Required config fields missing or empty in {resolved}: {missing}. Edit the file and re-run."
             raise ValueError(msg)
 
         return cls(

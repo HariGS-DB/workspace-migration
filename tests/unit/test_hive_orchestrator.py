@@ -12,11 +12,11 @@ things:
    invoke ``dbutils.notebook.exit`` (not raise SystemExit) when
    ``config.include_hive`` is False.
 """
+
 from __future__ import annotations
 
 import importlib
 import sys
-from types import ModuleType
 from unittest.mock import MagicMock, patch
 
 
@@ -24,6 +24,7 @@ def _source_text() -> str:
     """Read the hive_orchestrator notebook source directly — the simplest
     regression guard that doesn't depend on import ordering."""
     import pathlib
+
     path = pathlib.Path(__file__).resolve().parents[2] / "src" / "migrate" / "hive_orchestrator.py"
     return path.read_text()
 
@@ -50,8 +51,7 @@ class TestHiveOrchestratorExitIdiom:
     def test_uses_notebook_exit_for_short_circuit(self):
         src = _source_text()
         assert "dbutils.notebook.exit(" in src, (
-            "hive_orchestrator must call dbutils.notebook.exit to short-"
-            "circuit when include_hive=false."
+            "hive_orchestrator must call dbutils.notebook.exit to short-circuit when include_hive=false."
         )
 
     def test_short_circuit_path_mentions_include_hive(self):
@@ -61,10 +61,9 @@ class TestHiveOrchestratorExitIdiom:
         # Find the block that calls notebook.exit and verify include_hive
         # appears in its vicinity.
         idx = src.index("dbutils.notebook.exit(")
-        surrounding = src[max(0, idx - 1200):idx + 200]
+        surrounding = src[max(0, idx - 1200) : idx + 200]
         assert "include_hive" in surrounding, (
-            "notebook.exit() must be gated on config.include_hive — "
-            "otherwise Hive migration silently becomes a no-op."
+            "notebook.exit() must be gated on config.include_hive — otherwise Hive migration silently becomes a no-op."
         )
 
 
@@ -94,15 +93,15 @@ class TestHiveOrchestratorShortCircuitBehavior:
         # block.
         sys.modules.pop("migrate.hive_orchestrator", None)
 
-        with patch.object(_builtins, "dbutils", fake_dbutils, create=True), \
-             patch.object(_builtins, "spark", MagicMock(), create=True), \
-             patch("common.config.MigrationConfig.from_workspace_file",
-                   return_value=fake_config), \
-             patch("common.tracking.TrackingManager"), \
-             patch("common.auth.AuthManager"), \
-             patch("common.sql_utils.find_warehouse", return_value="wh-x"), \
-             patch("common.sql_utils.execute_and_poll",
-                   return_value={"state": "SUCCEEDED"}):
+        with (
+            patch.object(_builtins, "dbutils", fake_dbutils, create=True),
+            patch.object(_builtins, "spark", MagicMock(), create=True),
+            patch("common.config.MigrationConfig.from_workspace_file", return_value=fake_config),
+            patch("common.tracking.TrackingManager"),
+            patch("common.auth.AuthManager"),
+            patch("common.sql_utils.find_warehouse", return_value="wh-x"),
+            patch("common.sql_utils.execute_and_poll", return_value={"state": "SUCCEEDED"}),
+        ):
             # Import should not raise (no SystemExit) even though the
             # short-circuit path runs.
             try:

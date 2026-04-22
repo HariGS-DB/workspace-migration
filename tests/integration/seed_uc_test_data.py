@@ -4,6 +4,7 @@
 
 # Bootstrap: put the bundle's `src/` dir on sys.path so `from common...` imports resolve
 import sys  # noqa: E402
+
 try:
     _ctx = dbutils.notebook.entry_point.getDbutils().notebook().getContext()  # noqa: F821
     _nb = _ctx.notebookPath().get()
@@ -113,10 +114,7 @@ spark.sql(  # noqa: F821
 # with partition metadata intact. The unit test for the sanitizer +
 # rewrite_ddl locks in the DDL shape; this integration verifies the
 # round-trip on a live target.
-_partitioned_location = (
-    "abfss://external-data@stextsourcemig36cd38.dfs.core.windows.net/"
-    "partitioned_events"
-)
+_partitioned_location = "abfss://external-data@stextsourcemig36cd38.dfs.core.windows.net/partitioned_events"
 _has_partitioned_external = False
 try:
     spark.sql(  # noqa: F821
@@ -261,12 +259,10 @@ dbutils.jobs.taskValues.set(  # type: ignore[name-defined]  # noqa: F821
 _has_tag = False
 try:
     spark.sql(  # noqa: F821
-        "ALTER TABLE integration_test_src.test_schema.managed_orders "
-        "SET TAGS ('env' = 'test', 'phase' = '3')"
+        "ALTER TABLE integration_test_src.test_schema.managed_orders SET TAGS ('env' = 'test', 'phase' = '3')"
     )
     spark.sql(  # noqa: F821
-        "ALTER TABLE integration_test_src.test_schema.managed_orders "
-        "ALTER COLUMN customer_id SET TAGS ('pii' = 'true')"
+        "ALTER TABLE integration_test_src.test_schema.managed_orders ALTER COLUMN customer_id SET TAGS ('pii' = 'true')"
     )
     _has_tag = True
     print("Applied tags to managed_orders (table + column).")
@@ -288,9 +284,7 @@ dbutils.jobs.taskValues.set(  # type: ignore[name-defined]  # noqa: F821
 # external tables fine; discovery reads filter/mask metadata from
 # information_schema regardless of table_type.
 
-_external_customers_location = (
-    "abfss://external-data@stextsourcemig36cd38.dfs.core.windows.net/external_customers"
-)
+_external_customers_location = "abfss://external-data@stextsourcemig36cd38.dfs.core.windows.net/external_customers"
 
 _has_row_filter = False
 _has_column_mask = False
@@ -307,8 +301,7 @@ try:
         """
     )
     spark.sql(  # noqa: F821
-        "INSERT INTO integration_test_src.test_schema.external_customers VALUES "
-        "(1, 'Alice', 'US'), (2, 'Bob', 'UK')"
+        "INSERT INTO integration_test_src.test_schema.external_customers VALUES (1, 'Alice', 'US'), (2, 'Bob', 'UK')"
     )
     spark.sql(  # noqa: F821
         """
@@ -410,6 +403,7 @@ except Exception as _exc:  # noqa: BLE001
 
 # Grant the migration SPN permissions to read the source catalog.
 from common.config import MigrationConfig  # noqa: E402
+
 config = MigrationConfig.from_workspace_file()
 if config.spn_client_id:
     spark.sql(  # noqa: F821
@@ -427,8 +421,7 @@ if config.spn_client_id:
 _has_schema_grant = False
 try:
     spark.sql(  # noqa: F821
-        "GRANT SELECT ON SCHEMA integration_test_src.test_schema "
-        "TO `account users`"
+        "GRANT SELECT ON SCHEMA integration_test_src.test_schema TO `account users`"
     )
     _has_schema_grant = True
     print("Granted SELECT on test_schema to `account users`.")
@@ -454,17 +447,14 @@ _has_missing_principal_grant = False
 _missing_principal = "nonexistent-group-integration-test-1a2b3c4d@example.invalid"
 try:
     spark.sql(  # noqa: F821
-        f"GRANT SELECT ON SCHEMA integration_test_src.test_schema "
-        f"TO `{_missing_principal}`"
+        f"GRANT SELECT ON SCHEMA integration_test_src.test_schema TO `{_missing_principal}`"
     )
     _has_missing_principal_grant = True
     print(f"Seeded grant to missing principal {_missing_principal!r}.")
 except Exception as _exc:  # noqa: BLE001
     # Some source metastores reject unknown principals at grant time;
     # leave the task value false so the assertion skips.
-    print(
-        f"Skipped missing-principal grant seed (source rejected): {_exc}"
-    )
+    print(f"Skipped missing-principal grant seed (source rejected): {_exc}")
 dbutils.jobs.taskValues.set(  # type: ignore[name-defined]  # noqa: F821
     key="has_missing_principal_grant",
     value="true" if _has_missing_principal_grant else "false",

@@ -240,12 +240,9 @@ class TestCatalogUtils:
 
         # view_definition bodies referencing dependencies (unquoted FQN)
         view_rows = [
-            _row(table_schema="sch", table_name="v_a",
-                 view_definition="SELECT * FROM cat.sch.base_table"),
-            _row(table_schema="sch", table_name="v_b",
-                 view_definition="SELECT * FROM cat.sch.v_a WHERE x > 0"),
-            _row(table_schema="sch", table_name="v_c",
-                 view_definition="SELECT * FROM cat.sch.v_b"),
+            _row(table_schema="sch", table_name="v_a", view_definition="SELECT * FROM cat.sch.base_table"),
+            _row(table_schema="sch", table_name="v_b", view_definition="SELECT * FROM cat.sch.v_a WHERE x > 0"),
+            _row(table_schema="sch", table_name="v_c", view_definition="SELECT * FROM cat.sch.v_b"),
         ]
 
         def sql_side_effect(query):
@@ -266,10 +263,8 @@ class TestCatalogUtils:
         views = ["`cat`.`sch`.`v_a`", "`cat`.`sch`.`v_b`"]
 
         view_rows = [
-            _row(table_schema="sch", table_name="v_a",
-                 view_definition="SELECT * FROM cat.sch.v_b"),
-            _row(table_schema="sch", table_name="v_b",
-                 view_definition="SELECT * FROM cat.sch.v_a"),
+            _row(table_schema="sch", table_name="v_a", view_definition="SELECT * FROM cat.sch.v_b"),
+            _row(table_schema="sch", table_name="v_b", view_definition="SELECT * FROM cat.sch.v_a"),
         ]
 
         def sql_side_effect(query):
@@ -300,7 +295,8 @@ class TestExtractThreePartRefs:
 
         view_set = {"`cat`.`sch`.`upstream`"}
         refs = _extract_three_part_refs(
-            "SELECT * FROM cat.sch.upstream WHERE x > 0", view_set,
+            "SELECT * FROM cat.sch.upstream WHERE x > 0",
+            view_set,
         )
         assert refs == {"`cat`.`sch`.`upstream`"}
 
@@ -309,7 +305,8 @@ class TestExtractThreePartRefs:
 
         view_set = {"`cat`.`sch`.`upstream`"}
         refs = _extract_three_part_refs(
-            "SELECT * FROM `cat`.`sch`.`upstream`", view_set,
+            "SELECT * FROM `cat`.`sch`.`upstream`",
+            view_set,
         )
         assert refs == {"`cat`.`sch`.`upstream`"}
 
@@ -328,11 +325,12 @@ class TestExtractThreePartRefs:
         from common.catalog_utils import _extract_three_part_refs
 
         view_set = {
-            "`c1`.`s1`.`t1`", "`c2`.`s2`.`t2`", "`c3`.`s3`.`t3`",
+            "`c1`.`s1`.`t1`",
+            "`c2`.`s2`.`t2`",
+            "`c3`.`s3`.`t3`",
         }
         refs = _extract_three_part_refs(
-            "SELECT * FROM c1.s1.t1 UNION ALL SELECT * FROM c2.s2.t2 "
-            "UNION ALL SELECT * FROM `c3`.`s3`.`t3`",
+            "SELECT * FROM c1.s1.t1 UNION ALL SELECT * FROM c2.s2.t2 UNION ALL SELECT * FROM `c3`.`s3`.`t3`",
             view_set,
         )
         assert refs == view_set
@@ -347,15 +345,18 @@ class TestExtractThreePartRefs:
 class TestSqlInLiteral:
     def test_empty_returns_empty_literal(self):
         from common.catalog_utils import _sql_in_literal
+
         assert _sql_in_literal(set()) == "''"
 
     def test_escapes_single_quotes(self):
         from common.catalog_utils import _sql_in_literal
+
         out = _sql_in_literal({"O'Brien"})
         assert out == "'O''Brien'"
 
     def test_comma_separates(self):
         from common.catalog_utils import _sql_in_literal
+
         # set ordering isn't guaranteed; check as set of literals
         out = _sql_in_literal({"a", "b"})
         tokens = {t.strip() for t in out.split(",")}
@@ -385,12 +386,7 @@ class TestStripFilterMaskClauses:
         assert "LOCATION" in out
 
     def test_strips_inline_mask_on_column(self):
-        ddl = (
-            "CREATE TABLE `c`.`s`.`t` ("
-            "id INT MASK `c`.`s`.`mask_id`,"
-            "region STRING"
-            ") USING delta"
-        )
+        ddl = "CREATE TABLE `c`.`s`.`t` (id INT MASK `c`.`s`.`mask_id`,region STRING) USING delta"
         out = CatalogExplorer.strip_filter_mask_clauses(ddl)
         assert "MASK" not in out
         assert "mask_id" not in out
@@ -398,12 +394,7 @@ class TestStripFilterMaskClauses:
         assert "region STRING" in out
 
     def test_strips_inline_mask_with_using(self):
-        ddl = (
-            "CREATE TABLE `c`.`s`.`t` ("
-            "id INT MASK `c`.`s`.`mask_id` USING (region),"
-            "region STRING"
-            ") USING delta"
-        )
+        ddl = "CREATE TABLE `c`.`s`.`t` (id INT MASK `c`.`s`.`mask_id` USING (region),region STRING) USING delta"
         out = CatalogExplorer.strip_filter_mask_clauses(ddl)
         assert "MASK" not in out
         assert "USING (region)" not in out

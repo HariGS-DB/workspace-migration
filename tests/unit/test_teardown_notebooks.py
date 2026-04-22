@@ -8,23 +8,18 @@ target via auth_mgr + execute_and_poll on the target warehouse.
 These tests ensure the cleanup paths don't silently disappear in a
 future refactor.
 """
+
 from __future__ import annotations
 
 import pathlib
 
 
 def _teardown_uc_text() -> str:
-    return (
-        pathlib.Path(__file__).resolve().parents[2]
-        / "tests" / "integration" / "teardown_uc.py"
-    ).read_text()
+    return (pathlib.Path(__file__).resolve().parents[2] / "tests" / "integration" / "teardown_uc.py").read_text()
 
 
 def _teardown_hive_text() -> str:
-    return (
-        pathlib.Path(__file__).resolve().parents[2]
-        / "tests" / "integration" / "teardown_hive.py"
-    ).read_text()
+    return (pathlib.Path(__file__).resolve().parents[2] / "tests" / "integration" / "teardown_hive.py").read_text()
 
 
 class TestTeardownUcTargetCleanup:
@@ -73,10 +68,7 @@ class TestTeardownHiveTargetCleanup:
 
     def test_drops_source_database(self):
         src = _teardown_hive_text()
-        assert (
-            "DROP DATABASE IF EXISTS hive_metastore.integration_test_hive CASCADE"
-            in src
-        )
+        assert "DROP DATABASE IF EXISTS hive_metastore.integration_test_hive CASCADE" in src
 
     def test_drops_target_hive_target_catalog(self):
         """hive_upgraded (or whatever hive_target_catalog is) must be

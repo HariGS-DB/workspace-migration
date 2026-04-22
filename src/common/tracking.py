@@ -16,7 +16,7 @@ def discovery_row(
     object_name: str,
     catalog_name: str | None,
     schema_name: str | None,
-    discovered_at,
+    discovered_at: object,
     row_count: int = 0,
     size_bytes: int = 0,
     is_dlt_managed: bool | None = None,
@@ -56,27 +56,35 @@ def discovery_row(
 def discovery_schema() -> StructType:
     """StructType used when writing to discovery_inventory."""
     from pyspark.sql.types import (
-        BooleanType, LongType, StringType, StructField, StructType, TimestampType,
+        BooleanType,
+        LongType,
+        StringType,
+        StructField,
+        StructType,
+        TimestampType,
     )
-    return StructType([
-        StructField("object_name", StringType(), True),
-        StructField("object_type", StringType(), True),
-        StructField("source_type", StringType(), True),
-        StructField("catalog_name", StringType(), True),
-        StructField("schema_name", StringType(), True),
-        StructField("row_count", LongType(), True),
-        StructField("size_bytes", LongType(), True),
-        StructField("is_dlt_managed", BooleanType(), True),
-        StructField("pipeline_id", StringType(), True),
-        StructField("create_statement", StringType(), True),
-        StructField("data_category", StringType(), True),
-        StructField("table_type", StringType(), True),
-        StructField("provider", StringType(), True),
-        StructField("storage_location", StringType(), True),
-        StructField("format", StringType(), True),
-        StructField("metadata_json", StringType(), True),
-        StructField("discovered_at", TimestampType(), True),
-    ])
+
+    return StructType(
+        [
+            StructField("object_name", StringType(), True),
+            StructField("object_type", StringType(), True),
+            StructField("source_type", StringType(), True),
+            StructField("catalog_name", StringType(), True),
+            StructField("schema_name", StringType(), True),
+            StructField("row_count", LongType(), True),
+            StructField("size_bytes", LongType(), True),
+            StructField("is_dlt_managed", BooleanType(), True),
+            StructField("pipeline_id", StringType(), True),
+            StructField("create_statement", StringType(), True),
+            StructField("data_category", StringType(), True),
+            StructField("table_type", StringType(), True),
+            StructField("provider", StringType(), True),
+            StructField("storage_location", StringType(), True),
+            StructField("format", StringType(), True),
+            StructField("metadata_json", StringType(), True),
+            StructField("discovered_at", TimestampType(), True),
+        ]
+    )
 
 
 class TrackingManager:
@@ -146,26 +154,26 @@ class TrackingManager:
 
     def write_discovery_inventory(self, df: DataFrame) -> None:
         """Overwrite the discovery inventory table with the given DataFrame."""
-        df.write.mode("overwrite").option("mergeSchema", "true").saveAsTable(
-            f"{self._fqn}.discovery_inventory"
-        )
+        df.write.mode("overwrite").option("mergeSchema", "true").saveAsTable(f"{self._fqn}.discovery_inventory")
 
     def append_migration_status(self, records: list[dict]) -> None:
         """Append migration status records with a current timestamp."""
         from pyspark.sql.functions import current_timestamp
         from pyspark.sql.types import DoubleType, LongType, StringType, StructField, StructType
 
-        schema = StructType([
-            StructField("object_name", StringType(), True),
-            StructField("object_type", StringType(), True),
-            StructField("status", StringType(), True),
-            StructField("error_message", StringType(), True),
-            StructField("job_run_id", StringType(), True),
-            StructField("task_run_id", StringType(), True),
-            StructField("source_row_count", LongType(), True),
-            StructField("target_row_count", LongType(), True),
-            StructField("duration_seconds", DoubleType(), True),
-        ])
+        schema = StructType(
+            [
+                StructField("object_name", StringType(), True),
+                StructField("object_type", StringType(), True),
+                StructField("status", StringType(), True),
+                StructField("error_message", StringType(), True),
+                StructField("job_run_id", StringType(), True),
+                StructField("task_run_id", StringType(), True),
+                StructField("source_row_count", LongType(), True),
+                StructField("target_row_count", LongType(), True),
+                StructField("duration_seconds", DoubleType(), True),
+            ]
+        )
         # Only keep known fields; coerce missing to None
         field_names = [f.name for f in schema.fields]
         normalized = [{k: r.get(k) for k in field_names} for r in records]
@@ -257,6 +265,7 @@ class TrackingManager:
         ``table_fqn`` stored in ``metadata_json``.
         """
         import json
+
         result: set[str] = set()
         rf_rows = self.spark.sql(f"""
             SELECT object_name FROM {self._fqn}.discovery_inventory

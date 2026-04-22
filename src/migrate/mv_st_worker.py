@@ -3,8 +3,10 @@
 # COMMAND ----------
 
 from __future__ import annotations  # noqa: E402
+
 # Bootstrap: put the bundle's `src/` dir on sys.path so `from common...` imports resolve
 import sys  # noqa: E402
+
 try:
     _ctx = dbutils.notebook.entry_point.getDbutils().notebook().getContext()  # noqa: F821
     _nb = _ctx.notebookPath().get()
@@ -72,9 +74,7 @@ def _is_sql_created(auth: AuthManager, pipeline_id: str) -> tuple[bool, str]:
     try:
         pipeline = source.pipelines.get(pipeline_id)
     except Exception as exc:  # noqa: BLE001
-        logger.warning(
-            "Could not fetch pipeline %s (%s); assuming SQL-created.", pipeline_id, exc
-        )
+        logger.warning("Could not fetch pipeline %s (%s); assuming SQL-created.", pipeline_id, exc)
         return True, f"pipeline lookup failed: {exc}"
 
     spec = getattr(pipeline, "spec", None)
@@ -155,17 +155,21 @@ def migrate_mv_st(
     obj_type = obj_info["object_type"]  # "mv" or "st"
     pipeline_id = obj_info.get("pipeline_id")
 
-    tracker.append_migration_status([{
-        "object_name": obj_name,
-        "object_type": obj_type,
-        "status": "in_progress",
-        "error_message": None,
-        "job_run_id": None,
-        "task_run_id": None,
-        "source_row_count": None,
-        "target_row_count": None,
-        "duration_seconds": None,
-    }])
+    tracker.append_migration_status(
+        [
+            {
+                "object_name": obj_name,
+                "object_type": obj_type,
+                "status": "in_progress",
+                "error_message": None,
+                "job_run_id": None,
+                "task_run_id": None,
+                "source_row_count": None,
+                "target_row_count": None,
+                "duration_seconds": None,
+            }
+        ]
+    )
 
     start = time.time()
 
@@ -182,7 +186,9 @@ def migrate_mv_st(
     if not sql_created:
         logger.info(
             "Skipping DLT-owned %s %s (%s) — handled by pipeline migration.",
-            obj_type, obj_name, diagnostic,
+            obj_type,
+            obj_name,
+            diagnostic,
         )
         return {
             "object_name": obj_name,
@@ -193,7 +199,11 @@ def migrate_mv_st(
         }
 
     status, err = _replay_mv_st_ddl(
-        obj_info, auth=auth, wh_id=wh_id, dry_run=config.dry_run, tracker=tracker,
+        obj_info,
+        auth=auth,
+        wh_id=wh_id,
+        dry_run=config.dry_run,
+        tracker=tracker,
     )
     return {
         "object_name": obj_name,
@@ -224,7 +234,11 @@ def run(dbutils, spark) -> None:
     for obj in batch:
         try:
             res = migrate_mv_st(
-                obj, config=config, auth=auth, tracker=tracker, wh_id=wh_id,
+                obj,
+                config=config,
+                auth=auth,
+                tracker=tracker,
+                wh_id=wh_id,
             )
         except Exception as exc:  # noqa: BLE001
             res = {

@@ -101,15 +101,18 @@ class TestTrackingManager:
         """row_filter.object_name is already the table FQN; column_mask
         rows carry the clean table_fqn in metadata_json — both contribute."""
         import json as _json
+
         mgr = TrackingManager(mock_spark, mock_config)
 
         rf = MagicMock()
         rf.object_name = "`cat`.`sch`.`t1`"
         cm = MagicMock()
-        cm.metadata_json = _json.dumps({
-            "table_fqn": "`cat`.`sch`.`t2`",
-            "column_name": "ssn",
-        })
+        cm.metadata_json = _json.dumps(
+            {
+                "table_fqn": "`cat`.`sch`.`t2`",
+                "column_name": "ssn",
+            }
+        )
         # Also exercise: a malformed metadata_json is tolerated, not fatal.
         cm_bad = MagicMock()
         cm_bad.metadata_json = "not-json"
@@ -163,9 +166,7 @@ class TestTrackingManager:
         result = mgr.get_row("managed_table", "`cat`.`sch`.`missing`")
         assert result is None
 
-    def test_get_pending_objects_excludes_skipped_by_config(
-        self, mock_spark, mock_config
-    ):
+    def test_get_pending_objects_excludes_skipped_by_config(self, mock_spark, mock_config):
         """The SQL filter must exclude any status starting with ``skipped`` —
         the custom statuses (``skipped_by_config``, ``skipped_by_rls_cm_policy``,
         ``skipped_by_pipeline_migration``) share the prefix so re-runs don't
@@ -240,6 +241,7 @@ class TestDiscoveryRowHelpers:
             metadata={"pipeline_id": "abc123", "is_sql_created": True},
         )
         import json
+
         assert json.loads(row["metadata_json"]) == {"pipeline_id": "abc123", "is_sql_created": True}
 
     def test_discovery_schema_is_callable(self):
