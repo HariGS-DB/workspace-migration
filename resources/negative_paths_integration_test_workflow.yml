@@ -53,6 +53,7 @@ resources:
             base_parameters:
               scenario: "X.3.1"
               trigger_task_key: "trigger_X31_pre_check"
+              parent_run_id: "{{job.run_id}}"
 
         # ---------- Scenario X.3.2: Unreachable target ----------
         # depends on assert_X31 (not trigger_X31) so the bad-SPN scenario
@@ -89,6 +90,7 @@ resources:
             base_parameters:
               scenario: "X.3.2"
               trigger_task_key: "trigger_X32_pre_check"
+              parent_run_id: "{{job.run_id}}"
 
         # ---------- Scenario X.3.3: Both scopes false (no-op) ----------
         # Not an error path — migrate should complete as SUCCESS.
@@ -125,6 +127,7 @@ resources:
             base_parameters:
               scenario: "X.3.3"
               trigger_task_key: "trigger_X33_migrate"
+              parent_run_id: "{{job.run_id}}"
 
         # ---------- Scenario X.3.4: bad rls_cm_strategy ----------
 
@@ -158,6 +161,7 @@ resources:
             base_parameters:
               scenario: "X.3.4"
               trigger_task_key: "trigger_X34_setup_sharing"
+              parent_run_id: "{{job.run_id}}"
 
         # ---------- Teardown: always restore config.yaml ----------
         # ``ALL_DONE`` so the backup is restored even when multiple
