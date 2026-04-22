@@ -77,6 +77,161 @@ class TestDiscovery:
         assert inventory == []
 
 
+class TestFilterSemantics:
+    """1.9 catalog_filter / schema_filter semantics.
+
+    The two filters narrow the discovery scope in distinct places:
+      - ``catalog_filter`` is passed through to ``explorer.list_catalogs``
+        as its ``filter_list`` argument — the CatalogExplorer is the one
+        that enforces it, so the contract is just "the config value
+        reaches that call".
+      - ``schema_filter`` is applied locally in ``_discover_uc`` as an
+        in-place Python filter after ``explorer.list_schemas``.
+
+    These tests exercise both paths via the module-level ``run()`` with
+    mocked explorer so any regression in the wiring shows up loud.
+    """
+
+    @patch("discovery.discovery.MigrationConfig.from_workspace_file")
+    @patch("discovery.discovery.AuthManager")
+    @patch("discovery.discovery.TrackingManager")
+    @patch("discovery.discovery.CatalogExplorer")
+    def test_catalog_filter_reaches_list_catalogs(
+        self, mock_explorer_cls, mock_tracker_cls, mock_auth_cls, mock_from_file,
+    ):
+        """``config.catalog_filter`` must be passed as ``filter_list=``
+        to ``explorer.list_catalogs``. Without this, the filter is
+        silently ignored and every catalog is enumerated."""
+        dbutils = MagicMock()
+        spark = MagicMock()
+        mock_from_file.return_value = _make_config(
+            catalog_filter=["cat_a", "cat_b"],
+        )
+        explorer = mock_explorer_cls.return_value
+        explorer.list_catalogs.return_value = []
+
+        run(dbutils, spark)
+
+        # The ``filter_list`` kwarg must be exactly the configured filter.
+        call_kwargs = explorer.list_catalogs.call_args.kwargs
+        assert call_kwargs.get("filter_list") == ["cat_a", "cat_b"]
+
+    @patch("discovery.discovery.MigrationConfig.from_workspace_file")
+    @patch("discovery.discovery.AuthManager")
+    @patch("discovery.discovery.TrackingManager")
+    @patch("discovery.discovery.CatalogExplorer")
+    def test_empty_catalog_filter_passes_none_to_list_catalogs(
+        self, mock_explorer_cls, mock_tracker_cls, mock_auth_cls, mock_from_file,
+    ):
+        """Empty ``catalog_filter`` must become ``filter_list=None`` so
+        the explorer returns everything — passing an empty list would
+        match nothing."""
+        dbutils = MagicMock()
+        spark = MagicMock()
+        mock_from_file.return_value = _make_config(catalog_filter=[])
+        explorer = mock_explorer_cls.return_value
+        explorer.list_catalogs.return_value = []
+
+        run(dbutils, spark)
+
+        call_kwargs = explorer.list_catalogs.call_args.kwargs
+        assert call_kwargs.get("filter_list") is None
+
+    @patch("discovery.discovery.MigrationConfig.from_workspace_file")
+    @patch("discovery.discovery.AuthManager")
+    @patch("discovery.discovery.TrackingManager")
+    @patch("discovery.discovery.CatalogExplorer")
+    def test_schema_filter_narrows_schemas_per_catalog(
+        self, mock_explorer_cls, mock_tracker_cls, mock_auth_cls, mock_from_file,
+    ):
+        """``schema_filter`` is applied after ``list_schemas`` as a
+        Python-level intersect — only schemas present in both the
+        discovered list AND the filter should be iterated."""
+        dbutils = MagicMock()
+        spark = MagicMock()
+        mock_from_file.return_value = _make_config(
+            catalog_filter=["cat_a"],
+            schema_filter=["schema_keep"],
+        )
+        explorer = mock_explorer_cls.return_value
+        explorer.list_catalogs.return_value = ["cat_a"]
+        # Source has three schemas; only schema_keep should be processed.
+        explorer.list_schemas.return_value = [
+            "schema_keep", "schema_drop_a", "schema_drop_b",
+        ]
+        explorer.classify_tables.return_value = []
+        explorer.list_functions.return_value = []
+        explorer.list_volumes.return_value = []
+
+        run(dbutils, spark)
+
+        # classify_tables must be called once (for schema_keep only),
+        # not three times (once per source schema).
+        call_schemas = [
+            c.args[1] for c in explorer.classify_tables.call_args_list
+        ]
+        assert call_schemas == ["schema_keep"]
+
+    @patch("discovery.discovery.MigrationConfig.from_workspace_file")
+    @patch("discovery.discovery.AuthManager")
+    @patch("discovery.discovery.TrackingManager")
+    @patch("discovery.discovery.CatalogExplorer")
+    def test_empty_schema_filter_includes_all_schemas(
+        self, mock_explorer_cls, mock_tracker_cls, mock_auth_cls, mock_from_file,
+    ):
+        """Empty ``schema_filter`` must leave the schema list untouched —
+        not accidentally filter to zero."""
+        dbutils = MagicMock()
+        spark = MagicMock()
+        mock_from_file.return_value = _make_config(
+            catalog_filter=["cat_a"],
+            schema_filter=[],
+        )
+        explorer = mock_explorer_cls.return_value
+        explorer.list_catalogs.return_value = ["cat_a"]
+        explorer.list_schemas.return_value = ["schema_a", "schema_b"]
+        explorer.classify_tables.return_value = []
+        explorer.list_functions.return_value = []
+        explorer.list_volumes.return_value = []
+
+        run(dbutils, spark)
+
+        # All schemas must be iterated.
+        call_schemas = [
+            c.args[1] for c in explorer.classify_tables.call_args_list
+        ]
+        assert set(call_schemas) == {"schema_a", "schema_b"}
+
+    @patch("discovery.discovery.MigrationConfig.from_workspace_file")
+    @patch("discovery.discovery.AuthManager")
+    @patch("discovery.discovery.TrackingManager")
+    @patch("discovery.discovery.CatalogExplorer")
+    def test_schema_filter_with_no_matches_discovers_nothing(
+        self, mock_explorer_cls, mock_tracker_cls, mock_auth_cls, mock_from_file,
+    ):
+        """``schema_filter`` naming a schema that doesn't exist on source
+        must produce an empty discovery inventory — not fall through to
+        "discover everything"."""
+        dbutils = MagicMock()
+        spark = MagicMock()
+        mock_from_file.return_value = _make_config(
+            catalog_filter=["cat_a"],
+            schema_filter=["nonexistent"],
+        )
+        explorer = mock_explorer_cls.return_value
+        explorer.list_catalogs.return_value = ["cat_a"]
+        explorer.list_schemas.return_value = ["schema_a", "schema_b"]
+        explorer.classify_tables.return_value = []
+        explorer.list_functions.return_value = []
+        explorer.list_volumes.return_value = []
+
+        inventory = run(dbutils, spark)
+
+        # No schema iterated, therefore no classify_tables calls.
+        explorer.classify_tables.assert_not_called()
+        assert inventory == []
+
+
 class TestToolOwnedCatalogs:
     """_tool_owned_catalogs ensures the migration tool never tries to
     migrate its own tracking / share-consumer state."""
