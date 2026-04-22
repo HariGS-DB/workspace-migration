@@ -40,29 +40,30 @@ from databricks.sdk import WorkspaceClient  # noqa: E402
 
 dbutils.widgets.text("scenario", "")  # noqa: F821
 dbutils.widgets.text("trigger_task_key", "")  # noqa: F821
+dbutils.widgets.text("parent_run_id", "")  # noqa: F821
 
 scenario = dbutils.widgets.get("scenario").strip()  # noqa: F821
 trigger_task_key = dbutils.widgets.get("trigger_task_key").strip()  # noqa: F821
+parent_run_id_raw = dbutils.widgets.get("parent_run_id").strip()  # noqa: F821
 
 if not scenario:
     raise ValueError("test_negative_paths requires a non-empty 'scenario' widget")
 if not trigger_task_key:
     raise ValueError("test_negative_paths requires a non-empty 'trigger_task_key' widget")
+if not parent_run_id_raw:
+    raise ValueError(
+        "test_negative_paths requires a non-empty 'parent_run_id' widget — "
+        "the DAB task definition must pass parent_run_id: {{job.run_id}}"
+    )
 
 # COMMAND ----------
 
-# Resolve the current run ID from notebook context and fetch the run so
-# we can inspect the trigger task's state + error message.
-ctx = dbutils.notebook.entry_point.getDbutils().notebook().getContext()  # noqa: F821
-try:
-    run_id_raw = ctx.currentRunId().get()
-except Exception:  # noqa: BLE001
-    # Older runtimes expose ``rootRunId`` instead. Fall back explicitly
-    # rather than silently — if neither works the assertion can't run
-    # and we want a loud failure.
-    run_id_raw = ctx.rootRunId().get()
+# Parent-run-id is passed via DAB template expansion (``{{job.run_id}}``)
+# in the workflow yml. This is more reliable than ``dbutils`` notebook
+# context accessors — both current-run-id and root-run-id methods hit
+# Py4J whitelist errors on certain runtimes.
 
-run_id = int(run_id_raw)
+run_id = int(parent_run_id_raw)
 print(f"[{scenario}] Assertion running against job run_id={run_id}")
 
 w = WorkspaceClient()

@@ -47,14 +47,23 @@ class TestAssertionNotebookSource:
         assert 'dbutils.widgets.text("trigger_task_key"' in src
 
     def test_fetches_current_run_via_notebook_context(self):
-        """The assertion runs inside the same job run as the trigger, so
-        it resolves the run ID from notebook context, not from a widget
-        (widgets can't reference ``{{ job.run_id }}`` in base_parameters
-        reliably across runtimes)."""
+        """The assertion runs inside the same job run as the trigger.
+        First attempt used ``ctx.currentRunId()`` / ``rootRunId()`` but
+        both hit Py4J whitelist errors on the dev runtime. Switched to
+        a ``parent_run_id`` widget populated via DAB's
+        ``{{job.run_id}}`` template expansion at task launch — that
+        path is reliable across runtimes."""
         src = _assertion_src()
-        assert "currentRunId" in src, (
-            "Must read currentRunId from notebook context so the assertion "
-            "always inspects the same run it's part of."
+        assert 'dbutils.widgets.text("parent_run_id"' in src, (
+            "Assertion must declare a ``parent_run_id`` widget that the "
+            "workflow yml populates via ``{{job.run_id}}``."
+        )
+        assert "currentRunId" not in src, (
+            "Must NOT use ctx.currentRunId() — Py4J security blocks it "
+            "on some runtimes. Use parent_run_id widget instead."
+        )
+        assert "rootRunId" not in src, (
+            "Must NOT use ctx.rootRunId() — Py4J security blocks it too."
         )
 
     def test_inspects_trigger_task_state_and_result(self):
