@@ -113,11 +113,11 @@ class TestTrackingManager:
         # Verify the SQL query contains the correct filtering logic
         sql_arg = mock_spark.sql.call_args[0][0]
         assert "LEFT JOIN" in sql_arg
-        # Filter: status != validated AND status NOT LIKE 'skipped%'
-        # (catches skipped_by_config / skipped_by_rls_cm_policy /
-        #  skipped_by_pipeline_migration as well as plain skipped)
-        assert "status != 'validated'" in sql_arg
-        assert "status NOT LIKE 'skipped%'" in sql_arg
+        # Filter: only ``validated`` and ``skipped_by_pipeline_migration``
+        # are terminal. Other skip statuses (skipped_by_config,
+        # skipped_by_rls_cm_policy, plain skipped) re-enter pending so
+        # operators can flip config flags and re-run.
+        assert "status NOT IN ('validated', 'skipped_by_pipeline_migration')" in sql_arg
         assert "managed_table" in sql_arg
 
         # Verify the result is a list of dicts from collect()
@@ -193,11 +193,12 @@ class TestTrackingManager:
         result = mgr.get_row("managed_table", "`cat`.`sch`.`missing`")
         assert result is None
 
-    def test_get_pending_objects_excludes_skipped_by_config(self, mock_spark, mock_config):
-        """The SQL filter must exclude any status starting with ``skipped`` —
-        the custom statuses (``skipped_by_config``, ``skipped_by_rls_cm_policy``,
-        ``skipped_by_pipeline_migration``) share the prefix so re-runs don't
-        re-process already-decided-skip rows.
+    def test_get_pending_objects_terminal_status_list(self, mock_spark, mock_config):
+        """Only ``validated`` and ``skipped_by_pipeline_migration`` are
+        terminal. Other skip statuses re-enter pending on re-run so
+        flag-gated skips (``skipped_by_config``,
+        ``skipped_by_rls_cm_policy``) heal when the operator flips
+        ``iceberg_strategy`` / ``rls_cm_strategy``.
         """
         mgr = TrackingManager(mock_spark, mock_config)
         mock_result = MagicMock()
@@ -207,11 +208,43 @@ class TestTrackingManager:
         mgr.get_pending_objects("managed_table")
 
         sql = mock_spark.sql.call_args[0][0]
-        # Contract: LIKE 'skipped%' pattern matches every skip variant,
-        # not just the legacy plain ``skipped``.
-        assert "NOT LIKE 'skipped%'" in sql
-        # Sanity: ``validated`` explicitly excluded too.
-        assert "!= 'validated'" in sql
+        # Terminal set uses an explicit IN list so future skip statuses
+        # default to "re-pickup" unless someone adds them here.
+        assert "status NOT IN ('validated', 'skipped_by_pipeline_migration')" in sql
+        # Guard against regression to the old LIKE filter that swept up
+        # skipped_by_config + skipped_by_rls_cm_policy as terminal.
+        assert "NOT LIKE 'skipped%'" not in sql
+
+    def test_get_pending_objects_reincludes_skipped_by_config(self, mock_spark, mock_config):
+        """Regression for the Iceberg-re-run scenario: a table with
+        status=``skipped_by_config`` from a prior run with
+        ``iceberg_strategy=""`` MUST reappear as pending when the
+        operator flips to ``"ddl_replay"`` + re-runs."""
+        import datetime
+
+        mgr = TrackingManager(mock_spark, mock_config)
+
+        # Simulate the filtered SQL returning the skipped_by_config row
+        # as pending — if the filter excluded it, this row wouldn't come
+        # back at all. We assert the SQL itself, so the mock just needs
+        # to return SOMETHING that collect() iterates.
+        returned = MagicMock()
+        returned.asDict.return_value = {
+            "object_name": "`cat`.`sch`.`iceberg_t`",
+            "object_type": "managed_table",
+            "format": "iceberg",
+        }
+        result = MagicMock()
+        result.collect.return_value = [returned]
+        mock_spark.sql.return_value = result
+
+        pending = mgr.get_pending_objects("managed_table")
+
+        sql = mock_spark.sql.call_args[0][0]
+        # Critical contract: skipped_by_config NOT in the terminal IN list.
+        assert "'skipped_by_config'" not in sql.replace("'skipped_by_pipeline_migration'", "")
+        assert len(pending) == 1
+        _ = datetime  # keep import for future schema assertions
 
 
 class TestDiscoveryRowHelpers:
