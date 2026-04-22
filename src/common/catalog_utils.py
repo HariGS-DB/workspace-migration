@@ -552,29 +552,57 @@ class CatalogExplorer:
                 )
         return results
 
-    def list_policies(self) -> list[dict]:
-        """ABAC policies via REST ``/api/2.1/unity-catalog/policies``.
+    def list_policies(self, securables: list[tuple[str, str]] | None = None) -> list[dict]:
+        """ABAC policies attached to any of *securables*.
 
-        Workspace-level — call once per discovery run. Returns empty list on
-        404 (preview not enabled) so discovery continues. Each record
-        carries the full policy JSON in ``definition`` so the policies
-        worker can POST it back on target.
+        The UC ABAC API is per-securable — there is no workspace-level
+        "list everything" endpoint. Callers pass a list of
+        ``(securable_type, full_name)`` tuples (``securable_type`` one
+        of ``CATALOG`` / ``SCHEMA`` / ``TABLE``), and we iterate them.
+        Each entry carries the full policy JSON under ``definition`` so
+        the policies worker can POST it back on target verbatim.
+
+        Returns empty list on any failure (preview not enabled, API
+        absent on the runtime) so discovery keeps going — ABAC is a
+        preview feature and a missing endpoint shouldn't fail the run.
         """
+        if not securables:
+            return []
         results: list[dict] = []
         try:
             client = self.auth_manager.source_client.api_client  # type: ignore[attr-defined]
-            resp = client.do("GET", "/api/2.1/unity-catalog/policies")
-            for p in resp.get("policies", []) if isinstance(resp, dict) else []:
+        except Exception:  # noqa: BLE001
+            return []
+        seen: set[str] = set()
+        for sec_type, full_name in securables:
+            try:
+                resp = client.do(
+                    "GET",
+                    "/api/2.1/unity-catalog/policies",
+                    query={
+                        "on_securable_type": sec_type,
+                        "on_securable_fullname": full_name,
+                    },
+                )
+            except Exception:  # noqa: BLE001 — preview absent, perms, etc.
+                continue
+            if not isinstance(resp, dict):
+                continue
+            for p in resp.get("policies", []):
+                # Policy names are unique per securable; across securables
+                # a (securable_fullname, name) tuple is the real key.
+                key = f"{p.get('on_securable_fullname','')}::{p.get('name','')}"
+                if key in seen:
+                    continue
+                seen.add(key)
                 results.append(
                     {
                         "policy_name": p.get("name"),
-                        "securable_fqn": p.get("on_securable_fullname"),
+                        "securable_type": p.get("on_securable_type") or sec_type,
+                        "securable_fqn": p.get("on_securable_fullname") or full_name,
                         "definition": p,
                     }
                 )
-        except Exception:  # noqa: BLE001
-            # REST endpoint may not exist on this workspace / version
-            return []
         return results
 
     def list_monitors(self, table_fqns: list[str]) -> list[dict]:
