@@ -29,28 +29,28 @@ except NameError:
 #   4. Removing the volume from the share
 # Bytes copied + file count are recorded in migration_status.
 
-import base64
 import contextlib
 import json
 import logging
 import time
 
-from databricks.sdk.service.compute import Environment
-from databricks.sdk.service.jobs import JobEnvironment, NotebookTask, SubmitTask
-from databricks.sdk.service.workspace import ImportFormat, Language
-
 from common.auth import AuthManager
 from common.config import MigrationConfig
 from common.sql_utils import execute_and_poll, find_warehouse
 from common.tracking import TrackingManager
+from migrate.target_copy import (
+    TARGET_COPY_NOTEBOOK_PATH,
+    ensure_copy_notebook_on_target as _shared_ensure_notebook,
+)
+from migrate.target_copy import (
+    run_target_file_copy as _shared_file_copy,
+)
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("volume_worker")
 
 SHARE_NAME = "cp_migration_share"
 CONSUMER_CATALOG = f"{SHARE_NAME}_consumer"
-# Path on target workspace where we upload the copy notebook on first use
-TARGET_COPY_NOTEBOOK_PATH = "/Shared/cp_migration_runtime/_volume_copy"
 
 
 # COMMAND ----------
@@ -63,38 +63,6 @@ def _is_notebook() -> bool:
         return True
     except NameError:
         return False
-
-
-# Target-side notebook source — uploaded once per migration run and reused for
-# every managed volume. Emits JSON with bytes_copied/file_count via notebook exit.
-_TARGET_COPY_NOTEBOOK = """# Databricks notebook source
-# Target-side helper: recursively copies files from a source volume path to a
-# destination volume path. Invoked by volume_worker for each MANAGED volume.
-import json
-
-dbutils.widgets.text("src", "")
-dbutils.widgets.text("dst", "")
-src = dbutils.widgets.get("src")
-dst = dbutils.widgets.get("dst")
-
-total_bytes = 0
-total_files = 0
-
-def _copy_recursive(s, d):
-    global total_bytes, total_files
-    for f in dbutils.fs.ls(s):
-        target = d.rstrip("/") + "/" + f.name.rstrip("/")
-        if f.isDir():
-            dbutils.fs.mkdirs(target)
-            _copy_recursive(f.path, target)
-        else:
-            dbutils.fs.cp(f.path, target)
-            total_bytes += f.size
-            total_files += 1
-
-_copy_recursive(src, dst)
-dbutils.notebook.exit(json.dumps({"bytes_copied": total_bytes, "file_count": total_files}))
-"""
 
 
 def _parse_fqn(fqn: str) -> tuple[str, str, str]:
@@ -143,74 +111,15 @@ def remove_volume_from_share(source_spark, share_name: str, volume_fqn: str, *, 
 
 
 def _ensure_copy_notebook_on_target(auth: AuthManager) -> None:
-    """Idempotently upload the copy-helper notebook to the target workspace."""
-    target = auth.target_client
-    # Ensure parent dir exists (idempotent; swallow errors)
-    with contextlib.suppress(Exception):
-        target.workspace.mkdirs("/Shared/cp_migration_runtime")
-    # SDK >= recent requires real Enums here — passing raw strings triggers
-    # ``AttributeError: 'str' object has no attribute 'value'`` inside the SDK.
-    target.workspace.import_(
-        path=TARGET_COPY_NOTEBOOK_PATH,
-        content=base64.b64encode(_TARGET_COPY_NOTEBOOK.encode()).decode(),
-        format=ImportFormat.SOURCE,
-        language=Language.PYTHON,
-        overwrite=True,
-    )
+    """Back-compat wrapper — delegates to ``migrate.target_copy``."""
+    _shared_ensure_notebook(auth)
 
 
 def _run_target_volume_copy(
     auth: AuthManager, src_path: str, dst_path: str, run_name: str, *, timeout_s: int = 3600
 ) -> dict:
-    """Submit the copy notebook on target as a serverless job and wait for it.
-
-    Returns a dict with ``bytes_copied`` and ``file_count`` on success.
-    Raises RuntimeError on failure or timeout.
-    """
-    target = auth.target_client
-    # SDK >= recent requires real dataclasses here — raw dicts trigger
-    # ``AttributeError: 'dict' object has no attribute 'as_dict'`` during the
-    # SDK's outbound request shaping.
-    submit_tasks = [
-        SubmitTask(
-            task_key="copy",
-            notebook_task=NotebookTask(
-                notebook_path=TARGET_COPY_NOTEBOOK_PATH,
-                base_parameters={"src": src_path, "dst": dst_path},
-            ),
-            # Serverless: no new_cluster / existing_cluster_id — Databricks picks
-            # serverless compute automatically when neither is supplied.
-            environment_key="default",
-        )
-    ]
-    environments = [JobEnvironment(environment_key="default", spec=Environment(client="2"))]
-
-    run = target.jobs.submit(
-        run_name=run_name,
-        tasks=submit_tasks,
-        environments=environments,
-    )
-    run_id = run.run_id  # may be None on the submit response; re-fetch by waiter
-    # Poll
-    deadline = time.time() + timeout_s
-    while time.time() < deadline:
-        run_obj = target.jobs.get_run(run_id)
-        life_cycle = getattr(run_obj.state, "life_cycle_state", None)
-        if life_cycle and str(life_cycle).endswith(("TERMINATED", "SKIPPED", "INTERNAL_ERROR")):
-            break
-        time.sleep(5)
-    else:
-        raise RuntimeError(f"Target volume-copy job timed out after {timeout_s}s (run_id={run_id})")
-
-    result_state = getattr(run_obj.state, "result_state", None)
-    if str(result_state).endswith("SUCCESS"):
-        # Pull notebook exit value
-        task_run_id = run_obj.tasks[0].run_id if run_obj.tasks else run_id
-        out = target.jobs.get_run_output(task_run_id)
-        payload = out.notebook_output.result if out.notebook_output else "{}"
-        return json.loads(payload or "{}")
-    msg = getattr(run_obj.state, "state_message", "") or str(result_state)
-    raise RuntimeError(f"Target volume-copy job failed: {msg}")
+    """Back-compat wrapper — delegates to ``migrate.target_copy.run_target_file_copy``."""
+    return _shared_file_copy(auth, src_path, dst_path, run_name, timeout_s=timeout_s)
 
 
 # COMMAND ----------
