@@ -63,6 +63,10 @@ def _discover_uc(config, explorer, now) -> tuple[list[dict], int]:
     rows: list[dict] = []
     dlt_count = 0
     all_table_fqns: list[str] = []  # for workspace-level monitor enumeration
+    # ABAC policies hang off catalog / schema / table securables (no
+    # workspace-level list endpoint). Collect every securable we traverse
+    # so policy enumeration covers all three levels after the main loop.
+    all_securables: list[tuple[str, str]] = []
 
     catalogs = explorer.list_catalogs(filter_list=config.catalog_filter or None)
     tool_catalogs = _tool_owned_catalogs(config)
@@ -70,12 +74,14 @@ def _discover_uc(config, explorer, now) -> tuple[list[dict], int]:
     print(f"[uc] Discovered {len(catalogs)} catalog(s) (excluding tool-owned {sorted(tool_catalogs)}): {catalogs}")
 
     for catalog in catalogs:
+        all_securables.append(("CATALOG", catalog))
         schemas = explorer.list_schemas(catalog)
         if config.schema_filter:
             schemas = [s for s in schemas if s in config.schema_filter]
         print(f"  [uc] Catalog '{catalog}': {len(schemas)} schema(s)")
 
         for schema in schemas:
+            all_securables.append(("SCHEMA", f"{catalog}.{schema}"))
             # --- Tables and views ---
             tables = explorer.classify_tables(catalog, schema)
             for tbl in tables:
@@ -141,6 +147,11 @@ def _discover_uc(config, explorer, now) -> tuple[list[dict], int]:
                 )
                 if obj_type in ("managed_table", "external_table"):
                     all_table_fqns.append(fqn)
+                # ABAC policies can attach to views too, so enumerate every
+                # table/view as a TABLE-type securable (UC uses TABLE for
+                # both in the policies API).
+                if obj_type in ("managed_table", "external_table", "view", "mv", "st"):
+                    all_securables.append(("TABLE", fqn.replace("`", "")))
 
             # --- Functions ---
             for func_fqn in explorer.list_functions(catalog, schema):
@@ -246,12 +257,16 @@ def _discover_uc(config, explorer, now) -> tuple[list[dict], int]:
             )
         )
 
-    for p in explorer.list_policies():
+    for p in explorer.list_policies(all_securables):
+        securable_fqn = p.get("securable_fqn", "?")
+        # Make object_name unique across securables even when two different
+        # securables have a same-named policy: scope with the securable FQN.
+        policy_name = p["policy_name"] or "unnamed"
         rows.append(
             discovery_row(
                 source_type="uc",
                 object_type="policy",
-                object_name=p["policy_name"] or f"policy_{p.get('securable_fqn', '?')}",
+                object_name=f"{securable_fqn}::{policy_name}",
                 catalog_name=None,
                 schema_name=None,
                 discovered_at=now,

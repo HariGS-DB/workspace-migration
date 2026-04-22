@@ -152,26 +152,82 @@ class TestListColumnMasks:
 
 
 class TestListPolicies:
-    def test_parses_rest_response(self):
+    def test_parses_per_securable_responses(self):
+        """Each (type, full_name) pair triggers one API call; results
+        deduplicated by (securable_fqn, policy_name)."""
+        auth = MagicMock()
+
+        def do(method, path, query=None):
+            q = query or {}
+            sec = q.get("on_securable_fullname")
+            typ = q.get("on_securable_type")
+            if typ == "TABLE" and sec == "c.s.t":
+                return {
+                    "policies": [
+                        {"name": "p1", "on_securable_type": "TABLE", "on_securable_fullname": "c.s.t"},
+                    ]
+                }
+            if typ == "SCHEMA" and sec == "c.s":
+                return {
+                    "policies": [
+                        {"name": "p2", "on_securable_type": "SCHEMA", "on_securable_fullname": "c.s"},
+                    ]
+                }
+            return {"policies": []}
+
+        auth.source_client.api_client.do.side_effect = do
+        explorer = _explorer(MagicMock(), auth)
+        policies = explorer.list_policies([("CATALOG", "c"), ("SCHEMA", "c.s"), ("TABLE", "c.s.t")])
+
+        assert len(policies) == 2
+        names = {p["policy_name"] for p in policies}
+        assert names == {"p1", "p2"}
+
+    def test_returns_empty_when_no_securables(self):
+        """No securables → no API calls, empty result (no workspace-level endpoint)."""
+        auth = MagicMock()
+        explorer = _explorer(MagicMock(), auth)
+        assert explorer.list_policies([]) == []
+        auth.source_client.api_client.do.assert_not_called()
+
+    def test_swallows_per_securable_errors(self):
+        """One securable 404-ing (preview disabled, perms) doesn't block
+        collection from the other securables."""
+        auth = MagicMock()
+
+        def do(method, path, query=None):
+            q = query or {}
+            if q.get("on_securable_fullname") == "c.s.t":
+                raise Exception("404 Not Found")
+            return {
+                "policies": [
+                    {
+                        "name": "p1",
+                        "on_securable_type": "CATALOG",
+                        "on_securable_fullname": "c",
+                    }
+                ]
+            }
+
+        auth.source_client.api_client.do.side_effect = do
+        explorer = _explorer(MagicMock(), auth)
+        policies = explorer.list_policies([("CATALOG", "c"), ("TABLE", "c.s.t")])
+        assert len(policies) == 1
+        assert policies[0]["policy_name"] == "p1"
+
+    def test_deduplicates_across_inherited_returns(self):
+        """If two securables return the same (securable, policy) pair
+        (could happen if include_inherited is ever flipped on), it's
+        emitted only once."""
         auth = MagicMock()
         auth.source_client.api_client.do.return_value = {
             "policies": [
-                {"name": "p1", "on_securable_fullname": "c.s.t"},
-                {"name": "p2", "on_securable_fullname": "c.s"},
+                {"name": "shared", "on_securable_type": "CATALOG", "on_securable_fullname": "c"},
             ]
         }
         explorer = _explorer(MagicMock(), auth)
-        policies = explorer.list_policies()
-
-        assert len(policies) == 2
-        assert policies[0]["policy_name"] == "p1"
-        assert policies[0]["definition"]["on_securable_fullname"] == "c.s.t"
-
-    def test_returns_empty_on_404(self):
-        auth = MagicMock()
-        auth.source_client.api_client.do.side_effect = Exception("404 Not Found")
-        explorer = _explorer(MagicMock(), auth)
-        assert explorer.list_policies() == []
+        policies = explorer.list_policies([("CATALOG", "c"), ("SCHEMA", "c.s")])
+        assert len(policies) == 1
 
 
 class TestListMonitors:
