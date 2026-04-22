@@ -289,10 +289,13 @@ class CatalogExplorer:
 
         # Python UDF: LANGUAGE PYTHON + AS $$...$$ body wrapper
         if is_external and language == "PYTHON":
+            env_clause = self._fetch_python_udf_environment(function_fqn)
+            env_piece = f"{env_clause} " if env_clause else ""
             return (
                 f"CREATE OR REPLACE FUNCTION {function_fqn}({param_sig}) "
                 f"RETURNS {routine.data_type} "
                 f"LANGUAGE PYTHON "
+                f"{env_piece}"
                 f"AS $$\n{body}\n$$"
             )
 
@@ -307,6 +310,47 @@ class CatalogExplorer:
 
         # SQL UDF — existing path
         return f"CREATE OR REPLACE FUNCTION {function_fqn}({param_sig}) RETURNS {routine.data_type} RETURN {body}"
+
+    def _fetch_python_udf_environment(self, function_fqn: str) -> str | None:
+        """Return the literal ``ENVIRONMENT (...)`` clause for a Python
+        UDF, or ``None`` if the function has no environment spec or
+        ``SHOW CREATE FUNCTION`` isn't available on this runtime.
+
+        ``information_schema.routines`` doesn't expose the ENVIRONMENT
+        dependencies list, so we parse it out of ``SHOW CREATE FUNCTION``
+        which renders the full recreate-DDL when the function has one.
+        Replay of a Python UDF without its ENVIRONMENT drops its pip
+        dependencies silently on target — the UDF still creates but
+        fails at first invocation with ModuleNotFoundError.
+        """
+        try:
+            rows = self.spark.sql(f"SHOW CREATE FUNCTION {function_fqn}").collect()  # type: ignore[attr-defined]
+        except Exception:  # noqa: BLE001 — older runtimes or edge cases
+            return None
+        if not rows:
+            return None
+        # SHOW CREATE FUNCTION returns a single row with one string column.
+        first = rows[0]
+        ddl = first[0] if len(first) > 0 else ""
+        if not ddl:
+            return None
+        m = re.search(r"ENVIRONMENT\s*\(", ddl, re.IGNORECASE)
+        if not m:
+            return None
+        # Balance parens starting at the '(' opened by ENVIRONMENT.
+        start = m.end()
+        depth = 1
+        idx = start
+        while idx < len(ddl) and depth > 0:
+            ch = ddl[idx]
+            if ch == "(":
+                depth += 1
+            elif ch == ")":
+                depth -= 1
+            idx += 1
+        if depth != 0:
+            return None
+        return "ENVIRONMENT (" + ddl[start:idx]
 
     # ------------------------------------------------------------------
     # Functions & volumes
