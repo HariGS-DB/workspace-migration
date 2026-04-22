@@ -22,6 +22,32 @@ except NameError:
 
 spark.sql("CREATE CATALOG IF NOT EXISTS integration_test_src")  # noqa: F821
 spark.sql("CREATE SCHEMA IF NOT EXISTS integration_test_src.test_schema")  # noqa: F821
+# --- 1.8 Multi-schema fixture ---
+# A second schema under the same catalog with a distinct managed table.
+# Discovery should enumerate both schemas; managed_table_worker should
+# clone both. The assertion in test_uc_end_to_end verifies the target
+# sees a validated row for the second-schema table — if discovery or
+# the schema-level filter accidentally scopes to one schema, the row
+# won't exist.
+spark.sql("CREATE SCHEMA IF NOT EXISTS integration_test_src.test_schema_2")  # noqa: F821
+
+# COMMAND ----------
+
+spark.sql(  # noqa: F821
+    """
+    CREATE OR REPLACE TABLE integration_test_src.test_schema_2.secondary_orders (
+        order_id INT,
+        amount DOUBLE
+    ) USING DELTA
+    """
+)
+spark.sql(  # noqa: F821
+    """
+    INSERT INTO integration_test_src.test_schema_2.secondary_orders VALUES
+        (10, 10.0),
+        (11, 20.0)
+    """
+)
 
 # COMMAND ----------
 
@@ -410,6 +436,41 @@ except Exception as _exc:  # noqa: BLE001
     print(f"Skipped schema-level grant seed: {_exc}")
 dbutils.jobs.taskValues.set(  # type: ignore[name-defined]  # noqa: F821
     key="has_schema_grant", value="true" if _has_schema_grant else "false"
+)
+
+# COMMAND ----------
+
+# --- 1.13 Grant to non-existent principal ---
+# Seed a grant to a principal that is unlikely to exist on target
+# (a deterministic bogus name). The grants_worker should either:
+#   (a) migrate it successfully (UC accepts arbitrary string identifiers
+#       without validating principal existence at grant time), or
+#   (b) record status=failed with an operator-readable error.
+# Either is acceptable; the assertion in test_uc_end_to_end verifies the
+# row lands in migration_status and the status reflects one of the two,
+# never silently disappearing.
+
+_has_missing_principal_grant = False
+_missing_principal = "nonexistent-group-integration-test-1a2b3c4d@example.invalid"
+try:
+    spark.sql(  # noqa: F821
+        f"GRANT SELECT ON SCHEMA integration_test_src.test_schema "
+        f"TO `{_missing_principal}`"
+    )
+    _has_missing_principal_grant = True
+    print(f"Seeded grant to missing principal {_missing_principal!r}.")
+except Exception as _exc:  # noqa: BLE001
+    # Some source metastores reject unknown principals at grant time;
+    # leave the task value false so the assertion skips.
+    print(
+        f"Skipped missing-principal grant seed (source rejected): {_exc}"
+    )
+dbutils.jobs.taskValues.set(  # type: ignore[name-defined]  # noqa: F821
+    key="has_missing_principal_grant",
+    value="true" if _has_missing_principal_grant else "false",
+)
+dbutils.jobs.taskValues.set(  # type: ignore[name-defined]  # noqa: F821
+    key="missing_principal", value=_missing_principal
 )
 
 # COMMAND ----------

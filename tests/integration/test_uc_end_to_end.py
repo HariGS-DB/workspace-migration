@@ -581,6 +581,61 @@ else:
 # is a no-op if the volume is already verified there.
 print("1.12 external volume files: covered by Phase 2.5.A marker check above.")
 
+# 1.8 Multi-schema — secondary_orders lives in a second schema
+# (test_schema_2) under the same source catalog. Discovery must
+# enumerate both schemas and migrate managed tables in both.
+_ms_rows = full_status.filter(
+    "object_type = 'managed_table' "
+    "AND object_name LIKE '%test_schema_2%secondary_orders%' "
+    "AND status = 'validated'"
+).collect()
+if not _ms_rows:
+    error_messages.append(
+        "1.8 multi-schema: no validated managed_table row for "
+        "secondary_orders in test_schema_2 — discovery or the "
+        "schema-level iteration may be scoped to one schema."
+    )
+else:
+    print("1.8 multi-schema validated: secondary_orders migrated from "
+          "test_schema_2.")
+
+# 1.13 Grant to non-existent principal — seeded on the schema to an
+# intentionally-bogus email. The migrator must land a migration_status
+# row for the grant (either ``validated`` because UC accepts arbitrary
+# principal strings or ``failed`` if target rejects it). Silent drop
+# means the row is neither state — that would hide the gap.
+_has_missing_grant = dbutils.jobs.taskValues.get(  # type: ignore[name-defined]  # noqa: F821
+    taskKey="seed_uc", key="has_missing_principal_grant", debugValue="false"
+)
+if str(_has_missing_grant).lower() == "true":
+    _missing_principal = dbutils.jobs.taskValues.get(  # type: ignore[name-defined]  # noqa: F821
+        taskKey="seed_uc", key="missing_principal", debugValue="",
+    )
+    # grants are recorded with object_name containing the principal
+    _mg_rows = full_status.filter(
+        f"object_type = 'grant' AND object_name LIKE '%{_missing_principal}%'"
+    ).collect()
+    if not _mg_rows:
+        error_messages.append(
+            f"1.13 missing-principal grant: no migration_status row for "
+            f"principal {_missing_principal!r}. The grant must not be "
+            f"silently dropped — expected either 'validated' or 'failed'."
+        )
+    else:
+        _st = _mg_rows[0]["status"]
+        if _st not in ("validated", "failed"):
+            error_messages.append(
+                f"1.13 missing-principal grant: row status is {_st!r} "
+                f"(expected 'validated' or 'failed')."
+            )
+        else:
+            print(
+                f"1.13 missing-principal grant validated: status={_st!r} "
+                f"(row is surfaced, not silently dropped)."
+            )
+else:
+    print("1.13 missing-principal grant: fixture not seeded; skipping.")
+
 # COMMAND ----------
 
 if error_messages:
