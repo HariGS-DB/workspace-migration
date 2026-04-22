@@ -106,9 +106,7 @@ class TestMigrateVolume:
     @patch("migrate.volume_worker._run_target_volume_copy")
     @patch("migrate.volume_worker.time")
     @patch("migrate.volume_worker.execute_and_poll")
-    def test_managed_volume_removes_from_share_on_copy_failure(
-        self, mock_execute, mock_time, mock_copy
-    ):
+    def test_managed_volume_removes_from_share_on_copy_failure(self, mock_execute, mock_time, mock_copy):
         from migrate.volume_worker import migrate_volume
 
         mock_time.time.side_effect = [100.0, 105.0]
@@ -181,6 +179,7 @@ class TestVolumeWorkerSdkTypes:
         """workspace.import_ is called with ``format=ImportFormat.SOURCE``
         (Enum) and ``language=Language.PYTHON``, not raw strings."""
         from databricks.sdk.service.workspace import ImportFormat, Language
+
         from migrate.volume_worker import _ensure_copy_notebook_on_target
 
         auth = MagicMock()
@@ -206,6 +205,7 @@ class TestVolumeWorkerSdkTypes:
             NotebookTask,
             SubmitTask,
         )
+
         from migrate.volume_worker import _run_target_volume_copy
 
         auth = MagicMock()
@@ -231,21 +231,19 @@ class TestVolumeWorkerSdkTypes:
 
         assert len(tasks_arg) == 1
         assert isinstance(tasks_arg[0], SubmitTask), (
-            f"tasks[0] must be a SubmitTask dataclass, got "
-            f"{type(tasks_arg[0]).__name__}"
+            f"tasks[0] must be a SubmitTask dataclass, got {type(tasks_arg[0]).__name__}"
         )
         assert isinstance(tasks_arg[0].notebook_task, NotebookTask), (
-            f"notebook_task must be NotebookTask, got "
-            f"{type(tasks_arg[0].notebook_task).__name__}"
+            f"notebook_task must be NotebookTask, got {type(tasks_arg[0].notebook_task).__name__}"
         )
         assert tasks_arg[0].notebook_task.base_parameters == {
-            "src": "/src/x", "dst": "/dst/x",
+            "src": "/src/x",
+            "dst": "/dst/x",
         }
 
         assert len(envs_arg) == 1
         assert isinstance(envs_arg[0], JobEnvironment), (
-            f"environments[0] must be a JobEnvironment, got "
-            f"{type(envs_arg[0]).__name__}"
+            f"environments[0] must be a JobEnvironment, got {type(envs_arg[0]).__name__}"
         )
 
 

@@ -3,8 +3,10 @@
 # COMMAND ----------
 
 from __future__ import annotations  # noqa: E402
+
 # Bootstrap: put the bundle's `src/` dir on sys.path so `from common...` imports resolve
 import sys  # noqa: E402
+
 try:
     _ctx = dbutils.notebook.entry_point.getDbutils().notebook().getContext()  # noqa: F821
     _nb = _ctx.notebookPath().get()
@@ -128,14 +130,24 @@ if _is_notebook():
         # Read discovery inventory and collect pending objects per type
         BATCHED_TYPES = ("managed_table", "external_table", "volume", "mv", "st")
         LIST_TYPES = (
-            "function", "view",
+            "function",
+            "view",
             # Phase 3 governance object types — published even when counts
             # are zero so downstream worker tasks always have a valid JSON
             # payload to consume.
-            "tag", "row_filter", "column_mask", "policy",
+            "tag",
+            "row_filter",
+            "column_mask",
+            "policy",
             "comment",
-            "monitor", "registered_model", "connection", "foreign_catalog",
-            "share", "recipient", "provider", "online_table",
+            "monitor",
+            "registered_model",
+            "connection",
+            "foreign_catalog",
+            "share",
+            "recipient",
+            "provider",
+            "online_table",
         )
 
         batch_output: dict[str, list[str]] = {}
@@ -152,9 +164,7 @@ if _is_notebook():
             logger.info("Pending %s: %d objects", obj_type, len(pending))
             # Strip heavy fields for the same reason as batched types — the
             # aggregated list is also subject to the 3000-byte task-value limit.
-            list_output[f"{obj_type}_list"] = json.dumps(
-                _strip_heavy_fields(pending), default=str
-            )
+            list_output[f"{obj_type}_list"] = json.dumps(_strip_heavy_fields(pending), default=str)
 
         # Publish task values for downstream workers
         for key, batches in batch_output.items():

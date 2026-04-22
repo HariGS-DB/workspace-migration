@@ -3,8 +3,10 @@
 # COMMAND ----------
 
 from __future__ import annotations  # noqa: E402
+
 # Bootstrap: put the bundle's `src/` dir on sys.path so `from common...` imports resolve
 import sys  # noqa: E402
+
 try:
     _ctx = dbutils.notebook.entry_point.getDbutils().notebook().getContext()  # noqa: F821
     _nb = _ctx.notebookPath().get()
@@ -101,6 +103,7 @@ def migrate_external_table(
     # ROUTINE_NOT_FOUND. row_filters_worker / column_masks_worker apply
     # them later.
     from common.catalog_utils import CatalogExplorer
+
     ddl = CatalogExplorer.strip_filter_mask_clauses(ddl)
 
     # Replace CREATE TABLE with CREATE TABLE IF NOT EXISTS

@@ -22,9 +22,7 @@ class TestDiscovery:
     @patch("discovery.discovery.AuthManager")
     @patch("discovery.discovery.TrackingManager")
     @patch("discovery.discovery.CatalogExplorer")
-    def test_discovers_objects(
-        self, mock_explorer_cls, mock_tracker_cls, mock_auth_cls, mock_from_file
-    ):
+    def test_discovers_objects(self, mock_explorer_cls, mock_tracker_cls, mock_auth_cls, mock_from_file):
         dbutils = MagicMock()
         spark = MagicMock()
         mock_from_file.return_value = _make_config()
@@ -62,9 +60,7 @@ class TestDiscovery:
     @patch("discovery.discovery.AuthManager")
     @patch("discovery.discovery.TrackingManager")
     @patch("discovery.discovery.CatalogExplorer")
-    def test_empty_catalog(
-        self, mock_explorer_cls, mock_tracker_cls, mock_auth_cls, mock_from_file
-    ):
+    def test_empty_catalog(self, mock_explorer_cls, mock_tracker_cls, mock_auth_cls, mock_from_file):
         dbutils = MagicMock()
         spark = MagicMock()
         mock_from_file.return_value = _make_config()
@@ -97,7 +93,11 @@ class TestFilterSemantics:
     @patch("discovery.discovery.TrackingManager")
     @patch("discovery.discovery.CatalogExplorer")
     def test_catalog_filter_reaches_list_catalogs(
-        self, mock_explorer_cls, mock_tracker_cls, mock_auth_cls, mock_from_file,
+        self,
+        mock_explorer_cls,
+        mock_tracker_cls,
+        mock_auth_cls,
+        mock_from_file,
     ):
         """``config.catalog_filter`` must be passed as ``filter_list=``
         to ``explorer.list_catalogs``. Without this, the filter is
@@ -121,7 +121,11 @@ class TestFilterSemantics:
     @patch("discovery.discovery.TrackingManager")
     @patch("discovery.discovery.CatalogExplorer")
     def test_empty_catalog_filter_passes_none_to_list_catalogs(
-        self, mock_explorer_cls, mock_tracker_cls, mock_auth_cls, mock_from_file,
+        self,
+        mock_explorer_cls,
+        mock_tracker_cls,
+        mock_auth_cls,
+        mock_from_file,
     ):
         """Empty ``catalog_filter`` must become ``filter_list=None`` so
         the explorer returns everything — passing an empty list would
@@ -142,7 +146,11 @@ class TestFilterSemantics:
     @patch("discovery.discovery.TrackingManager")
     @patch("discovery.discovery.CatalogExplorer")
     def test_schema_filter_narrows_schemas_per_catalog(
-        self, mock_explorer_cls, mock_tracker_cls, mock_auth_cls, mock_from_file,
+        self,
+        mock_explorer_cls,
+        mock_tracker_cls,
+        mock_auth_cls,
+        mock_from_file,
     ):
         """``schema_filter`` is applied after ``list_schemas`` as a
         Python-level intersect — only schemas present in both the
@@ -157,7 +165,9 @@ class TestFilterSemantics:
         explorer.list_catalogs.return_value = ["cat_a"]
         # Source has three schemas; only schema_keep should be processed.
         explorer.list_schemas.return_value = [
-            "schema_keep", "schema_drop_a", "schema_drop_b",
+            "schema_keep",
+            "schema_drop_a",
+            "schema_drop_b",
         ]
         explorer.classify_tables.return_value = []
         explorer.list_functions.return_value = []
@@ -167,9 +177,7 @@ class TestFilterSemantics:
 
         # classify_tables must be called once (for schema_keep only),
         # not three times (once per source schema).
-        call_schemas = [
-            c.args[1] for c in explorer.classify_tables.call_args_list
-        ]
+        call_schemas = [c.args[1] for c in explorer.classify_tables.call_args_list]
         assert call_schemas == ["schema_keep"]
 
     @patch("discovery.discovery.MigrationConfig.from_workspace_file")
@@ -177,7 +185,11 @@ class TestFilterSemantics:
     @patch("discovery.discovery.TrackingManager")
     @patch("discovery.discovery.CatalogExplorer")
     def test_empty_schema_filter_includes_all_schemas(
-        self, mock_explorer_cls, mock_tracker_cls, mock_auth_cls, mock_from_file,
+        self,
+        mock_explorer_cls,
+        mock_tracker_cls,
+        mock_auth_cls,
+        mock_from_file,
     ):
         """Empty ``schema_filter`` must leave the schema list untouched —
         not accidentally filter to zero."""
@@ -197,9 +209,7 @@ class TestFilterSemantics:
         run(dbutils, spark)
 
         # All schemas must be iterated.
-        call_schemas = [
-            c.args[1] for c in explorer.classify_tables.call_args_list
-        ]
+        call_schemas = [c.args[1] for c in explorer.classify_tables.call_args_list]
         assert set(call_schemas) == {"schema_a", "schema_b"}
 
     @patch("discovery.discovery.MigrationConfig.from_workspace_file")
@@ -207,7 +217,11 @@ class TestFilterSemantics:
     @patch("discovery.discovery.TrackingManager")
     @patch("discovery.discovery.CatalogExplorer")
     def test_schema_filter_with_no_matches_discovers_nothing(
-        self, mock_explorer_cls, mock_tracker_cls, mock_auth_cls, mock_from_file,
+        self,
+        mock_explorer_cls,
+        mock_tracker_cls,
+        mock_auth_cls,
+        mock_from_file,
     ):
         """``schema_filter`` naming a schema that doesn't exist on source
         must produce an empty discovery inventory — not fall through to
@@ -238,6 +252,7 @@ class TestToolOwnedCatalogs:
 
     def test_includes_tracking_catalog(self):
         from discovery.discovery import _tool_owned_catalogs
+
         config = MagicMock()
         config.tracking_catalog = "migration_tracking"
         excluded = _tool_owned_catalogs(config)
@@ -245,6 +260,7 @@ class TestToolOwnedCatalogs:
 
     def test_includes_share_consumer(self):
         from discovery.discovery import _tool_owned_catalogs
+
         config = MagicMock()
         config.tracking_catalog = "migration_tracking"
         excluded = _tool_owned_catalogs(config)
@@ -255,6 +271,7 @@ class TestToolOwnedCatalogs:
         """If the operator configures a non-default tracking_catalog,
         excludes that one instead of the default."""
         from discovery.discovery import _tool_owned_catalogs
+
         config = MagicMock()
         config.tracking_catalog = "custom_tracking"
         excluded = _tool_owned_catalogs(config)
@@ -268,6 +285,7 @@ class TestWarnRlsCmTables:
 
     def test_silent_when_no_rls_cm_rows(self, capsys):
         from discovery.discovery import _warn_rls_cm_tables
+
         config = MagicMock()
         config.rls_cm_strategy = ""
         rows = [
@@ -281,6 +299,7 @@ class TestWarnRlsCmTables:
 
     def test_fires_on_row_filter(self, capsys):
         from discovery.discovery import _warn_rls_cm_tables
+
         config = MagicMock()
         config.rls_cm_strategy = ""
         rows = [
@@ -300,7 +319,9 @@ class TestWarnRlsCmTables:
         """column_mask rows have ``object_name`` = ``<fqn>.<col>`` so the
         clean table_fqn must be pulled from metadata_json."""
         import json as _json
+
         from discovery.discovery import _warn_rls_cm_tables
+
         config = MagicMock()
         config.rls_cm_strategy = ""
         rows = [
@@ -318,7 +339,9 @@ class TestWarnRlsCmTables:
     def test_deduplicates_table_across_rf_and_cm_rows(self, capsys):
         """Same table listed once even if it has both filter and mask."""
         import json as _json
+
         from discovery.discovery import _warn_rls_cm_tables
+
         config = MagicMock()
         config.rls_cm_strategy = ""
         rows = [
@@ -338,6 +361,7 @@ class TestWarnRlsCmTables:
         """If operator set rls_cm_strategy=drop_and_restore, surface the
         ``NOT YET IMPLEMENTED`` warning so they know setup_sharing will fail."""
         from discovery.discovery import _warn_rls_cm_tables
+
         config = MagicMock()
         config.rls_cm_strategy = "drop_and_restore"
         rows = [{"object_type": "row_filter", "object_name": "`c`.`s`.`t`"}]
@@ -347,6 +371,7 @@ class TestWarnRlsCmTables:
 
     def test_tolerates_malformed_metadata_json(self, capsys):
         from discovery.discovery import _warn_rls_cm_tables
+
         config = MagicMock()
         config.rls_cm_strategy = ""
         rows = [

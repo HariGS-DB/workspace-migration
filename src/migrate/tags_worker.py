@@ -3,7 +3,9 @@
 # COMMAND ----------
 
 from __future__ import annotations  # noqa: E402
+
 import sys  # noqa: E402
+
 try:
     _ctx = dbutils.notebook.entry_point.getDbutils().notebook().getContext()  # noqa: F821
     _nb = _ctx.notebookPath().get()
@@ -46,7 +48,7 @@ def _tag_clause(pairs: list[tuple[str, str]]) -> str:
 
     Values are wrapped in single quotes with embedded quotes escaped.
     """
-    parts = [f"'{k}' = '{str(v).replace(chr(39), chr(39)*2)}'" for k, v in pairs]
+    parts = [f"'{k}' = '{str(v).replace(chr(39), chr(39) * 2)}'" for k, v in pairs]
     return "(" + ", ".join(parts) + ")"
 
 

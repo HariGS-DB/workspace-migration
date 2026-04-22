@@ -6,28 +6,23 @@ The notebook runs its main block at import (similar to
 hive_orchestrator), so we use source-level regression checks plus a
 scoped-import behavior test with mocked dbutils/config/os/shutil.
 """
+
 from __future__ import annotations
 
 import pathlib
-from unittest.mock import MagicMock
 
 
 def _source_text() -> str:
-    path = (
-        pathlib.Path(__file__).resolve().parents[2]
-        / "tests"
-        / "integration"
-        / "setup_test_config.py"
-    )
+    path = pathlib.Path(__file__).resolve().parents[2] / "tests" / "integration" / "setup_test_config.py"
     return path.read_text()
 
 
 class TestSetupTestConfigSourceGuards:
     """Source-level checks — the notebook must:
-      - back up config.yaml before overriding (so teardown can restore)
-      - reject rls_cm_strategy=drop_and_restore (belt-and-braces with
-        setup_sharing's own gate)
-      - write the file back via yaml.safe_dump
+    - back up config.yaml before overriding (so teardown can restore)
+    - reject rls_cm_strategy=drop_and_restore (belt-and-braces with
+      setup_sharing's own gate)
+    - write the file back via yaml.safe_dump
     """
 
     def test_writes_backup_to_pre_integration_test_bak(self):
@@ -43,9 +38,7 @@ class TestSetupTestConfigSourceGuards:
             "setup_test_config must reject rls_cm_strategy=drop_and_restore "
             "(not yet implemented) to match setup_sharing's own gate."
         )
-        assert "NotImplementedError" in src, (
-            "Rejection must raise NotImplementedError (not just warn)."
-        )
+        assert "NotImplementedError" in src, "Rejection must raise NotImplementedError (not just warn)."
 
     def test_uses_yaml_safe_dump(self):
         src = _source_text()
@@ -60,9 +53,7 @@ class TestSetupTestConfigSourceGuards:
         src = _source_text()
         backup_idx = src.index(".pre-integration-test.bak")
         override_idx = src.index("yaml.safe_dump")
-        assert backup_idx < override_idx, (
-            "Backup copy must happen BEFORE the file is overwritten."
-        )
+        assert backup_idx < override_idx, "Backup copy must happen BEFORE the file is overwritten."
 
     def test_preserves_existing_hive_dbfs_target_path_when_empty_param(self):
         """Env-specific fields like hive_dbfs_target_path are operator-

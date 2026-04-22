@@ -3,8 +3,10 @@
 # COMMAND ----------
 
 from __future__ import annotations  # noqa: E402
+
 # Bootstrap: put the bundle's `src/` dir on sys.path so `from common...` imports resolve
 import sys  # noqa: E402
+
 try:
     _ctx = dbutils.notebook.entry_point.getDbutils().notebook().getContext()  # noqa: F821
     _nb = _ctx.notebookPath().get()
@@ -81,9 +83,7 @@ def get_hive_function_ddl(spark, func_fqn: str) -> str:
         if "(" in usage and ")" in usage:
             args = usage[usage.index("(") + 1 : usage.rindex(")")]
     if not body:
-        raise ValueError(
-            f"Could not extract DDL for {func_fqn}: no Body and no Class in DESCRIBE output"
-        )
+        raise ValueError(f"Could not extract DDL for {func_fqn}: no Body and no Class in DESCRIBE output")
     return f"CREATE FUNCTION {func_fqn}({args}) RETURNS {return_type} RETURN {body}"
 
 
@@ -188,9 +188,7 @@ def run(dbutils, spark) -> None:
     tracker = TrackingManager(spark_session, config)
 
     # Parse hive function list from task values (produced by hive_orchestrator)
-    function_list_json = dbutils.jobs.taskValues.get(
-        taskKey="hive_orchestrator", key="hive_function_list"
-    )
+    function_list_json = dbutils.jobs.taskValues.get(taskKey="hive_orchestrator", key="hive_function_list")
     functions: list[dict] = json.loads(function_list_json)
     logger.info("Received %d hive functions to migrate.", len(functions))
 

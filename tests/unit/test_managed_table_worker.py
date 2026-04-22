@@ -174,9 +174,7 @@ class TestIcebergManagedTable:
         table_info = {
             "object_name": "`cat`.`sch`.`ice_tbl`",
             "format": "iceberg",
-            "create_statement": (
-                "CREATE TABLE `cat`.`sch`.`ice_tbl` USING ICEBERG AS SELECT 1"
-            ),
+            "create_statement": ("CREATE TABLE `cat`.`sch`.`ice_tbl` USING ICEBERG AS SELECT 1"),
         }
         result = clone_table(table_info, **deps)
 
@@ -185,9 +183,7 @@ class TestIcebergManagedTable:
         sqls = [c.args[2] for c in mock_execute.call_args_list]
         assert any("USING ICEBERG" in s for s in sqls)  # CREATE executed
         assert any("INSERT INTO" in s for s in sqls)  # Re-ingest executed
-        assert any(
-            "FROM `cp_migration_share_consumer`.`sch`.`ice_tbl`" in s for s in sqls
-        )
+        assert any("FROM `cp_migration_share_consumer`.`sch`.`ice_tbl`" in s for s in sqls)
 
     @patch("migrate.managed_table_worker.time")
     @patch("migrate.managed_table_worker.execute_and_poll")

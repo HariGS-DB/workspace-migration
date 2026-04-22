@@ -23,9 +23,7 @@ class TestPreCheck:
     @patch("pre_check.pre_check.AuthManager")
     @patch("pre_check.pre_check.TrackingManager")
     @patch("pre_check.pre_check.CatalogExplorer")
-    def test_all_checks_pass(
-        self, mock_explorer_cls, mock_tracker_cls, mock_auth_cls, mock_from_file
-    ):
+    def test_all_checks_pass(self, mock_explorer_cls, mock_tracker_cls, mock_auth_cls, mock_from_file):
         dbutils = MagicMock()
         spark = MagicMock()
         mock_from_file.return_value = _make_config()
@@ -59,9 +57,7 @@ class TestPreCheck:
     @patch("pre_check.pre_check.AuthManager")
     @patch("pre_check.pre_check.TrackingManager")
     @patch("pre_check.pre_check.CatalogExplorer")
-    def test_auth_failure_raises(
-        self, mock_explorer_cls, mock_tracker_cls, mock_auth_cls, mock_from_file
-    ):
+    def test_auth_failure_raises(self, mock_explorer_cls, mock_tracker_cls, mock_auth_cls, mock_from_file):
         dbutils = MagicMock()
         spark = MagicMock()
         mock_from_file.return_value = _make_config()
@@ -109,9 +105,7 @@ class TestPreCheckIndividualFailures:
     @patch("pre_check.pre_check.AuthManager")
     @patch("pre_check.pre_check.TrackingManager")
     @patch("pre_check.pre_check.CatalogExplorer")
-    def test_target_auth_failure(
-        self, mock_explorer_cls, mock_tracker_cls, mock_auth_cls, mock_from_file
-    ):
+    def test_target_auth_failure(self, mock_explorer_cls, mock_tracker_cls, mock_auth_cls, mock_from_file):
         """If target connectivity fails, ``check_target_auth`` FAILs and
         ``run()`` raises (because at least one check failed)."""
         dbutils = MagicMock()
@@ -127,9 +121,7 @@ class TestPreCheckIndividualFailures:
     @patch("pre_check.pre_check.AuthManager")
     @patch("pre_check.pre_check.TrackingManager")
     @patch("pre_check.pre_check.CatalogExplorer")
-    def test_source_metastore_lookup_failure(
-        self, mock_explorer_cls, mock_tracker_cls, mock_auth_cls, mock_from_file
-    ):
+    def test_source_metastore_lookup_failure(self, mock_explorer_cls, mock_tracker_cls, mock_auth_cls, mock_from_file):
         """spark.sql(SELECT current_metastore()) raising bubbles into
         check_source_metastore FAILing with the action-required hint."""
         dbutils = MagicMock()
@@ -154,18 +146,14 @@ class TestPreCheckIndividualFailures:
     @patch("pre_check.pre_check.AuthManager")
     @patch("pre_check.pre_check.TrackingManager")
     @patch("pre_check.pre_check.CatalogExplorer")
-    def test_target_metastore_lookup_failure(
-        self, mock_explorer_cls, mock_tracker_cls, mock_auth_cls, mock_from_file
-    ):
+    def test_target_metastore_lookup_failure(self, mock_explorer_cls, mock_tracker_cls, mock_auth_cls, mock_from_file):
         """auth.target_client.metastores.summary raising is caught by
         check_target_metastore's try/except."""
         dbutils = MagicMock()
         spark = MagicMock()
         mock_from_file.return_value = _make_config()
         mock_auth = _base_mocks(mock_auth_cls, mock_tracker_cls, mock_explorer_cls, spark)
-        mock_auth.target_client.metastores.summary.side_effect = RuntimeError(
-            "target metastore lookup failed"
-        )
+        mock_auth.target_client.metastores.summary.side_effect = RuntimeError("target metastore lookup failed")
 
         with pytest.raises(Exception, match="Pre-check failed"):
             run(dbutils, spark)
@@ -182,9 +170,7 @@ class TestPreCheckIndividualFailures:
         spark = MagicMock()
         mock_from_file.return_value = _make_config()
         _base_mocks(mock_auth_cls, mock_tracker_cls, mock_explorer_cls, spark)
-        mock_explorer_cls.return_value.list_catalogs.side_effect = RuntimeError(
-            "permission denied on metastore"
-        )
+        mock_explorer_cls.return_value.list_catalogs.side_effect = RuntimeError("permission denied on metastore")
 
         with pytest.raises(Exception, match="Pre-check failed"):
             run(dbutils, spark)
@@ -207,17 +193,17 @@ class TestPreCheckIndividualFailures:
 
         # Check the tracker.append_pre_check_results got ALL checks,
         # not just the first few before the failure.
+        import contextlib
+
         tracker = mock_tracker_cls.return_value
-        try:
+        # raise is expected once at least one check failed
+        with contextlib.suppress(Exception):
             run(dbutils, spark)
-        except Exception:
-            pass  # raise is expected once at least one check failed
         # At least one call with >=5 entries (confirms we ran the full
         # battery; exact count varies with enabled checks).
         recorded = tracker.append_pre_check_results.call_args_list
         assert recorded, "No pre-check results were written."
         total_rows = sum(len(c.args[0]) for c in recorded)
         assert total_rows >= 5, (
-            f"Only {total_rows} pre-check result(s) recorded — one "
-            f"check failing should not abort the rest."
+            f"Only {total_rows} pre-check result(s) recorded — one check failing should not abort the rest."
         )

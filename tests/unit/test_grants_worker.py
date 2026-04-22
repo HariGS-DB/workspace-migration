@@ -122,23 +122,21 @@ class TestGrantsWorkerKnownLimitations:
         future refactor extends this, the test fails loudly and the gap
         documentation needs updating."""
         import pathlib
-        src = (
-            pathlib.Path(__file__).resolve().parents[2]
-            / "src" / "migrate" / "grants_worker.py"
-        ).read_text()
+
+        src = (pathlib.Path(__file__).resolve().parents[2] / "src" / "migrate" / "grants_worker.py").read_text()
         # These SHOULD appear — current behavior:
-        assert 'list_grants("CATALOG"' in src, (
-            "grants_worker must process CATALOG grants."
-        )
-        assert 'list_grants("SCHEMA"' in src, (
-            "grants_worker must process SCHEMA grants."
-        )
+        assert 'list_grants("CATALOG"' in src, "grants_worker must process CATALOG grants."
+        assert 'list_grants("SCHEMA"' in src, "grants_worker must process SCHEMA grants."
         # These SHOULD NOT appear today. If they do, either:
         #   a) someone extended grants_worker (update this test + README), or
         #   b) they added a pattern that only LOOKS like table-level grant
         #      processing and this test needs tightening.
-        for unsupported in ('list_grants("TABLE"', 'list_grants("VIEW"',
-                            'list_grants("VOLUME"', 'list_grants("FUNCTION"'):
+        for unsupported in (
+            'list_grants("TABLE"',
+            'list_grants("VIEW"',
+            'list_grants("VOLUME"',
+            'list_grants("FUNCTION"',
+        ):
             assert unsupported not in src, (
                 f"grants_worker now appears to process {unsupported!r}. "
                 f"If that's intentional, update the README's known-gap "

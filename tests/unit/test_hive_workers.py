@@ -5,6 +5,7 @@ These workers had zero unit coverage before this file. Focus is on the
 contracts: DDL rewrites target the correct catalog, LOCATION / partition
 clauses survive, OWN grants are skipped, etc.
 """
+
 from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
@@ -34,9 +35,7 @@ class TestHiveViewsWorker:
 
     @patch("migrate.hive_views_worker.time")
     @patch("migrate.hive_views_worker.execute_and_poll")
-    def test_rewrites_hive_metastore_references_to_target_catalog(
-        self, mock_execute, mock_time
-    ):
+    def test_rewrites_hive_metastore_references_to_target_catalog(self, mock_execute, mock_time):
         from migrate.hive_views_worker import migrate_hive_view
 
         mock_time.time.side_effect = [100.0, 105.0]
@@ -119,6 +118,7 @@ class TestHiveExternalWorker:
         behavior covered by integration tests since the worker drives
         a DESCRIBE TABLE EXTENDED dance to recover the LOCATION."""
         from migrate import hive_external_worker
+
         # Has a run() entry point for the for_each task payload.
         assert hasattr(hive_external_worker, "run") or callable(
             getattr(hive_external_worker, "migrate_hive_external_table", None)
@@ -133,6 +133,7 @@ class TestHiveExternalWorker:
 class TestHiveFunctionsWorker:
     def test_module_imports_cleanly(self):
         from migrate import hive_functions_worker
+
         assert hasattr(hive_functions_worker, "run")
 
 
@@ -147,10 +148,8 @@ class TestHiveGrantsWorker:
         hive_common.py. If someone forks the map inline, this test
         fails loud so the change is visible."""
         import pathlib
-        src = (
-            pathlib.Path(__file__).resolve().parents[2]
-            / "src" / "migrate" / "hive_grants_worker.py"
-        ).read_text()
+
+        src = (pathlib.Path(__file__).resolve().parents[2] / "src" / "migrate" / "hive_grants_worker.py").read_text()
         assert "HIVE_TO_UC_PRIVILEGES" in src
 
     def test_only_catalog_and_schema_grants_processed(self):
@@ -158,10 +157,8 @@ class TestHiveGrantsWorker:
         migrate today. Locked in at source level so the gap stays
         visible in CODEOWNERS-type reviews."""
         import pathlib
-        src = (
-            pathlib.Path(__file__).resolve().parents[2]
-            / "src" / "migrate" / "hive_grants_worker.py"
-        ).read_text()
+
+        src = (pathlib.Path(__file__).resolve().parents[2] / "src" / "migrate" / "hive_grants_worker.py").read_text()
         # No TABLE / VIEW / VOLUME enumeration yet.
         for forbidden in (
             'list_grants("TABLE"',
@@ -187,9 +184,9 @@ class TestHiveManagedDbfsWorker:
 
     def test_module_uses_hive_dbfs_target_path_config(self):
         import pathlib
+
         src = (
-            pathlib.Path(__file__).resolve().parents[2]
-            / "src" / "migrate" / "hive_managed_dbfs_worker.py"
+            pathlib.Path(__file__).resolve().parents[2] / "src" / "migrate" / "hive_managed_dbfs_worker.py"
         ).read_text()
         assert "hive_dbfs_target_path" in src
 
@@ -199,9 +196,9 @@ class TestHiveManagedDbfsWorker:
         by CREATE TABLE. Source-level check that the CREATE statement
         uses ``CREATE EXTERNAL TABLE`` (or equivalent)."""
         import pathlib
+
         src = (
-            pathlib.Path(__file__).resolve().parents[2]
-            / "src" / "migrate" / "hive_managed_dbfs_worker.py"
+            pathlib.Path(__file__).resolve().parents[2] / "src" / "migrate" / "hive_managed_dbfs_worker.py"
         ).read_text()
         # Either explicit EXTERNAL keyword or LOCATION clause
         # (LOCATION on CREATE TABLE makes it external in UC).
@@ -221,6 +218,7 @@ class TestHiveManagedNondbfsWorker:
 
     def test_module_imports_cleanly(self):
         from migrate import hive_managed_nondbfs_worker
+
         assert hasattr(hive_managed_nondbfs_worker, "run")
 
 
@@ -240,14 +238,11 @@ class TestHiveOrchestratorBatching:
         tuples directly. The list-style keys are literal strings.
         """
         import pathlib
-        src = (
-            pathlib.Path(__file__).resolve().parents[2]
-            / "src" / "migrate" / "hive_orchestrator.py"
-        ).read_text()
+
+        src = (pathlib.Path(__file__).resolve().parents[2] / "src" / "migrate" / "hive_orchestrator.py").read_text()
         for cat in ("hive_external", "hive_managed_nondbfs", "hive_managed_dbfs_root"):
             assert f'"{cat}"' in src, (
-                f"hive_orchestrator must iterate category {cat!r} when "
-                f"emitting batched task values"
+                f"hive_orchestrator must iterate category {cat!r} when emitting batched task values"
             )
         for list_key in ("hive_view_list", "hive_function_list"):
             assert list_key in src, f"hive_orchestrator must publish {list_key}"
@@ -259,14 +254,10 @@ class TestHiveOrchestratorBatching:
         occurrences exist (skip path + populate path); we check the
         last (populate) one against CREATE CATALOG order."""
         import pathlib
-        src = (
-            pathlib.Path(__file__).resolve().parents[2]
-            / "src" / "migrate" / "hive_orchestrator.py"
-        ).read_text()
+
+        src = (pathlib.Path(__file__).resolve().parents[2] / "src" / "migrate" / "hive_orchestrator.py").read_text()
         create_idx = src.find("CREATE CATALOG IF NOT EXISTS")
-        last_batch_idx = src.rfind(
-            '("hive_external", "hive_managed_nondbfs", "hive_managed_dbfs_root")'
-        )
+        last_batch_idx = src.rfind('("hive_external", "hive_managed_nondbfs", "hive_managed_dbfs_root")')
         assert create_idx != -1, "Orchestrator must CREATE target catalog"
         assert last_batch_idx != -1, "Category-iteration tuple not found in orchestrator"
         assert create_idx < last_batch_idx, (

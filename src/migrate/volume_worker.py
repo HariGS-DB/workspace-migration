@@ -3,8 +3,10 @@
 # COMMAND ----------
 
 from __future__ import annotations  # noqa: E402
+
 # Bootstrap: put the bundle's `src/` dir on sys.path so `from common...` imports resolve
 import sys  # noqa: E402
+
 try:
     _ctx = dbutils.notebook.entry_point.getDbutils().notebook().getContext()  # noqa: F821
     _nb = _ctx.notebookPath().get()
@@ -28,6 +30,7 @@ except NameError:
 # Bytes copied + file count are recorded in migration_status.
 
 import base64
+import contextlib
 import json
 import logging
 import time
@@ -64,7 +67,7 @@ def _is_notebook() -> bool:
 
 # Target-side notebook source — uploaded once per migration run and reused for
 # every managed volume. Emits JSON with bytes_copied/file_count via notebook exit.
-_TARGET_COPY_NOTEBOOK = '''# Databricks notebook source
+_TARGET_COPY_NOTEBOOK = """# Databricks notebook source
 # Target-side helper: recursively copies files from a source volume path to a
 # destination volume path. Invoked by volume_worker for each MANAGED volume.
 import json
@@ -91,7 +94,7 @@ def _copy_recursive(s, d):
 
 _copy_recursive(src, dst)
 dbutils.notebook.exit(json.dumps({"bytes_copied": total_bytes, "file_count": total_files}))
-'''
+"""
 
 
 def _parse_fqn(fqn: str) -> tuple[str, str, str]:
@@ -107,9 +110,7 @@ def _parse_fqn(fqn: str) -> tuple[str, str, str]:
 # Share add/remove (source-side SQL)
 
 
-def add_volume_to_share(
-    source_spark, share_name: str, volume_fqn: str, *, dry_run: bool = False
-) -> None:
+def add_volume_to_share(source_spark, share_name: str, volume_fqn: str, *, dry_run: bool = False) -> None:
     """Add a volume to the migration share on source via SQL."""
     sql = f"ALTER SHARE {share_name} ADD VOLUME {volume_fqn}"
     if dry_run:
@@ -125,9 +126,7 @@ def add_volume_to_share(
             raise
 
 
-def remove_volume_from_share(
-    source_spark, share_name: str, volume_fqn: str, *, dry_run: bool = False
-) -> None:
+def remove_volume_from_share(source_spark, share_name: str, volume_fqn: str, *, dry_run: bool = False) -> None:
     """Remove a volume from the migration share on source. Best-effort."""
     sql = f"ALTER SHARE {share_name} REMOVE VOLUME {volume_fqn}"
     if dry_run:
@@ -146,11 +145,9 @@ def remove_volume_from_share(
 def _ensure_copy_notebook_on_target(auth: AuthManager) -> None:
     """Idempotently upload the copy-helper notebook to the target workspace."""
     target = auth.target_client
-    # Ensure parent dir exists
-    try:
+    # Ensure parent dir exists (idempotent; swallow errors)
+    with contextlib.suppress(Exception):
         target.workspace.mkdirs("/Shared/cp_migration_runtime")
-    except Exception:  # noqa: BLE001
-        pass  # mkdirs is idempotent; swallow errors
     # SDK >= recent requires real Enums here — passing raw strings triggers
     # ``AttributeError: 'str' object has no attribute 'value'`` inside the SDK.
     target.workspace.import_(
@@ -239,17 +236,21 @@ def migrate_volume(
     src_cat, src_sch, src_vol = _parse_fqn(obj_name)
     target_fqn = obj_name  # same catalog.schema.name on target
 
-    tracker.append_migration_status([{
-        "object_name": obj_name,
-        "object_type": "volume",
-        "status": "in_progress",
-        "error_message": None,
-        "job_run_id": None,
-        "task_run_id": None,
-        "source_row_count": None,
-        "target_row_count": None,
-        "duration_seconds": None,
-    }])
+    tracker.append_migration_status(
+        [
+            {
+                "object_name": obj_name,
+                "object_type": "volume",
+                "status": "in_progress",
+                "error_message": None,
+                "job_run_id": None,
+                "task_run_id": None,
+                "source_row_count": None,
+                "target_row_count": None,
+                "duration_seconds": None,
+            }
+        ]
+    )
 
     start = time.time()
 
@@ -323,9 +324,7 @@ def migrate_volume(
         logger.info("Creating managed volume on target: %s", target_fqn)
         result = execute_and_poll(auth, wh_id, create_sql)
         if result["state"] != "SUCCEEDED":
-            raise RuntimeError(
-                f"CREATE VOLUME failed: {result.get('error', result['state'])}"
-            )
+            raise RuntimeError(f"CREATE VOLUME failed: {result.get('error', result['state'])}")
 
         # 3. Submit target-side copy job
         shared_path = f"/Volumes/{CONSUMER_CATALOG}/{src_sch}/{src_vol}"

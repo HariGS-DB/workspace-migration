@@ -64,6 +64,50 @@ The SPN needs: workspace admin on source + target, metastore-level
 `READ_FILES`/`WRITE_FILES`/`CREATE_EXTERNAL_TABLE` on any external
 location used for Hive DBFS-root migration.
 
+#### Terraform / CLI compatibility note
+
+The Databricks CLI ships a bundled Terraform binary whose OpenPGP signing
+key has expired, causing `bundle deploy` to fail with
+`error downloading Terraform: unable to verify checksums signature: openpgp: key expired`.
+Work around by pointing the CLI at a locally-installed Terraform:
+
+```
+export DATABRICKS_TF_VERSION=1.5.7          # or your installed version
+export DATABRICKS_TF_EXEC_PATH=/path/to/terraform
+databricks bundle deploy -t dev
+```
+
+### Config reference (`config.yaml`)
+
+| Field | Required | Default | Purpose |
+|---|---|---|---|
+| `source_workspace_url` | yes | — | Source workspace HTTPS URL |
+| `target_workspace_url` | yes | — | Target workspace HTTPS URL |
+| `spn_client_id` | yes | — | OAuth SPN application ID (jobs run as this) |
+| `spn_secret_scope` | yes | — | Databricks secret scope holding the SPN secret |
+| `spn_secret_key` | yes | — | Key within the secret scope |
+| `catalog_filter` | no | `[]` (all) | Restrict discovery + migration to named catalogs. List or comma-separated string. |
+| `schema_filter` | no | `[]` (all) | Restrict to named schemas within each catalog |
+| `tracking_catalog` | no | `migration_tracking` | Catalog holding `discovery_inventory` / `migration_status` / `pre_check_results` |
+| `tracking_schema` | no | `cp_migration` | Schema under `tracking_catalog` for the tracking tables |
+| `dry_run` | no | `false` | Emit `skipped`/`dry_run` status rows; run no DDL against target |
+| `batch_size` | no | `50` | Max objects per batched for-each task (keeps payload under the 3000-byte Databricks Jobs limit) |
+| `scope.include_uc` | no | `true` | Discover + migrate UC objects |
+| `scope.include_hive` | no | `false` | Discover + migrate `hive_metastore` objects. Opt-in. |
+| `iceberg_strategy` | no | `""` | `""` skips Iceberg managed tables (marking `skipped_by_config`). `"ddl_replay"` opts into the Option A path — rebuild schema + re-ingest via `cp_migration_share`. Loses snapshot history / time travel / branches + tags. |
+| `rls_cm_strategy` | no | `""` | Managed tables carrying legacy row filter / column mask. `""` skips them (marking `skipped_by_rls_cm_policy`). `"drop_and_restore"` is declared but NOT YET IMPLEMENTED — setup_sharing raises `NotImplementedError` so operators don't migrate unsafely. |
+| `migrate_hive_dbfs_root` | no | `false` | Enables `hive_managed_dbfs_worker` — copies DBFS-root bytes to `hive_dbfs_target_path` and registers the target table as EXTERNAL |
+| `hive_dbfs_target_path` | conditional | `""` | ADLS/S3/GCS path where DBFS-root bytes land on target. Required when `migrate_hive_dbfs_root=true`. The SPN needs `READ_FILES`/`WRITE_FILES`/`CREATE_EXTERNAL_TABLE` on the external location that owns this path. |
+| `hive_target_catalog` | no | `hive_upgraded` | Target catalog name for Hive-to-UC migration. Created during migrate if missing. |
+
+> **Note on `config.yaml` lifecycle**: the file is synced from the repo
+> into `${workspace.file_path}/config.yaml` on every `bundle deploy` —
+> operator edits in the workspace are overwritten. Either maintain your
+> real values in a local copy and re-paste after each deploy, or treat
+> the repo copy as the source of truth and commit your values to a
+> fork. A future improvement (tracked in the backlog) will stop the
+> deploy from clobbering operator edits.
+
 ### Deploy + configure flow
 
 1. Clone this repo

@@ -3,6 +3,7 @@
 # COMMAND ----------
 
 import sys  # noqa: E402
+
 try:
     _ctx = dbutils.notebook.entry_point.getDbutils().notebook().getContext()  # noqa: F821
     _nb = _ctx.notebookPath().get()
@@ -69,7 +70,7 @@ try:
         if res["state"] == "SUCCEEDED":
             print(f"Target: {_sql}")
         else:
-            print(f"Target: {_sql} → {res.get('state')} ({res.get('error','')})")
+            print(f"Target: {_sql} → {res.get('state')} ({res.get('error', '')})")
 except Exception as _exc:  # noqa: BLE001
     print(f"Target cleanup skipped: {_exc}")
 
@@ -103,6 +104,7 @@ except Exception as e:  # noqa: BLE001
 
 import os  # noqa: E402
 import shutil  # noqa: E402
+
 from common.config import _resolve_bundle_config_path  # type: ignore[import-not-found]  # noqa: E402
 
 config_path = _resolve_bundle_config_path()

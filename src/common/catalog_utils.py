@@ -49,12 +49,14 @@ HIVE_CATALOG = "hive_metastore"
 
 # Categories returned by CatalogExplorer.categorize_hive_table — drive which worker
 # handles each table in Phase 2.
-HIVE_CATEGORIES = frozenset({
-    "hive_view",
-    "hive_external",
-    "hive_managed_dbfs_root",
-    "hive_managed_nondbfs",
-})
+HIVE_CATEGORIES = frozenset(
+    {
+        "hive_view",
+        "hive_external",
+        "hive_managed_dbfs_root",
+        "hive_managed_nondbfs",
+    }
+)
 
 _TABLE_TYPE_MAP = {
     "MANAGED": "managed_table",
@@ -183,11 +185,10 @@ class CatalogExplorer:
             # UC-managed Iceberg raises MANAGED_ICEBERG_OPERATION_NOT_SUPPORTED for
             # SHOW CREATE TABLE. Fall back to synthesizing the DDL from
             # information_schema.columns so iceberg migration can proceed.
-            if "MANAGED_ICEBERG" in str(exc) or "SHOW CREATE TABLE" in str(exc):
-                if len(parts) == 3:
-                    synthetic = self._build_create_stmt_from_columns(parts[0], parts[1], parts[2])
-                    if synthetic:
-                        return synthetic
+            if ("MANAGED_ICEBERG" in str(exc) or "SHOW CREATE TABLE" in str(exc)) and len(parts) == 3:
+                synthetic = self._build_create_stmt_from_columns(parts[0], parts[1], parts[2])
+                if synthetic:
+                    return synthetic
             raise
 
     @staticmethod
@@ -244,11 +245,7 @@ class CatalogExplorer:
             null_clause = "" if (r.is_nullable or "").upper() == "YES" else " NOT NULL"
             col_defs.append(f"  `{r.column_name}` {r.full_data_type}{null_clause}")
         cols_sql = ",\n".join(col_defs)
-        return (
-            f"CREATE TABLE `{catalog}`.`{schema}`.`{name}` (\n"
-            f"{cols_sql}\n"
-            f") USING ICEBERG"
-        )
+        return f"CREATE TABLE `{catalog}`.`{schema}`.`{name}` (\n{cols_sql}\n) USING ICEBERG"
 
     def get_function_ddl(self, function_fqn: str) -> str:
         """Return the full CREATE OR REPLACE FUNCTION statement.
@@ -309,11 +306,7 @@ class CatalogExplorer:
             )
 
         # SQL UDF — existing path
-        return (
-            f"CREATE OR REPLACE FUNCTION {function_fqn}({param_sig}) "
-            f"RETURNS {routine.data_type} "
-            f"RETURN {body}"
-        )
+        return f"CREATE OR REPLACE FUNCTION {function_fqn}({param_sig}) RETURNS {routine.data_type} RETURN {body}"
 
     # ------------------------------------------------------------------
     # Functions & volumes
@@ -376,12 +369,14 @@ class CatalogExplorer:
                 f"WHERE catalog_name = '{catalog}'"
             ).collect()
             for r in rows:
-                results.append({
-                    "securable_type": "CATALOG",
-                    "securable_fqn": f"`{catalog}`",
-                    "tag_name": r.tag_name,
-                    "tag_value": r.tag_value,
-                })
+                results.append(
+                    {
+                        "securable_type": "CATALOG",
+                        "securable_fqn": f"`{catalog}`",
+                        "tag_name": r.tag_name,
+                        "tag_value": r.tag_value,
+                    }
+                )
 
         with _suppress():
             rows = self.spark.sql(  # type: ignore[attr-defined]
@@ -390,12 +385,14 @@ class CatalogExplorer:
                 f"WHERE catalog_name = '{catalog}' AND schema_name = '{schema}'"
             ).collect()
             for r in rows:
-                results.append({
-                    "securable_type": "SCHEMA",
-                    "securable_fqn": f"`{catalog}`.`{schema}`",
-                    "tag_name": r.tag_name,
-                    "tag_value": r.tag_value,
-                })
+                results.append(
+                    {
+                        "securable_type": "SCHEMA",
+                        "securable_fqn": f"`{catalog}`.`{schema}`",
+                        "tag_name": r.tag_name,
+                        "tag_value": r.tag_value,
+                    }
+                )
 
         with _suppress():
             rows = self.spark.sql(  # type: ignore[attr-defined]
@@ -404,12 +401,14 @@ class CatalogExplorer:
                 f"WHERE catalog_name = '{catalog}' AND schema_name = '{schema}'"
             ).collect()
             for r in rows:
-                results.append({
-                    "securable_type": "TABLE",
-                    "securable_fqn": f"`{catalog}`.`{schema}`.`{r.table_name}`",
-                    "tag_name": r.tag_name,
-                    "tag_value": r.tag_value,
-                })
+                results.append(
+                    {
+                        "securable_type": "TABLE",
+                        "securable_fqn": f"`{catalog}`.`{schema}`.`{r.table_name}`",
+                        "tag_name": r.tag_name,
+                        "tag_value": r.tag_value,
+                    }
+                )
 
         with _suppress():
             rows = self.spark.sql(  # type: ignore[attr-defined]
@@ -418,13 +417,15 @@ class CatalogExplorer:
                 f"WHERE catalog_name = '{catalog}' AND schema_name = '{schema}'"
             ).collect()
             for r in rows:
-                results.append({
-                    "securable_type": "COLUMN",
-                    "securable_fqn": f"`{catalog}`.`{schema}`.`{r.table_name}`",
-                    "column_name": r.column_name,
-                    "tag_name": r.tag_name,
-                    "tag_value": r.tag_value,
-                })
+                results.append(
+                    {
+                        "securable_type": "COLUMN",
+                        "securable_fqn": f"`{catalog}`.`{schema}`.`{r.table_name}`",
+                        "column_name": r.column_name,
+                        "tag_name": r.tag_name,
+                        "tag_value": r.tag_value,
+                    }
+                )
 
         with _suppress():
             rows = self.spark.sql(  # type: ignore[attr-defined]
@@ -433,12 +434,14 @@ class CatalogExplorer:
                 f"WHERE catalog_name = '{catalog}' AND schema_name = '{schema}'"
             ).collect()
             for r in rows:
-                results.append({
-                    "securable_type": "VOLUME",
-                    "securable_fqn": f"`{catalog}`.`{schema}`.`{r.volume_name}`",
-                    "tag_name": r.tag_name,
-                    "tag_value": r.tag_value,
-                })
+                results.append(
+                    {
+                        "securable_type": "VOLUME",
+                        "securable_fqn": f"`{catalog}`.`{schema}`.`{r.volume_name}`",
+                        "tag_name": r.tag_name,
+                        "tag_value": r.tag_value,
+                    }
+                )
 
         return results
 
@@ -454,7 +457,8 @@ class CatalogExplorer:
         results: list[dict] = []
         try:
             tables = self.auth_manager.source_client.tables.list(  # type: ignore[attr-defined]
-                catalog_name=catalog, schema_name=schema,
+                catalog_name=catalog,
+                schema_name=schema,
             )
         except Exception:  # noqa: BLE001
             return results
@@ -464,11 +468,13 @@ class CatalogExplorer:
                 continue
             fn_name = getattr(rf, "function_name", None) or ""
             input_cols = getattr(rf, "input_column_names", None) or []
-            results.append({
-                "table_fqn": f"`{catalog}`.`{schema}`.`{t.name}`",
-                "filter_function_fqn": fn_name,
-                "filter_columns": list(input_cols),
-            })
+            results.append(
+                {
+                    "table_fqn": f"`{catalog}`.`{schema}`.`{t.name}`",
+                    "filter_function_fqn": fn_name,
+                    "filter_columns": list(input_cols),
+                }
+            )
         return results
 
     def list_column_masks(self, catalog: str, schema: str) -> list[dict]:
@@ -480,23 +486,26 @@ class CatalogExplorer:
         results: list[dict] = []
         try:
             tables = self.auth_manager.source_client.tables.list(  # type: ignore[attr-defined]
-                catalog_name=catalog, schema_name=schema,
+                catalog_name=catalog,
+                schema_name=schema,
             )
         except Exception:  # noqa: BLE001
             return results
         for t in tables:
-            for col in (getattr(t, "columns", None) or []):
+            for col in getattr(t, "columns", None) or []:
                 mask = getattr(col, "mask", None)
                 if mask is None:
                     continue
                 fn_name = getattr(mask, "function_name", None) or ""
                 using_cols = getattr(mask, "using_column_names", None) or []
-                results.append({
-                    "table_fqn": f"`{catalog}`.`{schema}`.`{t.name}`",
-                    "column_name": col.name,
-                    "mask_function_fqn": fn_name,
-                    "mask_using_columns": list(using_cols),
-                })
+                results.append(
+                    {
+                        "table_fqn": f"`{catalog}`.`{schema}`.`{t.name}`",
+                        "column_name": col.name,
+                        "mask_function_fqn": fn_name,
+                        "mask_using_columns": list(using_cols),
+                    }
+                )
         return results
 
     def list_policies(self) -> list[dict]:
@@ -512,11 +521,13 @@ class CatalogExplorer:
             client = self.auth_manager.source_client.api_client  # type: ignore[attr-defined]
             resp = client.do("GET", "/api/2.1/unity-catalog/policies")
             for p in resp.get("policies", []) if isinstance(resp, dict) else []:
-                results.append({
-                    "policy_name": p.get("name"),
-                    "securable_fqn": p.get("on_securable_fullname"),
-                    "definition": p,
-                })
+                results.append(
+                    {
+                        "policy_name": p.get("name"),
+                        "securable_fqn": p.get("on_securable_fullname"),
+                        "definition": p,
+                    }
+                )
         except Exception:  # noqa: BLE001
             # REST endpoint may not exist on this workspace / version
             return []
@@ -533,14 +544,14 @@ class CatalogExplorer:
         for fqn in table_fqns:
             clean = fqn.replace("`", "")
             try:
-                resp = client.do(
-                    "GET", f"/api/2.1/unity-catalog/tables/{clean}/monitor"
-                )
+                resp = client.do("GET", f"/api/2.1/unity-catalog/tables/{clean}/monitor")
                 if isinstance(resp, dict) and resp.get("table_name"):
-                    results.append({
-                        "table_fqn": fqn,
-                        "definition": resp,
-                    })
+                    results.append(
+                        {
+                            "table_fqn": fqn,
+                            "definition": resp,
+                        }
+                    )
             except Exception:  # noqa: BLE001
                 continue  # no monitor (404) or transient error
         return results
@@ -555,26 +566,30 @@ class CatalogExplorer:
         results: list[dict] = []
         try:
             client = self.auth_manager.source_client  # type: ignore[attr-defined]
-            for m in client.registered_models.list(
-                catalog_name=catalog, schema_name=schema
-            ):
+            for m in client.registered_models.list(catalog_name=catalog, schema_name=schema):
                 versions = []
+                if m.full_name is None:
+                    continue
                 with _suppress():
                     for v in client.model_versions.list(full_name=m.full_name):
-                        versions.append({
-                            "version": v.version,
-                            "source": v.source,
-                            "storage_location": getattr(v, "storage_location", None),
-                            "status": str(getattr(v, "status", "")),
-                            "aliases": [a.alias_name for a in (v.aliases or [])],
-                        })
-                results.append({
-                    "model_fqn": m.full_name,
-                    "owner": getattr(m, "owner", None),
-                    "storage_location": getattr(m, "storage_location", None),
-                    "comment": getattr(m, "comment", None),
-                    "versions": versions,
-                })
+                        versions.append(
+                            {
+                                "version": v.version,
+                                "source": v.source,
+                                "storage_location": getattr(v, "storage_location", None),
+                                "status": str(getattr(v, "status", "")),
+                                "aliases": [a.alias_name for a in (v.aliases or [])],
+                            }
+                        )
+                results.append(
+                    {
+                        "model_fqn": m.full_name,
+                        "owner": getattr(m, "owner", None),
+                        "storage_location": getattr(m, "storage_location", None),
+                        "comment": getattr(m, "comment", None),
+                        "versions": versions,
+                    }
+                )
         except Exception:  # noqa: BLE001
             return []
         return results
@@ -590,12 +605,14 @@ class CatalogExplorer:
         try:
             client = self.auth_manager.source_client  # type: ignore[attr-defined]
             for c in client.connections.list():
-                results.append({
-                    "connection_name": c.name,
-                    "connection_type": str(getattr(c, "connection_type", "")),
-                    "options": dict(getattr(c, "options", {}) or {}),
-                    "comment": getattr(c, "comment", None),
-                })
+                results.append(
+                    {
+                        "connection_name": c.name,
+                        "connection_type": str(getattr(c, "connection_type", "")),
+                        "options": dict(getattr(c, "options", {}) or {}),
+                        "comment": getattr(c, "comment", None),
+                    }
+                )
         except Exception:  # noqa: BLE001
             return []
         return results
@@ -608,12 +625,14 @@ class CatalogExplorer:
             for c in client.catalogs.list(include_browse=True):
                 ctype = str(getattr(c, "catalog_type", ""))
                 if "FOREIGN" in ctype.upper():
-                    results.append({
-                        "catalog_name": c.name,
-                        "connection_name": getattr(c, "connection_name", None),
-                        "options": dict(getattr(c, "options", {}) or {}),
-                        "comment": getattr(c, "comment", None),
-                    })
+                    results.append(
+                        {
+                            "catalog_name": c.name,
+                            "connection_name": getattr(c, "connection_name", None),
+                            "options": dict(getattr(c, "options", {}) or {}),
+                            "comment": getattr(c, "comment", None),
+                        }
+                    )
         except Exception:  # noqa: BLE001
             return []
         return results
@@ -628,11 +647,13 @@ class CatalogExplorer:
             client = self.auth_manager.source_client.api_client  # type: ignore[attr-defined]
             resp = client.do("GET", "/api/2.0/online-tables")
             for t in resp.get("online_tables", []) if isinstance(resp, dict) else []:
-                results.append({
-                    "online_table_fqn": t.get("name"),
-                    "source_table_fqn": (t.get("spec") or {}).get("source_table_full_name"),
-                    "definition": t,
-                })
+                results.append(
+                    {
+                        "online_table_fqn": t.get("name"),
+                        "source_table_fqn": (t.get("spec") or {}).get("source_table_full_name"),
+                        "definition": t,
+                    }
+                )
         except Exception:  # noqa: BLE001
             return []
         return results
@@ -646,23 +667,27 @@ class CatalogExplorer:
         results: list[dict] = []
         try:
             client = self.auth_manager.source_client  # type: ignore[attr-defined]
-            for s in client.shares.list():
+            for s in client.shares.list():  # type: ignore[attr-defined]
                 if s.name in exclude_names:
                     continue
                 objects = []
                 with _suppress():
                     full = client.shares.get(name=s.name, include_shared_data=True)
-                    for o in (full.objects or []):
-                        objects.append({
-                            "name": o.name,
-                            "data_object_type": str(o.data_object_type),
-                            "shared_as": getattr(o, "shared_as", None),
-                        })
-                results.append({
-                    "share_name": s.name,
-                    "comment": getattr(s, "comment", None),
-                    "objects": objects,
-                })
+                    for o in full.objects or []:
+                        objects.append(
+                            {
+                                "name": o.name,
+                                "data_object_type": str(o.data_object_type),
+                                "shared_as": getattr(o, "shared_as", None),
+                            }
+                        )
+                results.append(
+                    {
+                        "share_name": s.name,
+                        "comment": getattr(s, "comment", None),
+                        "objects": objects,
+                    }
+                )
         except Exception:  # noqa: BLE001
             return []
         return results
@@ -675,14 +700,14 @@ class CatalogExplorer:
             for r in client.recipients.list():
                 if r.name and r.name.startswith(exclude_prefix):
                     continue
-                results.append({
-                    "recipient_name": r.name,
-                    "authentication_type": str(getattr(r, "authentication_type", "")),
-                    "global_metastore_id": getattr(
-                        r, "data_recipient_global_metastore_id", None
-                    ),
-                    "comment": getattr(r, "comment", None),
-                })
+                results.append(
+                    {
+                        "recipient_name": r.name,
+                        "authentication_type": str(getattr(r, "authentication_type", "")),
+                        "global_metastore_id": getattr(r, "data_recipient_global_metastore_id", None),
+                        "comment": getattr(r, "comment", None),
+                    }
+                )
         except Exception:  # noqa: BLE001
             return []
         return results
@@ -693,11 +718,13 @@ class CatalogExplorer:
         try:
             client = self.auth_manager.source_client  # type: ignore[attr-defined]
             for p in client.providers.list():
-                results.append({
-                    "provider_name": p.name,
-                    "authentication_type": str(getattr(p, "authentication_type", "")),
-                    "comment": getattr(p, "comment", None),
-                })
+                results.append(
+                    {
+                        "provider_name": p.name,
+                        "authentication_type": str(getattr(p, "authentication_type", "")),
+                        "comment": getattr(p, "comment", None),
+                    }
+                )
         except Exception:  # noqa: BLE001
             return []
         return results
@@ -801,11 +828,12 @@ class CatalogExplorer:
         """Return non-default databases under hive_metastore."""
         rows = self.spark.sql(f"SHOW DATABASES IN {HIVE_CATALOG}").collect()  # type: ignore[attr-defined]
         # The first column can be `databaseName` or `namespace` depending on DBR.
-        return [
-            getattr(row, "databaseName", None) or getattr(row, "namespace", None)
-            for row in rows
-            if (getattr(row, "databaseName", None) or getattr(row, "namespace", None)) not in EXCLUDED_SCHEMAS
-        ]
+        out: list[str] = []
+        for row in rows:
+            name = getattr(row, "databaseName", None) or getattr(row, "namespace", None)
+            if name and name not in EXCLUDED_SCHEMAS:
+                out.append(name)
+        return out
 
     def _describe_hive_table(self, database: str, table: str) -> dict:
         """Parse ``DESCRIBE EXTENDED hive_metastore.db.t`` into a summary dict.
@@ -859,14 +887,16 @@ class CatalogExplorer:
             fqn = f"`{HIVE_CATALOG}`.`{database}`.`{table_name}`"
             data_category = self.categorize_hive_table(details)
             obj_type = "hive_view" if details["table_type"] == "VIEW" else "hive_table"
-            results.append({
-                "fqn": fqn,
-                "object_type": obj_type,
-                "table_type": details["table_type"],
-                "storage_location": details["storage_location"],
-                "provider": details["provider"],
-                "data_category": data_category,
-            })
+            results.append(
+                {
+                    "fqn": fqn,
+                    "object_type": obj_type,
+                    "table_type": details["table_type"],
+                    "storage_location": details["storage_location"],
+                    "provider": details["provider"],
+                    "data_category": data_category,
+                }
+            )
         return results
 
     @staticmethod
@@ -886,7 +916,7 @@ class CatalogExplorer:
             # DBFS root = /user/hive/warehouse/... or /user/... under dbfs:/
             if location.startswith("dbfs:/user/hive/warehouse/") or location.startswith("dbfs:/user/spark-warehouse/"):
                 return "hive_managed_dbfs_root"
-            if location.startswith("dbfs:/mnt/") or location.startswith("abfss://") or location.startswith("s3://") or location.startswith("gs://") or location.startswith("wasbs://"):
+            if location.startswith(("dbfs:/mnt/", "abfss://", "s3://", "gs://", "wasbs://")):
                 return "hive_managed_nondbfs"
             # Fallback: unknown dbfs path, treat as dbfs_root (safer — triggers data copy)
             if location.startswith("dbfs:/"):

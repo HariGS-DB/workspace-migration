@@ -4,6 +4,7 @@
 
 # Bootstrap: put the bundle's `src/` dir on sys.path so `from common...` imports resolve
 import sys  # noqa: E402
+
 try:
     _ctx = dbutils.notebook.entry_point.getDbutils().notebook().getContext()  # noqa: F821
     _nb = _ctx.notebookPath().get()
@@ -27,8 +28,10 @@ from databricks.sdk.service.sharing import (
     SharedDataObjectUpdate,
     SharedDataObjectUpdateAction,
 )
+
 try:
     from databricks.sdk.service.sharing import SharedDataObjectDataObjectType as _DataObjectType  # type: ignore
+
     _TABLE_TYPE: object = _DataObjectType.TABLE
 except ImportError:
     _TABLE_TYPE = "TABLE"
@@ -240,9 +243,7 @@ def ensure_target_catalogs_and_schemas(
 # Notebook execution
 
 
-def _add_rls_cm_from_tables_api(
-    auth_mgr: AuthManager, pending_tables: list[dict], rls_cm_fqns: set[str]
-) -> None:
+def _add_rls_cm_from_tables_api(auth_mgr: AuthManager, pending_tables: list[dict], rls_cm_fqns: set[str]) -> None:
     """Populate ``rls_cm_fqns`` with any pending managed table that carries
     row filter / column mask according to the UC Tables API.
 
@@ -371,25 +372,27 @@ def run(dbutils, spark) -> None:  # noqa: ARG001
         )
         for t in skipped_rls_cm:
             logger.warning("  - %s", t["object_name"])
-        tracker.append_migration_status([
-            {
-                "object_name": t["object_name"],
-                "object_type": "managed_table",
-                "status": "skipped_by_rls_cm_policy",
-                "error_message": (
-                    "Table has row filter or column mask; Delta Sharing "
-                    "refuses to share it. Data was not migrated to target. "
-                    "See README.md for options (migrate to ABAC, or wait "
-                    "for drop_and_restore strategy)."
-                ),
-                "job_run_id": None,
-                "task_run_id": None,
-                "source_row_count": None,
-                "target_row_count": None,
-                "duration_seconds": 0.0,
-            }
-            for t in skipped_rls_cm
-        ])
+        tracker.append_migration_status(
+            [
+                {
+                    "object_name": t["object_name"],
+                    "object_type": "managed_table",
+                    "status": "skipped_by_rls_cm_policy",
+                    "error_message": (
+                        "Table has row filter or column mask; Delta Sharing "
+                        "refuses to share it. Data was not migrated to target. "
+                        "See README.md for options (migrate to ABAC, or wait "
+                        "for drop_and_restore strategy)."
+                    ),
+                    "job_run_id": None,
+                    "task_run_id": None,
+                    "source_row_count": None,
+                    "target_row_count": None,
+                    "duration_seconds": 0.0,
+                }
+                for t in skipped_rls_cm
+            ]
+        )
 
     # 5. Add tables to share (RLS/CM-affected tables excluded above)
     add_tables_to_share(auth, SHARE_NAME, tables_to_share, dry_run=config.dry_run)
@@ -431,15 +434,11 @@ def ensure_share_consumer_catalog(auth_mgr: AuthManager, share_name: str, dry_ru
 
     # Find the provider on target that matches the source metastore
     providers = list(target.providers.list())
-    matching = [
-        p for p in providers
-        if getattr(p, "data_provider_global_metastore_id", None) == source_metastore_id
-    ]
+    matching = [p for p in providers if getattr(p, "data_provider_global_metastore_id", None) == source_metastore_id]
     if not matching:
         names = [p.name for p in providers]
         raise RuntimeError(
-            f"No target-side provider found for source metastore {source_metastore_id}. "
-            f"Available providers: {names}"
+            f"No target-side provider found for source metastore {source_metastore_id}. Available providers: {names}"
         )
     provider_name = matching[0].name
     logger.info("Matched target provider '%s' for source metastore.", provider_name)

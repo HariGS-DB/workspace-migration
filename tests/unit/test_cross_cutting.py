@@ -6,6 +6,7 @@ Covers:
   - Dashboard datasets reference columns that exist in migration_status.
   - Negative paths (error handling, config edge cases).
 """
+
 from __future__ import annotations
 
 import pathlib
@@ -24,10 +25,11 @@ class TestStatusNameAlignment:
     silently breaks the retry contract."""
 
     def test_all_skip_statuses_use_skipped_prefix(self):
-        """Grep every migrate worker for ``status = 'skipped*'`` / 
+        """Grep every migrate worker for ``status = 'skipped*'`` /
         ``"status": "skipped*"`` patterns — each must start with
         'skipped'."""
         import re
+
         worker_dir = _ROOT / "src" / "migrate"
         offenders = []
         for f in worker_dir.glob("*.py"):
@@ -40,10 +42,10 @@ class TestStatusNameAlignment:
                 if not s.startswith("skipped") and "skip" in s:
                     offenders.append(f"{f.name}: status={s!r}")
         assert not offenders, (
-            f"Non-'skipped'-prefixed skip statuses found:\n"
+            "Non-'skipped'-prefixed skip statuses found:\n"
             + "\n".join(offenders)
             + "\nThese will not be excluded by get_pending_objects's "
-              "NOT LIKE 'skipped%' filter — re-runs will retry them."
+            "NOT LIKE 'skipped%' filter — re-runs will retry them."
         )
 
 
@@ -71,22 +73,15 @@ class TestOrchestratorToWorkerKeyAlignment:
 
         for orch_task, key in inputs:
             # The orchestrator source for that task must emit this key.
-            if "hive" in orch_task:
-                src_text = hive_orch
-            else:
-                src_text = uc_orch
+            src_text = hive_orch if "hive" in orch_task else uc_orch
             # Key can be emitted via f-string (e.g. f"{obj}_batches") or
             # literal. Accept either the literal key or the suffix.
             if key not in src_text:
                 # Suffix check — e.g. managed_table_batches emitted as
                 # f"{obj_type}_batches".
-                suffix_ok = any(
-                    key.endswith(sfx) and sfx in src_text
-                    for sfx in ("_batches", "_list")
-                )
+                suffix_ok = any(key.endswith(sfx) and sfx in src_text for sfx in ("_batches", "_list"))
                 assert suffix_ok, (
-                    f"Workflow references tasks.{orch_task}.values.{key!r} "
-                    f"but orchestrator source doesn't emit it."
+                    f"Workflow references tasks.{orch_task}.values.{key!r} but orchestrator source doesn't emit it."
                 )
 
 
@@ -117,7 +112,6 @@ class TestDashboardAlignment:
         """Dashboard JSON references columns (object_type, status,
         error_message, etc.) — they must appear in the migration_status
         CREATE TABLE in tracking.py."""
-        import json
         tracking_src = _src("src/common/tracking.py")
         dash_path = _ROOT / "dashboards" / "migration_dashboard.lvdash.json"
         if not dash_path.exists():
@@ -125,8 +119,13 @@ class TestDashboardAlignment:
         text = dash_path.read_text()
         # Cheap parse — find column names referenced
         known_cols = {
-            "object_name", "object_type", "status", "error_message",
-            "source_row_count", "target_row_count", "duration_seconds",
+            "object_name",
+            "object_type",
+            "status",
+            "error_message",
+            "source_row_count",
+            "target_row_count",
+            "duration_seconds",
             "migrated_at",
         }
         for col in known_cols:
@@ -150,6 +149,7 @@ class TestWorkerErrorMessagesAreOperatorReadable:
         """Grep workers for ``error_message`` assignments and check
         they're not just ``""`` or ``None`` for failure cases."""
         import re
+
         worker_dir = _ROOT / "src" / "migrate"
         for f in worker_dir.glob("*.py"):
             text = f.read_text()
@@ -228,12 +228,12 @@ class TestWorkerScopeGating:
         but before those, you're fine. Placing it after a spark.sql call
         defeats the purpose."""
         import re
+
         for worker in self.UC_WORKERS_WITH_SCOPE_GATE:
             src = _src(f"src/migrate/{worker}")
             gate_match = re.search(r"if not config\.(include_uc|include_hive)", src)
             if not gate_match:
                 continue  # already caught above
-            gate_idx = gate_match.start()
             # The FIRST spark.sql / execute_and_poll in run() must be AFTER
             # the gate. But allow imports at the top and helper defs to
             # contain these. Scope to the run() function body.
@@ -241,12 +241,12 @@ class TestWorkerScopeGating:
             if run_def == -1:
                 continue
             body = src[run_def:]
-            body_gate = body.find(f"if not config.")
+            body_gate = body.find("if not config.")
             first_spark = body.find("spark.sql(")
             first_exec = body.find("execute_and_poll(")
-            first_work = min(
-                x for x in (first_spark, first_exec) if x >= 0
-            ) if (first_spark >= 0 or first_exec >= 0) else -1
+            first_work = (
+                min(x for x in (first_spark, first_exec) if x >= 0) if (first_spark >= 0 or first_exec >= 0) else -1
+            )
             if first_work > 0 and body_gate > 0:
                 assert body_gate < first_work, (
                     f"{worker}: scope gate appears AFTER spark.sql / "
@@ -271,6 +271,4 @@ class TestRunAsConsistency:
                 f"{f.name}: missing run_as — operator deploys would run "
                 f"this job as themselves, breaking ownership consistency."
             )
-            assert "migration_spn_id" in text, (
-                f"{f.name}: run_as must reference ${{var.migration_spn_id}}."
-            )
+            assert "migration_spn_id" in text, f"{f.name}: run_as must reference ${{var.migration_spn_id}}."

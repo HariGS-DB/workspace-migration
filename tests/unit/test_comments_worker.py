@@ -7,6 +7,7 @@ runs for catalogs, schemas, and non-Delta tables. Tests focus on:
   - dry_run skips execution
   - execute_and_poll failure → status=failed with error captured
 """
+
 from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
@@ -25,8 +26,12 @@ class TestCommentsWorkerEmit:
         mock_execute.return_value = {"state": "SUCCEEDED", "statement_id": "s"}
 
         result = _emit_comment(
-            "CATALOG", "`c`", "top-level catalog",
-            auth=MagicMock(), wh_id="wh", dry_run=False,
+            "CATALOG",
+            "`c`",
+            "top-level catalog",
+            auth=MagicMock(),
+            wh_id="wh",
+            dry_run=False,
         )
         sql = mock_execute.call_args[0][2]
         assert sql == "COMMENT ON CATALOG `c` IS 'top-level catalog'"
@@ -43,8 +48,12 @@ class TestCommentsWorkerEmit:
         mock_execute.return_value = {"state": "SUCCEEDED", "statement_id": "s"}
 
         _emit_comment(
-            "SCHEMA", "`c`.`s`", "schema desc",
-            auth=MagicMock(), wh_id="wh", dry_run=False,
+            "SCHEMA",
+            "`c`.`s`",
+            "schema desc",
+            auth=MagicMock(),
+            wh_id="wh",
+            dry_run=False,
         )
         sql = mock_execute.call_args[0][2]
         assert sql == "COMMENT ON SCHEMA `c`.`s` IS 'schema desc'"
@@ -58,8 +67,12 @@ class TestCommentsWorkerEmit:
         mock_execute.return_value = {"state": "SUCCEEDED", "statement_id": "s"}
 
         _emit_comment(
-            "TABLE", "`c`.`s`.`t`", "owner's table",
-            auth=MagicMock(), wh_id="wh", dry_run=False,
+            "TABLE",
+            "`c`.`s`.`t`",
+            "owner's table",
+            auth=MagicMock(),
+            wh_id="wh",
+            dry_run=False,
         )
         sql = mock_execute.call_args[0][2]
         # single quote in body should become '' so the SQL is valid
@@ -72,8 +85,12 @@ class TestCommentsWorkerEmit:
 
         mock_time.time.side_effect = [100.0, 100.0]
         result = _emit_comment(
-            "TABLE", "`c`.`s`.`t`", "hi",
-            auth=MagicMock(), wh_id="wh", dry_run=True,
+            "TABLE",
+            "`c`.`s`.`t`",
+            "hi",
+            auth=MagicMock(),
+            wh_id="wh",
+            dry_run=True,
         )
         assert result["status"] == "skipped"
         assert result["error_message"] == "dry_run"
@@ -86,26 +103,32 @@ class TestCommentsWorkerEmit:
 
         mock_time.time.side_effect = [100.0, 100.5]
         mock_execute.return_value = {
-            "state": "FAILED", "error": "PERMISSION_DENIED", "statement_id": "s",
+            "state": "FAILED",
+            "error": "PERMISSION_DENIED",
+            "statement_id": "s",
         }
         result = _emit_comment(
-            "TABLE", "`c`.`s`.`t`", "hi",
-            auth=MagicMock(), wh_id="wh", dry_run=False,
+            "TABLE",
+            "`c`.`s`.`t`",
+            "hi",
+            auth=MagicMock(),
+            wh_id="wh",
+            dry_run=False,
         )
         assert result["status"] == "failed"
         assert "PERMISSION_DENIED" in result["error_message"]
 
 
 class TestCommentsWorkerErrorSuppression:
-    """``_suppress_log`` turns a raised exception into a ``failed`` row
+    """``_SuppressLog`` turns a raised exception into a ``failed`` row
     rather than aborting the whole worker. Critical for the loop —
     one bad catalog can't halt the rest."""
 
     def test_exception_becomes_failed_row(self):
-        from migrate.comments_worker import _suppress_log
+        from migrate.comments_worker import _SuppressLog
 
         results: list[dict] = []
-        with _suppress_log(results, "mycatalog", "CATALOG"):
+        with _SuppressLog(results, "mycatalog", "CATALOG"):
             raise RuntimeError("boom")
         assert len(results) == 1
         row = results[0]
@@ -115,10 +138,10 @@ class TestCommentsWorkerErrorSuppression:
         assert "boom" in row["error_message"]
 
     def test_no_exception_no_row(self):
-        from migrate.comments_worker import _suppress_log
+        from migrate.comments_worker import _SuppressLog
 
         results: list[dict] = []
-        with _suppress_log(results, "mycatalog", "CATALOG"):
+        with _SuppressLog(results, "mycatalog", "CATALOG"):
             pass
         assert results == []
 
@@ -130,10 +153,8 @@ class TestCommentsWorkerScopeGate:
 
     def test_run_short_circuits_on_include_uc_false(self):
         import pathlib
-        src = (
-            pathlib.Path(__file__).resolve().parents[2]
-            / "src" / "migrate" / "comments_worker.py"
-        ).read_text()
+
+        src = (pathlib.Path(__file__).resolve().parents[2] / "src" / "migrate" / "comments_worker.py").read_text()
         # The gate must come before any spark.sql read.
         assert "if not config.include_uc" in src
         gate_idx = src.index("if not config.include_uc")

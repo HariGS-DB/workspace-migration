@@ -63,6 +63,7 @@ class TestMigrateFunction:
         assert result["error_message"] == "dry_run"
         mock_execute.assert_not_called()
 
+
 # test_migrate_ddl_rewrite removed: the previous version stubbed
 # explorer.get_function_ddl with a pre-formed DDL string and then asserted that
 # string was passed through, which taught us nothing about the actual DDL
@@ -89,7 +90,10 @@ class TestMigrateFunctionFailures:
     @patch("migrate.functions_worker.rewrite_ddl")
     @patch("migrate.functions_worker.execute_and_poll")
     def test_failed_sql_marks_function_failed(
-        self, mock_execute, mock_rewrite, mock_time,
+        self,
+        mock_execute,
+        mock_rewrite,
+        mock_time,
     ):
         from migrate.functions_worker import migrate_function
 
@@ -117,9 +121,7 @@ class TestMigrateFunctionFailures:
 
         mock_time.time.side_effect = [100.0, 100.1]
         deps = self._deps()
-        deps["explorer"].get_function_ddl.side_effect = Exception(
-            "ROUTINE_NOT_FOUND"
-        )
+        deps["explorer"].get_function_ddl.side_effect = Exception("ROUTINE_NOT_FOUND")
 
         result = migrate_function({"object_name": "`cat`.`sch`.`fn1`"}, **deps)
         assert result["status"] == "failed"

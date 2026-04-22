@@ -4,6 +4,7 @@
 
 # Bootstrap: put the bundle's `src/` dir on sys.path so `from common...` imports resolve
 import sys  # noqa: E402
+
 try:
     _ctx = dbutils.notebook.entry_point.getDbutils().notebook().getContext()  # noqa: F821
     _nb = _ctx.notebookPath().get()
@@ -52,8 +53,8 @@ def _tool_owned_catalogs(config) -> set[str]:
     """Catalogs the tool itself owns — excluded from discovery so the tool
     doesn't try to migrate its own tracking/consumer state."""
     return {
-        config.tracking_catalog,           # discovery_inventory, migration_status, pre_check_results
-        f"{_MIGRATION_SHARE}_consumer",    # target-side share-consumer catalog (on source this won't exist, harmless)
+        config.tracking_catalog,  # discovery_inventory, migration_status, pre_check_results
+        f"{_MIGRATION_SHARE}_consumer",  # target-side share-consumer catalog (on source this won't exist, harmless)
     }
 
 
@@ -121,21 +122,23 @@ def _discover_uc(config, explorer, now) -> tuple[list[dict], int]:
                     ddl_failure = f"get_create_statement failed: {type(exc).__name__}: {exc}"
                     print(f"    [uc][warn] {fqn}: {ddl_failure}")
 
-                rows.append(discovery_row(
-                    source_type="uc",
-                    object_type=obj_type,
-                    object_name=fqn,
-                    catalog_name=catalog,
-                    schema_name=schema,
-                    discovered_at=now,
-                    row_count=row_count,
-                    size_bytes=size_bytes,
-                    is_dlt_managed=is_dlt,
-                    pipeline_id=pipeline_id,
-                    create_statement=create_stmt,
-                    format=table_format,
-                    metadata={"ddl_failure": ddl_failure} if ddl_failure else None,
-                ))
+                rows.append(
+                    discovery_row(
+                        source_type="uc",
+                        object_type=obj_type,
+                        object_name=fqn,
+                        catalog_name=catalog,
+                        schema_name=schema,
+                        discovered_at=now,
+                        row_count=row_count,
+                        size_bytes=size_bytes,
+                        is_dlt_managed=is_dlt,
+                        pipeline_id=pipeline_id,
+                        create_statement=create_stmt,
+                        format=table_format,
+                        metadata={"ddl_failure": ddl_failure} if ddl_failure else None,
+                    )
+                )
                 if obj_type in ("managed_table", "external_table"):
                     all_table_fqns.append(fqn)
 
@@ -145,168 +148,195 @@ def _discover_uc(config, explorer, now) -> tuple[list[dict], int]:
                 with contextlib.suppress(Exception):
                     ddl = explorer.get_function_ddl(func_fqn)
 
-                rows.append(discovery_row(
-                    source_type="uc",
-                    object_type="function",
-                    object_name=func_fqn,
-                    catalog_name=catalog,
-                    schema_name=schema,
-                    discovered_at=now,
-                    create_statement=ddl,
-                ))
+                rows.append(
+                    discovery_row(
+                        source_type="uc",
+                        object_type="function",
+                        object_name=func_fqn,
+                        catalog_name=catalog,
+                        schema_name=schema,
+                        discovered_at=now,
+                        create_statement=ddl,
+                    )
+                )
 
             # --- Volumes ---
             for vol in explorer.list_volumes(catalog, schema):
-                rows.append(discovery_row(
-                    source_type="uc",
-                    object_type="volume",
-                    object_name=vol["fqn"],
-                    catalog_name=catalog,
-                    schema_name=schema,
-                    discovered_at=now,
-                    table_type=vol.get("volume_type"),  # MANAGED or EXTERNAL
-                    storage_location=vol.get("storage_location"),
-                ))
+                rows.append(
+                    discovery_row(
+                        source_type="uc",
+                        object_type="volume",
+                        object_name=vol["fqn"],
+                        catalog_name=catalog,
+                        schema_name=schema,
+                        discovered_at=now,
+                        table_type=vol.get("volume_type"),  # MANAGED or EXTERNAL
+                        storage_location=vol.get("storage_location"),
+                    )
+                )
 
             # --- Phase 3 governance: per-schema objects ---
             for tag in explorer.list_tags(catalog, schema):
-                rows.append(discovery_row(
-                    source_type="uc",
-                    object_type="tag",
-                    object_name=(
-                        f"{tag['securable_fqn']}:{tag.get('column_name','')}:"
-                        f"{tag['tag_name']}"
-                    ).rstrip(":"),
-                    catalog_name=catalog,
-                    schema_name=schema,
-                    discovered_at=now,
-                    metadata=tag,
-                ))
+                rows.append(
+                    discovery_row(
+                        source_type="uc",
+                        object_type="tag",
+                        object_name=(f"{tag['securable_fqn']}:{tag.get('column_name', '')}:{tag['tag_name']}").rstrip(
+                            ":"
+                        ),
+                        catalog_name=catalog,
+                        schema_name=schema,
+                        discovered_at=now,
+                        metadata=tag,
+                    )
+                )
 
             for rf in explorer.list_row_filters(catalog, schema):
-                rows.append(discovery_row(
-                    source_type="uc",
-                    object_type="row_filter",
-                    object_name=rf["table_fqn"],
-                    catalog_name=catalog,
-                    schema_name=schema,
-                    discovered_at=now,
-                    metadata=rf,
-                ))
+                rows.append(
+                    discovery_row(
+                        source_type="uc",
+                        object_type="row_filter",
+                        object_name=rf["table_fqn"],
+                        catalog_name=catalog,
+                        schema_name=schema,
+                        discovered_at=now,
+                        metadata=rf,
+                    )
+                )
 
             for cm in explorer.list_column_masks(catalog, schema):
-                rows.append(discovery_row(
-                    source_type="uc",
-                    object_type="column_mask",
-                    object_name=f"{cm['table_fqn']}.{cm['column_name']}",
-                    catalog_name=catalog,
-                    schema_name=schema,
-                    discovered_at=now,
-                    metadata=cm,
-                ))
+                rows.append(
+                    discovery_row(
+                        source_type="uc",
+                        object_type="column_mask",
+                        object_name=f"{cm['table_fqn']}.{cm['column_name']}",
+                        catalog_name=catalog,
+                        schema_name=schema,
+                        discovered_at=now,
+                        metadata=cm,
+                    )
+                )
 
             for m in explorer.list_registered_models(catalog, schema):
-                rows.append(discovery_row(
-                    source_type="uc",
-                    object_type="registered_model",
-                    object_name=m["model_fqn"],
-                    catalog_name=catalog,
-                    schema_name=schema,
-                    discovered_at=now,
-                    storage_location=m.get("storage_location"),
-                    metadata=m,
-                ))
+                rows.append(
+                    discovery_row(
+                        source_type="uc",
+                        object_type="registered_model",
+                        object_name=m["model_fqn"],
+                        catalog_name=catalog,
+                        schema_name=schema,
+                        discovered_at=now,
+                        storage_location=m.get("storage_location"),
+                        metadata=m,
+                    )
+                )
 
     # --- Phase 3 governance: workspace-level objects ---
     # Monitors are per-table; enumerate over every discovered table.
     for mon in explorer.list_monitors(all_table_fqns):
-        rows.append(discovery_row(
-            source_type="uc",
-            object_type="monitor",
-            object_name=mon["table_fqn"],
-            catalog_name=None,
-            schema_name=None,
-            discovered_at=now,
-            metadata=mon,
-        ))
+        rows.append(
+            discovery_row(
+                source_type="uc",
+                object_type="monitor",
+                object_name=mon["table_fqn"],
+                catalog_name=None,
+                schema_name=None,
+                discovered_at=now,
+                metadata=mon,
+            )
+        )
 
     for p in explorer.list_policies():
-        rows.append(discovery_row(
-            source_type="uc",
-            object_type="policy",
-            object_name=p["policy_name"] or f"policy_{p.get('securable_fqn', '?')}",
-            catalog_name=None,
-            schema_name=None,
-            discovered_at=now,
-            metadata=p,
-        ))
+        rows.append(
+            discovery_row(
+                source_type="uc",
+                object_type="policy",
+                object_name=p["policy_name"] or f"policy_{p.get('securable_fqn', '?')}",
+                catalog_name=None,
+                schema_name=None,
+                discovered_at=now,
+                metadata=p,
+            )
+        )
 
     for c in explorer.list_connections():
-        rows.append(discovery_row(
-            source_type="uc",
-            object_type="connection",
-            object_name=c["connection_name"],
-            catalog_name=None,
-            schema_name=None,
-            discovered_at=now,
-            metadata=c,
-        ))
+        rows.append(
+            discovery_row(
+                source_type="uc",
+                object_type="connection",
+                object_name=c["connection_name"],
+                catalog_name=None,
+                schema_name=None,
+                discovered_at=now,
+                metadata=c,
+            )
+        )
 
     for fc in explorer.list_foreign_catalogs():
-        rows.append(discovery_row(
-            source_type="uc",
-            object_type="foreign_catalog",
-            object_name=fc["catalog_name"],
-            catalog_name=fc["catalog_name"],
-            schema_name=None,
-            discovered_at=now,
-            metadata=fc,
-        ))
+        rows.append(
+            discovery_row(
+                source_type="uc",
+                object_type="foreign_catalog",
+                object_name=fc["catalog_name"],
+                catalog_name=fc["catalog_name"],
+                schema_name=None,
+                discovered_at=now,
+                metadata=fc,
+            )
+        )
 
     for ot in explorer.list_online_tables():
-        rows.append(discovery_row(
-            source_type="uc",
-            object_type="online_table",
-            object_name=ot["online_table_fqn"],
-            catalog_name=None,
-            schema_name=None,
-            discovered_at=now,
-            metadata=ot,
-        ))
+        rows.append(
+            discovery_row(
+                source_type="uc",
+                object_type="online_table",
+                object_name=ot["online_table_fqn"],
+                catalog_name=None,
+                schema_name=None,
+                discovered_at=now,
+                metadata=ot,
+            )
+        )
 
     exclude_shares = frozenset({_MIGRATION_SHARE})
     for s in explorer.list_shares(exclude_names=exclude_shares):
-        rows.append(discovery_row(
-            source_type="uc",
-            object_type="share",
-            object_name=s["share_name"],
-            catalog_name=None,
-            schema_name=None,
-            discovered_at=now,
-            metadata=s,
-        ))
+        rows.append(
+            discovery_row(
+                source_type="uc",
+                object_type="share",
+                object_name=s["share_name"],
+                catalog_name=None,
+                schema_name=None,
+                discovered_at=now,
+                metadata=s,
+            )
+        )
 
     for r in explorer.list_recipients(exclude_prefix=_MIGRATION_RECIPIENT_PREFIX):
-        rows.append(discovery_row(
-            source_type="uc",
-            object_type="recipient",
-            object_name=r["recipient_name"],
-            catalog_name=None,
-            schema_name=None,
-            discovered_at=now,
-            metadata=r,
-        ))
+        rows.append(
+            discovery_row(
+                source_type="uc",
+                object_type="recipient",
+                object_name=r["recipient_name"],
+                catalog_name=None,
+                schema_name=None,
+                discovered_at=now,
+                metadata=r,
+            )
+        )
 
     for p in explorer.list_providers():
-        rows.append(discovery_row(
-            source_type="uc",
-            object_type="provider",
-            object_name=p["provider_name"],
-            catalog_name=None,
-            schema_name=None,
-            discovered_at=now,
-            metadata=p,
-        ))
+        rows.append(
+            discovery_row(
+                source_type="uc",
+                object_type="provider",
+                object_name=p["provider_name"],
+                catalog_name=None,
+                schema_name=None,
+                discovered_at=now,
+                metadata=p,
+            )
+        )
 
     _warn_rls_cm_tables(rows, config)
 
@@ -320,6 +350,7 @@ def _warn_rls_cm_tables(rows: list[dict], config) -> None:
     ``config.rls_cm_strategy``.
     """
     import json as _json
+
     rls_cm_tables: set[str] = set()
     for r in rows:
         ot = r.get("object_type")
@@ -342,17 +373,11 @@ def _warn_rls_cm_tables(rows: list[dict], config) -> None:
     print("=" * 78)
     print("!! TABLES WITH ROW FILTER / COLUMN MASK DETECTED")
     print("=" * 78)
-    print(
-        f"Discovery found {len(rls_cm_tables)} managed table(s) protected by a "
-        f"row filter or column mask:"
-    )
+    print(f"Discovery found {len(rls_cm_tables)} managed table(s) protected by a row filter or column mask:")
     for fqn in sorted(rls_cm_tables):
         print(f"  - {fqn}")
     print()
-    print(
-        "Delta Sharing providers cannot share tables with legacy RLS/CM "
-        "(ALTER TABLE ... SET ROW FILTER / SET MASK)."
-    )
+    print("Delta Sharing providers cannot share tables with legacy RLS/CM (ALTER TABLE ... SET ROW FILTER / SET MASK).")
     print()
     if strategy == "drop_and_restore":
         print(
@@ -398,35 +423,39 @@ def _discover_hive(config, explorer, now) -> list[dict]:
                 with contextlib.suppress(Exception):
                     size_bytes = explorer.get_table_size_bytes(tbl["fqn"])
 
-            rows.append(discovery_row(
-                source_type="hive",
-                object_type=tbl["object_type"],
-                object_name=tbl["fqn"],
-                catalog_name="hive_metastore",
-                schema_name=database,
-                discovered_at=now,
-                row_count=row_count,
-                size_bytes=size_bytes,
-                data_category=tbl["data_category"],
-                table_type=tbl["table_type"],
-                provider=tbl["provider"],
-                storage_location=tbl["storage_location"],
-            ))
+            rows.append(
+                discovery_row(
+                    source_type="hive",
+                    object_type=tbl["object_type"],
+                    object_name=tbl["fqn"],
+                    catalog_name="hive_metastore",
+                    schema_name=database,
+                    discovered_at=now,
+                    row_count=row_count,
+                    size_bytes=size_bytes,
+                    data_category=tbl["data_category"],
+                    table_type=tbl["table_type"],
+                    provider=tbl["provider"],
+                    storage_location=tbl["storage_location"],
+                )
+            )
 
         # --- Functions ---
         for func_fqn in explorer.list_hive_functions(database):
-            rows.append(discovery_row(
-                source_type="hive",
-                object_type="hive_function",
-                object_name=func_fqn,
-                catalog_name="hive_metastore",
-                schema_name=database,
-                discovered_at=now,
-                data_category="hive_function",
-                table_type="",
-                provider="",
-                storage_location="",
-            ))
+            rows.append(
+                discovery_row(
+                    source_type="hive",
+                    object_type="hive_function",
+                    object_name=func_fqn,
+                    catalog_name="hive_metastore",
+                    schema_name=database,
+                    discovered_at=now,
+                    data_category="hive_function",
+                    table_type="",
+                    provider="",
+                    storage_location="",
+                )
+            )
 
     return rows
 
