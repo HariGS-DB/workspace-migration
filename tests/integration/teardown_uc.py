@@ -20,6 +20,7 @@ from databricks.sdk import WorkspaceClient
 # Drop UC test catalogs + tracking test schema on SOURCE
 spark.sql("DROP CATALOG IF EXISTS integration_test_tgt CASCADE")  # noqa: F821
 spark.sql("DROP CATALOG IF EXISTS integration_test_src CASCADE")  # noqa: F821
+spark.sql("DROP CATALOG IF EXISTS integration_test_src_b CASCADE")  # noqa: F821
 spark.sql("DROP SCHEMA IF EXISTS migration_tracking.cp_migration_test CASCADE")  # noqa: F821
 print("Dropped UC test catalogs on source.")
 
@@ -36,6 +37,7 @@ try:
         DELETE FROM migration_tracking.cp_migration.migration_status
         WHERE object_name LIKE '%integration_test_src%'
            OR object_name LIKE '%test_schema%'
+           OR object_name LIKE '%extra_schema%'
         """
     )
     spark.sql(  # noqa: F821
@@ -43,7 +45,8 @@ try:
         DELETE FROM migration_tracking.cp_migration.discovery_inventory
         WHERE object_name LIKE '%integration_test_src%'
            OR object_name LIKE '%test_schema%'
-           OR (catalog_name = 'integration_test_src')
+           OR object_name LIKE '%extra_schema%'
+           OR (catalog_name IN ('integration_test_src', 'integration_test_src_b'))
         """
     )
     print("Cleared integration_test fixture rows from tracking tables.")
@@ -64,6 +67,7 @@ try:
     wh_id = find_warehouse(auth)
     for _sql in (
         "DROP CATALOG IF EXISTS integration_test_src CASCADE",
+        "DROP CATALOG IF EXISTS integration_test_src_b CASCADE",
         "DROP CATALOG IF EXISTS cp_migration_share_consumer CASCADE",
     ):
         res = execute_and_poll(auth, wh_id, _sql)

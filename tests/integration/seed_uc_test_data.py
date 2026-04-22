@@ -31,6 +31,31 @@ spark.sql("CREATE SCHEMA IF NOT EXISTS integration_test_src.test_schema")  # noq
 # the schema-level filter accidentally scopes to one schema, the row
 # won't exist.
 spark.sql("CREATE SCHEMA IF NOT EXISTS integration_test_src.test_schema_2")  # noqa: F821
+# --- 1.8 Multi-catalog fixture ---
+# A second source catalog with its own schema + managed table.
+# Discovery's catalog enumeration (explorer.list_catalogs, filtered by
+# tool_owned_catalogs) must enumerate BOTH test catalogs and discovery's
+# for-loop over catalogs must migrate each one. If catalog iteration
+# is accidentally scoped to the first match (or some index-based bug),
+# the row for integration_test_src_b.extra_schema.extra_orders won't
+# exist on target.
+spark.sql("CREATE CATALOG IF NOT EXISTS integration_test_src_b")  # noqa: F821
+spark.sql("CREATE SCHEMA IF NOT EXISTS integration_test_src_b.extra_schema")  # noqa: F821
+spark.sql(  # noqa: F821
+    """
+    CREATE OR REPLACE TABLE integration_test_src_b.extra_schema.extra_orders (
+        order_id INT,
+        region STRING
+    ) USING DELTA
+    """
+)
+spark.sql(  # noqa: F821
+    """
+    INSERT INTO integration_test_src_b.extra_schema.extra_orders VALUES
+        (100, 'US'),
+        (101, 'UK')
+    """
+)
 
 # COMMAND ----------
 
@@ -406,10 +431,12 @@ from common.config import MigrationConfig  # noqa: E402
 
 config = MigrationConfig.from_workspace_file()
 if config.spn_client_id:
-    spark.sql(  # noqa: F821
-        f"GRANT USE CATALOG, USE SCHEMA, SELECT, EXECUTE, READ VOLUME ON CATALOG integration_test_src TO `{config.spn_client_id}`"
-    )
-    print(f"Granted migration SPN {config.spn_client_id} perms on integration_test_src.")
+    for _cat in ("integration_test_src", "integration_test_src_b"):
+        spark.sql(  # noqa: F821
+            f"GRANT USE CATALOG, USE SCHEMA, SELECT, EXECUTE, READ VOLUME "
+            f"ON CATALOG {_cat} TO `{config.spn_client_id}`"
+        )
+        print(f"Granted migration SPN {config.spn_client_id} perms on {_cat}.")
 
 # Schema-level grant to a well-known principal (``account users``) so
 # test_uc_end_to_end can assert a specific grant replays on target.

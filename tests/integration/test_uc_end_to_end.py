@@ -536,6 +536,23 @@ if not _ms_rows:
 else:
     print("1.8 multi-schema validated: secondary_orders migrated from test_schema_2.")
 
+# 1.8 Multi-catalog — extra_orders lives in integration_test_src_b,
+# a distinct SOURCE catalog. Discovery must enumerate every
+# non-tool-owned catalog (not just the first) and migrate objects
+# from each. If catalog iteration is scoped or index-bugged, this
+# row won't exist on target.
+_mc_rows = full_status.filter(
+    "object_type = 'managed_table' AND object_name LIKE '%integration_test_src_b%extra_orders%' AND status = 'validated'"
+).collect()
+if not _mc_rows:
+    error_messages.append(
+        "1.8 multi-catalog: no validated managed_table row for "
+        "extra_orders in integration_test_src_b — discovery's "
+        "catalog enumeration may be scoped to one catalog."
+    )
+else:
+    print("1.8 multi-catalog validated: extra_orders migrated from integration_test_src_b.")
+
 # 1.13 Grant to non-existent principal — seeded on the schema to an
 # intentionally-bogus email. The migrator must land a migration_status
 # row for the grant (either ``validated`` because UC accepts arbitrary
