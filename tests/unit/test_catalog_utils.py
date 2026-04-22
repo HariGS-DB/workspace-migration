@@ -584,3 +584,135 @@ class TestGetFunctionDdlComplexSignatures:
         assert "()" in ddl
         assert "RETURNS TIMESTAMP" in ddl.upper()
         assert "RETURN current_timestamp()" in ddl
+
+
+class TestPythonUdfEnvironmentClause:
+    """Python UDFs with an ``ENVIRONMENT`` spec must carry that clause
+    into the replayed DDL — otherwise pip dependencies silently drop
+    and the UDF fails at first invocation on target."""
+
+    @staticmethod
+    def _mock_sql(mock_spark, *, routine_row, param_rows, show_create_ddl=None):
+        def sql_side_effect(query):
+            result = MagicMock()
+            if "SHOW CREATE FUNCTION" in query.upper():
+                if show_create_ddl is None:
+                    result.collect.return_value = []
+                else:
+                    row = MagicMock()
+                    row.__getitem__ = lambda self, i: show_create_ddl if i == 0 else None
+                    row.__len__ = lambda self: 1
+                    result.collect.return_value = [row]
+            elif "information_schema`.`routines" in query:
+                result.first.return_value = routine_row
+            elif "information_schema`.`parameters" in query:
+                result.collect.return_value = param_rows
+            else:
+                result.first.return_value = None
+                result.collect.return_value = []
+            return result
+
+        mock_spark.sql.side_effect = sql_side_effect
+
+    def _python_routine_row(self):
+        return _row(
+            specific_name="py_fn_1",
+            data_type="DOUBLE",
+            routine_body="EXTERNAL",
+            routine_definition="return x * 2",
+            external_language="PYTHON",
+        )
+
+    def test_environment_clause_appended_when_present(self, mock_spark):
+        show_create = (
+            "CREATE FUNCTION `cat`.`sch`.`py_fn`(x DOUBLE) "
+            "RETURNS DOUBLE "
+            "LANGUAGE PYTHON "
+            "ENVIRONMENT (\n"
+            "  dependencies = ['pandas==2.0.0', 'numpy'],\n"
+            "  environment_version = 'None'\n"
+            ") "
+            "AS $$return x * 2$$"
+        )
+        self._mock_sql(
+            mock_spark,
+            routine_row=self._python_routine_row(),
+            param_rows=[_row(parameter_name="x", data_type="DOUBLE", ordinal_position=1)],
+            show_create_ddl=show_create,
+        )
+        explorer = CatalogExplorer(mock_spark, MagicMock())
+        ddl = explorer.get_function_ddl("`cat`.`sch`.`py_fn`")
+
+        assert "ENVIRONMENT (" in ddl
+        assert "pandas==2.0.0" in ddl
+        assert "environment_version = 'None'" in ddl
+        # The clause lands between LANGUAGE PYTHON and AS $$.
+        lang_idx = ddl.find("LANGUAGE PYTHON")
+        env_idx = ddl.find("ENVIRONMENT (")
+        body_idx = ddl.find("AS $$")
+        assert lang_idx < env_idx < body_idx
+
+    def test_no_environment_clause_when_absent(self, mock_spark):
+        """Python UDF without an ENVIRONMENT — DDL carries no ``ENVIRONMENT`` token."""
+        show_create = (
+            "CREATE FUNCTION `cat`.`sch`.`py_fn`(x DOUBLE) "
+            "RETURNS DOUBLE LANGUAGE PYTHON AS $$return x * 2$$"
+        )
+        self._mock_sql(
+            mock_spark,
+            routine_row=self._python_routine_row(),
+            param_rows=[_row(parameter_name="x", data_type="DOUBLE", ordinal_position=1)],
+            show_create_ddl=show_create,
+        )
+        explorer = CatalogExplorer(mock_spark, MagicMock())
+        ddl = explorer.get_function_ddl("`cat`.`sch`.`py_fn`")
+        assert "ENVIRONMENT" not in ddl.upper()
+
+    def test_show_create_unavailable_falls_through(self, mock_spark):
+        """If SHOW CREATE FUNCTION raises (older runtime / edge case), the
+        synthesized DDL is returned unchanged — no ENVIRONMENT block."""
+
+        def sql_side_effect(query):
+            result = MagicMock()
+            if "SHOW CREATE FUNCTION" in query.upper():
+                raise RuntimeError("SHOW CREATE FUNCTION not supported")
+            if "information_schema`.`routines" in query:
+                result.first.return_value = self._python_routine_row()
+            elif "information_schema`.`parameters" in query:
+                result.collect.return_value = [_row(parameter_name="x", data_type="DOUBLE", ordinal_position=1)]
+            else:
+                result.first.return_value = None
+                result.collect.return_value = []
+            return result
+
+        mock_spark.sql.side_effect = sql_side_effect
+        explorer = CatalogExplorer(mock_spark, MagicMock())
+        ddl = explorer.get_function_ddl("`cat`.`sch`.`py_fn`")
+        assert "LANGUAGE PYTHON" in ddl
+        assert "ENVIRONMENT" not in ddl.upper()
+
+    def test_environment_with_nested_parens_balanced(self, mock_spark):
+        """ENVIRONMENT clause may contain nested parens (e.g., a tuple
+        expression in dependencies). The extractor must balance them
+        correctly and close at the matching outer paren."""
+        show_create = (
+            "CREATE FUNCTION `c`.`s`.`f`(x DOUBLE) "
+            "RETURNS DOUBLE "
+            "LANGUAGE PYTHON "
+            "ENVIRONMENT (\n"
+            "  dependencies = ['pkg (extra)'],\n"
+            "  environment_version = 'None'\n"
+            ") "
+            "AS $$return x$$"
+        )
+        self._mock_sql(
+            mock_spark,
+            routine_row=self._python_routine_row(),
+            param_rows=[_row(parameter_name="x", data_type="DOUBLE", ordinal_position=1)],
+            show_create_ddl=show_create,
+        )
+        explorer = CatalogExplorer(mock_spark, MagicMock())
+        ddl = explorer.get_function_ddl("`c`.`s`.`f`")
+        assert "pkg (extra)" in ddl
+        # Only one AS $$ — we haven't prematurely closed the ENVIRONMENT block.
+        assert ddl.count("AS $$") == 1
