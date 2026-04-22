@@ -276,13 +276,26 @@ class TrackingManager:
         """)
 
     def get_pending_objects(self, object_type: str) -> list[dict]:
-        """Return discovery inventory objects that have not been validated or skipped.
+        """Return discovery inventory objects that haven't reached a terminal status.
 
-        Any status that starts with ``skipped`` is treated as final so that
-        workers honour flag-based skips (``skipped_by_config``,
-        ``skipped_by_pipeline_migration``, ``skipped_by_rls_cm_policy``) the
-        same way as the canonical ``skipped``. This keeps the pattern
-        open-ended — new skip-reason statuses don't need a code change here.
+        Terminal statuses (object won't be reprocessed on re-run):
+        - ``validated``: migrated successfully.
+        - ``skipped_by_pipeline_migration``: DLT-owned; the pipeline is
+          migrated by the pipelines workflow, never by managed_table_worker.
+
+        All other ``skipped_*`` statuses are **non-terminal by design** —
+        they're flag-gated skips that an operator flips via config to
+        re-enable:
+
+        - ``skipped_by_config``: ``iceberg_strategy=""``. Flip to
+          ``"ddl_replay"`` + re-run → table re-enters pending pool.
+        - ``skipped_by_rls_cm_policy``: ``rls_cm_strategy=""``. Flip to
+          ``"drop_and_restore"`` + consent flag + re-run → same.
+        - Plain ``skipped`` (dry_run output): real run must re-evaluate.
+
+        Previously the filter was ``NOT LIKE 'skipped%'`` which treated
+        every skip variant as terminal. That broke the Iceberg re-run
+        scenario that ``skipped_by_config`` was introduced for.
         """
         rows = self.spark.sql(f"""
             WITH latest_status AS (
@@ -303,7 +316,7 @@ class TrackingManager:
                 ON d.object_name = s.object_name AND d.object_type = s.object_type
             WHERE d.object_type = '{object_type}'
               AND (s.status IS NULL
-                   OR (s.status != 'validated' AND s.status NOT LIKE 'skipped%'))
+                   OR s.status NOT IN ('validated', 'skipped_by_pipeline_migration'))
         """).collect()
         return [row.asDict() for row in rows]
 
