@@ -51,7 +51,12 @@ def _is_notebook() -> bool:
 
 
 _OBJECT_TYPE_TO_SECURABLE = {
+    # Hive discovery classifies managed/external tables by storage location
+    # (dbfs-root vs non-dbfs vs external); for grants they're all TABLE.
     "hive_table": "TABLE",
+    "hive_external": "TABLE",
+    "hive_managed_dbfs_root": "TABLE",
+    "hive_managed_nondbfs": "TABLE",
     "hive_view": "VIEW",
     "hive_function": "FUNCTION",
 }

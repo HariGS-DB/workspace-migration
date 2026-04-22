@@ -105,43 +105,37 @@ class TestReplayGrants:
         assert "PRINCIPAL_NOT_FOUND" in results[0]["error_message"]
 
 
-class TestGrantsWorkerKnownLimitations:
-    """Contract tests that lock in the tool's current CURRENT behavior
-    around grants — NOT its aspirational behavior. These exist so that a
-    future fix for the table-level gap is visible as "tests changed" in
-    code review rather than silently extending coverage.
-
-    Known gap (see README + follow-up list): grants_worker only enumerates
-    CATALOG + SCHEMA grants. Table, view, volume, function grants are NOT
-    migrated today. Documented via test here.
+class TestGrantsWorkerSecurableCoverage:
+    """Contract test: grants_worker processes every UC securable type
+    that ``discovery_inventory`` tracks. If a new object type is added
+    to discovery without corresponding grant enumeration here, the
+    test fails loud so the gap is visible in review.
     """
 
-    def test_run_only_processes_catalog_and_schema_grants(self):
-        """Inspect the source of grants_worker.run() to verify it only
-        iterates catalogs + schemas — never tables/views/volumes. If a
-        future refactor extends this, the test fails loudly and the gap
-        documentation needs updating."""
+    def test_run_processes_all_tracked_securable_types(self):
+        """The six securable types grants_worker must enumerate:
+        CATALOG, SCHEMA, TABLE, VIEW, VOLUME, FUNCTION. Each is passed
+        as a string to ``_process(type, fqn)`` inside ``run()``."""
         import pathlib
 
         src = (pathlib.Path(__file__).resolve().parents[2] / "src" / "migrate" / "grants_worker.py").read_text()
-        # These SHOULD appear — current behavior:
-        assert 'list_grants("CATALOG"' in src, "grants_worker must process CATALOG grants."
-        assert 'list_grants("SCHEMA"' in src, "grants_worker must process SCHEMA grants."
-        # These SHOULD NOT appear today. If they do, either:
-        #   a) someone extended grants_worker (update this test + README), or
-        #   b) they added a pattern that only LOOKS like table-level grant
-        #      processing and this test needs tightening.
-        for unsupported in (
-            'list_grants("TABLE"',
-            'list_grants("VIEW"',
-            'list_grants("VOLUME"',
-            'list_grants("FUNCTION"',
-        ):
-            assert unsupported not in src, (
-                f"grants_worker now appears to process {unsupported!r}. "
-                f"If that's intentional, update the README's known-gap "
-                f"list and this test to reflect the new behavior."
+        for securable_type in ("CATALOG", "SCHEMA", "TABLE", "VIEW", "VOLUME", "FUNCTION"):
+            assert f'_process("{securable_type}"' in src, (
+                f"grants_worker must call _process({securable_type!r}, ...) — "
+                f"missing coverage for {securable_type} grants."
             )
+
+    def test_run_classifies_mv_and_st_as_table_for_grants(self):
+        """Materialized views and streaming tables share the UC TABLE
+        securable type (SHOW GRANTS ON TABLE <fqn> works for them).
+        The run() dispatcher maps discovery ``object_type`` values
+        ``mv``/``st`` into the table bucket — lock this in so a
+        refactor doesn't drop MV/ST grant coverage."""
+        import pathlib
+
+        src = (pathlib.Path(__file__).resolve().parents[2] / "src" / "migrate" / "grants_worker.py").read_text()
+        # The mapping block lists mv, st alongside managed_table / external_table
+        assert '"managed_table", "external_table", "mv", "st"' in src
 
     def test_replay_grants_skips_owner_grants(self):
         """OWNER grants are set differently (ALTER ... OWNER TO) — the
