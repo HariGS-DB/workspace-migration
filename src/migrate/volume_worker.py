@@ -323,7 +323,21 @@ def migrate_volume(
         target_path = f"/Volumes/{src_cat}/{src_sch}/{src_vol}"
         run_name = f"cp_migration_volcopy_{src_cat}_{src_sch}_{src_vol}"
         logger.info("Copying volume data: %s -> %s", shared_path, target_path)
-        copy_result = _run_target_volume_copy(auth, shared_path, target_path, run_name)
+        try:
+            copy_result = _run_target_volume_copy(auth, shared_path, target_path, run_name)
+        except Exception:
+            # Copy failed mid-execution — drop the partially-populated target volume
+            # so a re-run can recreate it cleanly. Best-effort: swallow cleanup errors.
+            try:
+                auth.target_client.volumes.delete(name=target_fqn.strip("`").replace("`.`", "."))
+                logger.info("Dropped partial target volume %s after copy failure", target_fqn)
+            except Exception as cleanup_exc:  # noqa: BLE001
+                logger.warning(
+                    "Could not drop partial target volume %s after copy failure: %s",
+                    target_fqn,
+                    cleanup_exc,
+                )
+            raise
 
         duration = time.time() - start
         return {
