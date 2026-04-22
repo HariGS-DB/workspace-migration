@@ -28,6 +28,16 @@
 #                              false. Typically provided by an operator-
 #                              set BUNDLE_VAR or left at the workspace
 #                              config.yaml's value for subsequent reads.
+#   batch_size               — integer ≥ 1 overriding batch_size in
+#                              config.yaml. Empty → leave existing value.
+#                              Hive integration passes "10" so its 12-
+#                              table fixture exercises > 1 batch.
+#   catalog_filter           — comma-separated allow-list of UC catalogs
+#                              to discover. Empty → unchanged. Hive
+#                              integration passes "integration_test_src"
+#                              so UC discovery ignores the parallel
+#                              ``integration_test_hive_ucref`` fixture
+#                              seeded for the cross-catalog view test.
 
 import shutil
 
@@ -73,6 +83,8 @@ dbutils.widgets.text("iceberg_strategy", "")  # noqa: F821
 dbutils.widgets.text("rls_cm_strategy", "")  # noqa: F821
 dbutils.widgets.text("migrate_hive_dbfs_root", "false")  # noqa: F821
 dbutils.widgets.text("hive_dbfs_target_path", "")  # noqa: F821
+dbutils.widgets.text("batch_size", "")  # noqa: F821
+dbutils.widgets.text("catalog_filter", "")  # noqa: F821
 
 
 def _get_bool(key: str, default: str) -> bool:
@@ -89,6 +101,8 @@ iceberg_strategy = _get_str("iceberg_strategy", "")
 rls_cm_strategy = _get_str("rls_cm_strategy", "")
 migrate_hive_dbfs_root = _get_bool("migrate_hive_dbfs_root", "false")
 hive_dbfs_target_path = _get_str("hive_dbfs_target_path", "")
+batch_size_raw = _get_str("batch_size", "")
+catalog_filter_raw = _get_str("catalog_filter", "")
 
 # Guard against drop_and_restore here too (setup_sharing also gates it,
 # but catching it at config-setup keeps us from doing a bunch of I/O
@@ -112,6 +126,13 @@ if hive_dbfs_target_path:
     cfg["hive_dbfs_target_path"] = hive_dbfs_target_path
 # If hive_dbfs_target_path is not provided but migrate_hive_dbfs_root is
 # true, leave the existing value in place (operator-configured pre-test).
+if batch_size_raw:
+    try:
+        cfg["batch_size"] = max(1, int(batch_size_raw))
+    except ValueError as _exc:
+        raise ValueError(f"batch_size must be an integer, got {batch_size_raw!r}") from _exc
+if catalog_filter_raw:
+    cfg["catalog_filter"] = [x.strip() for x in catalog_filter_raw.split(",") if x.strip()]
 
 with open(config_path, "w") as f:
     yaml.safe_dump(cfg, f, sort_keys=False)
@@ -124,4 +145,6 @@ print(
     f"  rls_cm_strategy          = {rls_cm_strategy!r}\n"
     f"  migrate_hive_dbfs_root   = {migrate_hive_dbfs_root}\n"
     f"  hive_dbfs_target_path    = {cfg.get('hive_dbfs_target_path', '')!r}\n"
+    f"  batch_size               = {cfg.get('batch_size', '(unchanged)')}\n"
+    f"  catalog_filter           = {cfg.get('catalog_filter', '(unchanged)')}\n"
 )
