@@ -125,6 +125,103 @@ class TestMigrateVolume:
         sql_calls = [c.args[0] for c in deps["source_spark"].sql.call_args_list]
         assert any("REMOVE VOLUME" in s for s in sql_calls)
 
+    @patch("migrate.volume_worker._run_target_volume_copy")
+    @patch("migrate.volume_worker.time")
+    @patch("migrate.volume_worker.execute_and_poll")
+    def test_managed_volume_deletes_target_volume_on_copy_failure(
+        self, mock_execute, mock_time, mock_copy
+    ):
+        """Target copy failure must drop the half-populated target volume so
+        re-runs don't leak broken state."""
+        from migrate.volume_worker import migrate_volume
+
+        mock_time.time.side_effect = [100.0, 105.0]
+        mock_execute.return_value = {"state": "SUCCEEDED", "statement_id": "s-2"}
+        mock_copy.side_effect = RuntimeError("copy failed mid-run")
+
+        deps = self._make_deps()
+        deps["source_spark"].sql = MagicMock()
+
+        vol_info = {"object_name": "`cat`.`sch`.`mgd_vol`", "table_type": "MANAGED"}
+        result, _ = migrate_volume(vol_info, **deps)
+
+        assert result["status"] == "failed"
+        assert "copy failed mid-run" in result["error_message"]
+        # The partially-populated target volume must be deleted
+        deps["auth"].target_client.volumes.delete.assert_called_once()
+        call = deps["auth"].target_client.volumes.delete.call_args
+        # Accept either positional or kw `name=` — worker uses kw
+        name_arg = call.kwargs.get("name") or (call.args[0] if call.args else None)
+        assert name_arg == "cat.sch.mgd_vol"
+
+    @patch("migrate.volume_worker._run_target_volume_copy")
+    @patch("migrate.volume_worker.time")
+    @patch("migrate.volume_worker.execute_and_poll")
+    def test_managed_volume_full_rollback_contract_on_copy_failure(
+        self, mock_execute, mock_time, mock_copy
+    ):
+        """Full rollback on target-side copy failure: share removed, target
+        volume deleted, failed status recorded."""
+        from migrate.volume_worker import migrate_volume
+
+        mock_time.time.side_effect = [100.0, 105.0]
+        mock_execute.return_value = {"state": "SUCCEEDED", "statement_id": "s-2"}
+        mock_copy.side_effect = RuntimeError("copy boom")
+
+        deps = self._make_deps()
+        deps["source_spark"].sql = MagicMock()
+
+        vol_info = {"object_name": "`cat`.`sch`.`mgd_vol`", "table_type": "MANAGED"}
+        result, _ = migrate_volume(vol_info, **deps)
+
+        # 1. Status row is "failed" with the copy error surfaced
+        assert result["status"] == "failed"
+        assert result["object_type"] == "volume"
+        assert "copy boom" in result["error_message"]
+
+        # 2. Source volume removed from share
+        sql_calls = [c.args[0] for c in deps["source_spark"].sql.call_args_list]
+        assert any(
+            "ALTER SHARE cp_migration_share REMOVE VOLUME `cat`.`sch`.`mgd_vol`" in s
+            for s in sql_calls
+        )
+
+        # 3. Partially-populated target volume deleted
+        deps["auth"].target_client.volumes.delete.assert_called_once()
+
+    @patch("migrate.volume_worker._run_target_volume_copy")
+    @patch("migrate.volume_worker.time")
+    @patch("migrate.volume_worker.execute_and_poll")
+    def test_managed_volume_cleanup_failure_does_not_mask_copy_error(
+        self, mock_execute, mock_time, mock_copy
+    ):
+        """If the best-effort target-volume cleanup itself raises, the original
+        copy failure must still be the error recorded on the status row, and
+        the share-removal finally block must still run."""
+        from migrate.volume_worker import migrate_volume
+
+        mock_time.time.side_effect = [100.0, 105.0]
+        mock_execute.return_value = {"state": "SUCCEEDED", "statement_id": "s-2"}
+        mock_copy.side_effect = RuntimeError("original copy error")
+
+        deps = self._make_deps()
+        deps["source_spark"].sql = MagicMock()
+        # volumes.delete itself blows up (e.g. permission / already-gone)
+        deps["auth"].target_client.volumes.delete.side_effect = RuntimeError(
+            "cleanup also failed"
+        )
+
+        vol_info = {"object_name": "`cat`.`sch`.`mgd_vol`", "table_type": "MANAGED"}
+        result, _ = migrate_volume(vol_info, **deps)
+
+        # Original copy error wins; cleanup error is swallowed
+        assert result["status"] == "failed"
+        assert "original copy error" in result["error_message"]
+        assert "cleanup also failed" not in result["error_message"]
+        # Share removal still happened
+        sql_calls = [c.args[0] for c in deps["source_spark"].sql.call_args_list]
+        assert any("REMOVE VOLUME" in s for s in sql_calls)
+
     @patch("migrate.volume_worker.time")
     @patch("migrate.volume_worker.execute_and_poll")
     def test_migrate_dry_run(self, mock_execute, mock_time):
