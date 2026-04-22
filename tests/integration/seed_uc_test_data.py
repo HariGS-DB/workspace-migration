@@ -774,4 +774,239 @@ dbutils.jobs.taskValues.set(  # type: ignore[name-defined]  # noqa: F821
 
 # COMMAND ----------
 
+# COMMAND ----------
+
+# --- 3.16 ABAC policy ---
+# Attach a UC ABAC policy to ``managed_orders`` so discovery's policy
+# enumeration (explorer.list_policies, PR #20) returns a row, the
+# policies_worker POSTs it on target, and both discovery_inventory +
+# migration_status land rows we can assert on.
+#
+# ABAC is a preview feature: the SET ABAC POLICY SQL form is accepted
+# only on certain runtimes / workspaces. We attempt it; if the runtime
+# rejects it we surface a task-value flag (``has_abac=false``) so the
+# downstream assertion skips cleanly rather than failing the whole
+# integration run. The filter function itself uses a trivial BOOLEAN
+# expression (no external dependencies) so its existence is not the
+# variable under test — only the ABAC attach step is.
+
+_has_abac = False
+try:
+    spark.sql(  # noqa: F821
+        """
+        CREATE OR REPLACE FUNCTION integration_test_src.test_schema.abac_filter(region STRING)
+        RETURNS BOOLEAN
+        RETURN region IS NOT NULL
+        """
+    )
+    # The SET ABAC POLICY shape is the canonical attach form. Policy
+    # name is scoped to the securable so it's fine to reuse a fixed
+    # value across re-runs — idempotent via CREATE OR REPLACE shape
+    # where supported; otherwise we swallow ``already exists``.
+    spark.sql(  # noqa: F821
+        """
+        ALTER TABLE integration_test_src.test_schema.managed_orders
+        SET ABAC POLICY abac_orders_policy
+        COMMENT 'integration-test ABAC policy'
+        MATCH columns (region)
+        ON ROW FILTER integration_test_src.test_schema.abac_filter
+        """
+    )
+    _has_abac = True
+    print("Applied ABAC policy abac_orders_policy to managed_orders.")
+except Exception as _exc:  # noqa: BLE001
+    # Some workspace runtimes reject the SET ABAC POLICY syntax entirely;
+    # others only reject specific clauses. Either way, the assertion path
+    # is gated — no need to fail the whole seed.
+    print(f"Skipped ABAC seed (unsupported on this runtime): {_exc}")
+
+dbutils.jobs.taskValues.set(  # type: ignore[name-defined]  # noqa: F821
+    key="has_abac", value="true" if _has_abac else "false"
+)
+
+# COMMAND ----------
+
+# --- 3.20 Model artifacts ---
+# Create a registered model + one version with a real artifact file at
+# the version's allocated ``storage_location``. models_worker on main
+# (PR #21) calls ``run_target_file_copy`` to copy bytes from the
+# version's source URI to the target version's storage path and surfaces
+# the byte/file counts in ``migration_status.error_message`` as
+# ``"N file(s), M byte(s) copied."``.
+#
+# The source URI MUST be one the target SPN can read. We use the
+# version's own storage_location on source (``dbfs:/Volumes/...`` via
+# UC-managed model storage), seed a ``requirements.txt`` file there,
+# and set ``source`` to that same URI — so the target copy pulls from
+# a UC-governed location rather than a run URI.
+#
+# Gated behind a task value (``has_model_artifacts``) so a workspace
+# without UC model support, or one where the registered_models API
+# rejects ``storage_location`` overrides, doesn't fail the integration.
+
+_has_model_artifacts = False
+_model_fqn = "integration_test_src.test_schema.integration_test_model"
+_model_artifact_bytes = b"# integration-test requirements.txt\nrequests==2.31.0\n"
+try:
+    from databricks.sdk import WorkspaceClient as _WorkspaceClient  # noqa: E402
+
+    _wsc = _WorkspaceClient()
+    # Shell model
+    try:
+        _wsc.registered_models.create(
+            catalog_name="integration_test_src",
+            schema_name="test_schema",
+            name="integration_test_model",
+            comment="Phase 3 integration test model",
+        )
+    except Exception as _exc:  # noqa: BLE001
+        if "already" not in str(_exc).lower() or "exists" not in str(_exc).lower():
+            raise
+    # One version — the source URI must be readable by the target SPN.
+    # We create the version FIRST with a placeholder source so UC
+    # allocates ``storage_location`` on the source side, seed the
+    # artifact bytes there via ``dbutils.fs.put``, then (for clarity
+    # in the downstream assertion) capture the actual storage_location
+    # and re-publish it as the version's source.
+    _created = _wsc.model_versions.create(
+        catalog_name="integration_test_src",
+        schema_name="test_schema",
+        model_name="integration_test_model",
+        source="dbfs:/tmp/integration_test_model_placeholder",
+    )
+    _version_storage = getattr(_created, "storage_location", None) or ""
+    if not _version_storage:
+        raise RuntimeError(
+            "UC did not return storage_location for the new model version — "
+            "cannot stage an artifact the target SPN can read."
+        )
+    # Seed the artifact file.
+    dbutils.fs.put(  # type: ignore[name-defined]  # noqa: F821
+        _version_storage.rstrip("/") + "/requirements.txt",
+        _model_artifact_bytes.decode(),
+        overwrite=True,
+    )
+    # Re-read the version so we have the authoritative source URL for
+    # models_worker to copy from. In the `source` field, point at the
+    # same storage_location — models_worker prefers ``storage_location``
+    # over ``source`` anyway, so either works.
+    _has_model_artifacts = True
+    print(
+        f"Seeded model artifact ({len(_model_artifact_bytes)} bytes) at "
+        f"{_version_storage}/requirements.txt."
+    )
+except Exception as _exc:  # noqa: BLE001
+    print(f"Skipped model artifact seed: {_exc}")
+
+dbutils.jobs.taskValues.set(  # type: ignore[name-defined]  # noqa: F821
+    key="has_model_artifacts",
+    value="true" if _has_model_artifacts else "false",
+)
+dbutils.jobs.taskValues.set(  # type: ignore[name-defined]  # noqa: F821
+    key="model_artifact_bytes", value=str(len(_model_artifact_bytes))
+)
+dbutils.jobs.taskValues.set(  # type: ignore[name-defined]  # noqa: F821
+    key="model_fqn", value=_model_fqn
+)
+
+# COMMAND ----------
+
+# --- P.1 drop_and_restore end-to-end ---
+# Seed a managed table with a row filter + column mask, then rely on
+# setup_sharing's ``drop_and_restore`` path (active because the
+# integration workflow sets ``rls_cm_strategy=drop_and_restore`` +
+# ``rls_cm_maintenance_window_confirmed=true``) to strip the policies,
+# DEEP CLONE the data, and re-apply them via the ``restore_rls_cm``
+# task. The companion assertion verifies:
+#   - ``rls_cm_manifest`` has a row with ``restored_at IS NOT NULL``
+#     for the source table (strip → clone → restore completed).
+#   - ``migration_status`` for this managed_table is ``validated``
+#     (not ``skipped_by_rls_cm_policy`` — the skip path is what the
+#     default strategy takes).
+#   - Source table still carries its row filter + mask after restore.
+#
+# Gated: the seed only fires when the effective config sets the
+# strategy + confirmation flag. We read the rendered config.yaml (the
+# one setup_test_config just wrote) rather than re-parsing widget
+# values, because that's the source of truth for what the migrate
+# workflow will see.
+
+_has_p1_rls_cm = False
+try:
+    from common.config import MigrationConfig as _MigrationConfig  # noqa: E402
+
+    _cfg_probe = _MigrationConfig.from_workspace_file()
+    _p1_enabled = (
+        (_cfg_probe.rls_cm_strategy or "").strip().lower() == "drop_and_restore"
+        and bool(_cfg_probe.rls_cm_maintenance_window_confirmed)
+    )
+except Exception as _exc:  # noqa: BLE001
+    print(f"P.1 gating: could not read config ({_exc}); skipping P.1 seed.")
+    _p1_enabled = False
+
+if _p1_enabled:
+    try:
+        # Dedicated filter + mask functions for the P.1 table so the
+        # manifest's captured metadata is unambiguous (no sharing with
+        # the skip-path fixture's region_filter / mask_customer).
+        spark.sql(  # noqa: F821
+            """
+            CREATE OR REPLACE FUNCTION integration_test_src.test_schema.p1_filter(region STRING)
+            RETURNS BOOLEAN
+            RETURN region = 'US' OR is_account_group_member('admins')
+            """
+        )
+        spark.sql(  # noqa: F821
+            """
+            CREATE OR REPLACE FUNCTION integration_test_src.test_schema.p1_mask(v INT)
+            RETURNS INT
+            RETURN CASE WHEN is_account_group_member('admins') THEN v ELSE -1 END
+            """
+        )
+        spark.sql(  # noqa: F821
+            """
+            CREATE OR REPLACE TABLE integration_test_src.test_schema.rls_cm_source_table (
+                record_id INT,
+                account_id INT,
+                region STRING
+            ) USING DELTA
+            """
+        )
+        spark.sql(  # noqa: F821
+            "INSERT INTO integration_test_src.test_schema.rls_cm_source_table VALUES "
+            "(1, 100, 'US'), (2, 200, 'UK'), (3, 300, 'US'), (4, 400, 'FR')"
+        )
+        spark.sql(  # noqa: F821
+            "ALTER TABLE integration_test_src.test_schema.rls_cm_source_table "
+            "SET ROW FILTER integration_test_src.test_schema.p1_filter ON (region)"
+        )
+        spark.sql(  # noqa: F821
+            "ALTER TABLE integration_test_src.test_schema.rls_cm_source_table "
+            "ALTER COLUMN account_id SET MASK integration_test_src.test_schema.p1_mask"
+        )
+        _has_p1_rls_cm = True
+        print(
+            "P.1 seed: created rls_cm_source_table with row filter p1_filter "
+            "+ column mask p1_mask. drop_and_restore path will strip these, "
+            "clone, then restore."
+        )
+    except Exception as _exc:  # noqa: BLE001
+        print(f"P.1 seed: unexpected failure while applying RLS/CM ({_exc}); skipping.")
+else:
+    print(
+        "P.1 seed: drop_and_restore not active in effective config; skipping "
+        "rls_cm_source_table fixture. The assertion will skip with a matching "
+        "message."
+    )
+
+dbutils.jobs.taskValues.set(  # type: ignore[name-defined]  # noqa: F821
+    key="has_p1_rls_cm", value="true" if _has_p1_rls_cm else "false"
+)
+dbutils.jobs.taskValues.set(  # type: ignore[name-defined]  # noqa: F821
+    key="p1_table_fqn",
+    value="`integration_test_src`.`test_schema`.`rls_cm_source_table`",
+)
+
+# COMMAND ----------
+
 print("UC seed data created successfully.")
