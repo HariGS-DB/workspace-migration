@@ -19,15 +19,28 @@ except NameError:
 # Post-migrate RLS/CM restore task.
 #
 # Runs at the end of the migrate workflow when ``rls_cm_strategy='drop_and_restore'``.
-# Reads ``rls_cm_manifest`` for rows still ``restored_at IS NULL``, re-applies
-# the row filter + column masks on the source table via ALTER TABLE SQL, and
-# stamps ``restored_at``. Per-table continue-on-failure: a single bad restore
-# doesn't block the rest.
+# For each row in ``rls_cm_manifest`` with ``restored_at IS NULL``:
+#   1. Remove the table from ``cp_migration_share`` on source. UC refuses
+#      ``ALTER TABLE ... SET ROW FILTER`` / ``SET MASK`` on a table that's
+#      still in an active Delta Share (error
+#      ``ROW_COLUMN_SECURITY_NOT_SUPPORTED_WITH_TABLE_IN_DELTA_SHARING``),
+#      so the table must leave the share before the re-apply.
+#   2. ``ALTER TABLE ... SET ROW FILTER`` + ``ALTER COLUMN ... SET MASK``
+#      on source via ``restore_rls_cm`` helper.
+#   3. ``UPDATE rls_cm_manifest SET restored_at = current_timestamp()``.
+#
+# Per-table continue-on-failure: a single bad restore doesn't block the
+# rest; failures stamp ``restore_failed_at`` + ``restore_error`` for
+# operator follow-up.
 #
 # Idempotent:
 # - Already-restored rows are ignored (WHERE restored_at IS NULL).
+# - ``ALTER SHARE ... REMOVE TABLE`` swallows "not in share" so a
+#   mid-crashed run re-running this task still makes progress.
 # - If UC rejects the SET because the policy is already applied (partial-
 #   restore re-run), we catch that specific error and treat it as success.
+
+SHARE_NAME = "cp_migration_share"
 
 import logging
 
@@ -76,6 +89,23 @@ def run(dbutils, spark) -> None:  # noqa: ARG001
             "masks": row.get("masks") or [],
         }
         try:
+            # Step 1: remove the table from cp_migration_share. UC
+            # refuses SET ROW FILTER / SET MASK while the table is in an
+            # active Delta Share. "Not in share" swallowed so re-runs on
+            # a mid-crashed state still make progress.
+            remove_sql = f"ALTER SHARE {SHARE_NAME} REMOVE TABLE {table_fqn}"
+            try:
+                spark.sql(remove_sql)
+            except Exception as share_exc:  # noqa: BLE001
+                msg = str(share_exc).lower()
+                if "not" in msg and ("shared" in msg or "in share" in msg or "exist" in msg):
+                    logger.info(
+                        "Table %s already out of share (or share absent); continuing.",
+                        table_fqn,
+                    )
+                else:
+                    raise
+            # Step 2: reapply RLS / CM on source.
             restore_rls_cm(spark, table_fqn, captured)
             tracker.mark_rls_cm_restored(table_fqn)
             restored += 1

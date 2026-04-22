@@ -308,6 +308,16 @@ def _recover_unrestored_rls_cm(auth: AuthManager, tracker: TrackingManager, spar
             "masks": row.get("masks") or [],
         }
         try:
+            # Remove from share first — UC refuses SET ROW FILTER / SET
+            # MASK while the table is in an active Delta Share. "Not in
+            # share" swallowed so a second recovery attempt still works.
+            remove_sql = f"ALTER SHARE {SHARE_NAME} REMOVE TABLE {table_fqn}"
+            try:
+                spark.sql(remove_sql)
+            except Exception as share_exc:  # noqa: BLE001
+                msg = str(share_exc).lower()
+                if not ("not" in msg and ("shared" in msg or "in share" in msg or "exist" in msg)):
+                    raise
             restore_rls_cm(spark, table_fqn, captured)
             tracker.mark_rls_cm_restored(table_fqn)
             logger.warning("Recovered RLS/CM on %s.", table_fqn)
