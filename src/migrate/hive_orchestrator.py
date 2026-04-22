@@ -28,6 +28,7 @@ from common.auth import AuthManager
 from common.config import MigrationConfig
 from common.sql_utils import execute_and_poll, find_warehouse
 from common.tracking import TrackingManager
+from migrate.batching import build_batches
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("hive_orchestrator")
@@ -121,18 +122,15 @@ if _is_notebook():
         by_category.setdefault(r.data_category, []).append(rec)
 
     # Build batches per category (for_each_task consumes a JSON list).
+    # Use the shared ``build_batches`` which enforces BOTH the count
+    # ceiling (``batch_size``) AND the Jobs for_each 3000-byte per-
+    # parameter size ceiling.
     batch_size = config.batch_size
-
-    def build_batches(objs: list[dict]) -> list[str]:
-        batches: list[str] = []
-        for i in range(0, len(objs), batch_size):
-            batches.append(json.dumps(objs[i : i + batch_size], default=str))
-        return batches
 
     # Publish task values.
     for cat in ("hive_external", "hive_managed_nondbfs", "hive_managed_dbfs_root"):
         key = f"{cat}_batches"
-        batches = build_batches(by_category.get(cat, []))
+        batches = build_batches(by_category.get(cat, []), batch_size)
         dbutils.jobs.taskValues.set(key=key, value=json.dumps(batches))  # type: ignore[name-defined] # noqa: F821
         logger.info("%s: %d batch(es) (%d objects)", key, len(batches), len(by_category.get(cat, [])))
 
