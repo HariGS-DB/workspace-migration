@@ -38,6 +38,28 @@
 #                              so UC discovery ignores the parallel
 #                              ``integration_test_hive_ucref`` fixture
 #                              seeded for the cross-catalog view test.
+#
+# --- Negative-path injections (integration X.3) ---
+# These intentionally corrupt the config so a downstream task fails loud
+# and safe. All default to "false" so the normal UC / Hive integration
+# workflows are unaffected.
+#
+#   inject_bad_spn_id            — when "true", overwrite spn_client_id
+#                                  with a syntactically-valid-but-wrong
+#                                  UUID so auth fails at pre_check.
+#   inject_unreachable_target    — when "true", overwrite
+#                                  target_workspace_url with a
+#                                  non-resolving hostname so pre_check's
+#                                  target auth/metastore checks fail.
+#   inject_bad_rls_cm            — when "true", set
+#                                  rls_cm_strategy="drop_and_restore" and
+#                                  force rls_cm_maintenance_window_confirmed
+#                                  to false so setup_sharing's validator
+#                                  rejects it before any side effect. The
+#                                  top-of-notebook drop_and_restore gate
+#                                  is bypassed for this injection only —
+#                                  we want the failure to land in
+#                                  setup_sharing, not here.
 
 import shutil
 
@@ -85,6 +107,11 @@ dbutils.widgets.text("migrate_hive_dbfs_root", "false")  # noqa: F821
 dbutils.widgets.text("hive_dbfs_target_path", "")  # noqa: F821
 dbutils.widgets.text("batch_size", "")  # noqa: F821
 dbutils.widgets.text("catalog_filter", "")  # noqa: F821
+# Negative-path injection widgets (integration X.3). Default "false" so
+# normal UC / Hive integration runs are unaffected.
+dbutils.widgets.text("inject_bad_spn_id", "false")  # noqa: F821
+dbutils.widgets.text("inject_unreachable_target", "false")  # noqa: F821
+dbutils.widgets.text("inject_bad_rls_cm", "false")  # noqa: F821
 
 
 def _get_bool(key: str, default: str) -> bool:
@@ -104,10 +131,19 @@ hive_dbfs_target_path = _get_str("hive_dbfs_target_path", "")
 batch_size_raw = _get_str("batch_size", "")
 catalog_filter_raw = _get_str("catalog_filter", "")
 
-# Guard against drop_and_restore here too (setup_sharing also gates it,
-# but catching it at config-setup keeps us from doing a bunch of I/O
-# before failing).
-if rls_cm_strategy.lower() == "drop_and_restore":
+# Negative-path injection toggles (integration X.3).
+inject_bad_spn_id = _get_bool("inject_bad_spn_id", "false")
+inject_unreachable_target = _get_bool("inject_unreachable_target", "false")
+inject_bad_rls_cm = _get_bool("inject_bad_rls_cm", "false")
+
+# The ``inject_bad_rls_cm`` scenario deliberately lets
+# rls_cm_strategy=drop_and_restore through this gate so the failure
+# lands in ``setup_sharing._validate_rls_cm_strategy`` (where the
+# maintenance-window consent gate lives). Any OTHER caller hitting
+# drop_and_restore still trips this guard.
+if inject_bad_rls_cm:
+    rls_cm_strategy = "drop_and_restore"
+elif rls_cm_strategy.lower() == "drop_and_restore":
     raise NotImplementedError("rls_cm_strategy='drop_and_restore' is not yet implemented — see README.")
 
 # COMMAND ----------
@@ -134,6 +170,28 @@ if batch_size_raw:
 if catalog_filter_raw:
     cfg["catalog_filter"] = [x.strip() for x in catalog_filter_raw.split(",") if x.strip()]
 
+# --- Negative-path injections (integration X.3) ---
+# Applied AFTER the normal overrides so we're corrupting the post-scope
+# config, not the original file. The teardown step (restoring the
+# .pre-integration-test.bak) still cleans up even on failure paths.
+if inject_bad_spn_id:
+    # A well-formed-but-wrong UUID. ``AuthManager._build_client`` will
+    # accept the shape, but ``current_user.me()`` fails when the SDK
+    # attempts the first token exchange — surfacing as an auth error in
+    # ``pre_check.check_source_auth`` / ``check_target_auth``.
+    cfg["spn_client_id"] = "00000000-0000-0000-0000-000000000000"
+if inject_unreachable_target:
+    # Non-resolving hostname in the databricks.net namespace. The SDK
+    # happily builds the client, but ``target_client.current_user.me()``
+    # fails with a DNS / connection error — pre_check wraps it and
+    # surfaces "cannot reach target metastore".
+    cfg["target_workspace_url"] = "https://adb-0000000000000000.0.azuredatabricks.net"
+if inject_bad_rls_cm:
+    cfg["rls_cm_strategy"] = "drop_and_restore"
+    # Force the consent flag off regardless of what the workspace config
+    # had — the whole point of this scenario is the missing consent.
+    cfg["rls_cm_maintenance_window_confirmed"] = False
+
 with open(config_path, "w") as f:
     yaml.safe_dump(cfg, f, sort_keys=False)
 
@@ -142,9 +200,12 @@ print(
     f"  scope.include_uc         = {include_uc}\n"
     f"  scope.include_hive       = {include_hive}\n"
     f"  iceberg_strategy         = {iceberg_strategy!r}\n"
-    f"  rls_cm_strategy          = {rls_cm_strategy!r}\n"
+    f"  rls_cm_strategy          = {cfg.get('rls_cm_strategy', '')!r}\n"
     f"  migrate_hive_dbfs_root   = {migrate_hive_dbfs_root}\n"
     f"  hive_dbfs_target_path    = {cfg.get('hive_dbfs_target_path', '')!r}\n"
     f"  batch_size               = {cfg.get('batch_size', '(unchanged)')}\n"
     f"  catalog_filter           = {cfg.get('catalog_filter', '(unchanged)')}\n"
+    f"  [inject] bad_spn_id      = {inject_bad_spn_id}\n"
+    f"  [inject] unreach_target  = {inject_unreachable_target}\n"
+    f"  [inject] bad_rls_cm      = {inject_bad_rls_cm}\n"
 )
