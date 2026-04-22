@@ -152,22 +152,26 @@ class TestHiveGrantsWorker:
         src = (pathlib.Path(__file__).resolve().parents[2] / "src" / "migrate" / "hive_grants_worker.py").read_text()
         assert "HIVE_TO_UC_PRIVILEGES" in src
 
-    def test_only_catalog_and_schema_grants_processed(self):
-        """Same gap as grants_worker: table-level Hive grants don't
-        migrate today. Locked in at source level so the gap stays
-        visible in CODEOWNERS-type reviews."""
+    def test_object_type_map_covers_all_hive_table_categories(self):
+        """_OBJECT_TYPE_TO_SECURABLE maps every discovery object_type
+        a Hive migration produces. Missing entries mean the worker
+        falls through with "Skipping unknown object_type" and drops
+        grants for that table category — was the original gap."""
         import pathlib
 
         src = (pathlib.Path(__file__).resolve().parents[2] / "src" / "migrate" / "hive_grants_worker.py").read_text()
-        # No TABLE / VIEW / VOLUME enumeration yet.
-        for forbidden in (
-            'list_grants("TABLE"',
-            'list_grants("VIEW"',
-            'list_grants("VOLUME"',
+        # Every hive category discovery emits must be in the map:
+        for hive_type in (
+            "hive_external",
+            "hive_managed_dbfs_root",
+            "hive_managed_nondbfs",
+            "hive_view",
+            "hive_function",
         ):
-            assert forbidden not in src, (
-                f"hive_grants_worker now seems to process {forbidden!r}. "
-                f"Extend README + this test to document the new behavior."
+            assert f'"{hive_type}"' in src, (
+                f"hive_grants_worker._OBJECT_TYPE_TO_SECURABLE is missing "
+                f"{hive_type!r} — grants on those objects will be silently "
+                f"dropped with 'Skipping unknown object_type'."
             )
 
 
