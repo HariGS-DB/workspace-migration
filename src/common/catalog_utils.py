@@ -731,7 +731,17 @@ class CatalogExplorer:
         return results
 
     def list_shares(self, exclude_names: frozenset[str] = frozenset()) -> list[dict]:
-        """Delta shares owned by the source workspace.
+        """Delta shares the migration SPN has visibility on.
+
+        UC's ``shares.list()`` only returns shares where the caller is
+        the owner or has ``USE SHARE``. Shares the SPN can't see are
+        silently skipped by the API itself — not raised here — so a
+        missing share means the operator hasn't granted the SPN access
+        (see README: "Delta Sharing prerequisites"). The outer try/
+        except defends against a server-side hiccup; it logs a
+        ``print`` warning rather than silently returning empty so
+        operators aren't left wondering why no migration_status row
+        ever shows up for a share they know exists.
 
         Excludes the migration's own internal share ``cp_migration_share``
         (callers pass it via ``exclude_names``).
@@ -760,12 +770,22 @@ class CatalogExplorer:
                         "objects": objects,
                     }
                 )
-        except Exception:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001
+            print(
+                f"[list_shares] shares.list() failed ({exc!r}); returning "
+                f"empty list. The migration SPN may lack USE SHARE / "
+                f"ownership on any source share — see README."
+            )
             return []
         return results
 
     def list_recipients(self, exclude_prefix: str = "cp_migration_recipient_") -> list[dict]:
-        """Delta Sharing recipients; skips our internal cp_migration_recipient_*."""
+        """Delta Sharing recipients the migration SPN has visibility on.
+
+        Same access semantics as ``list_shares``: UC returns only
+        recipients the caller owns or holds USE RECIPIENT on.
+        Skips our internal cp_migration_recipient_*.
+        """
         results: list[dict] = []
         try:
             client = self.auth_manager.source_client  # type: ignore[attr-defined]
@@ -780,7 +800,12 @@ class CatalogExplorer:
                         "comment": getattr(r, "comment", None),
                     }
                 )
-        except Exception:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001
+            print(
+                f"[list_recipients] recipients.list() failed ({exc!r}); "
+                f"returning empty list. The migration SPN may lack USE "
+                f"RECIPIENT / ownership on any source recipient — see README."
+            )
             return []
         return results
 

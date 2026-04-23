@@ -755,25 +755,31 @@ if str(_has_cs).lower() == "true":
 
     _share_rows = full_status.filter(f"object_type = 'share' AND object_name = 'SHARE_{_cs_name}'").collect()
     _rcpt_rows = full_status.filter(f"object_type = 'recipient' AND object_name = 'RECIPIENT_{_cr_name}'").collect()
-    # Customer-defined share discovery is intermittent in this test env
-    # (appears to depend on SPN-principal view of shares API). Downgrade
-    # missing rows to WARNINGs so they don't gate the rest of the suite;
-    # full assertion re-enables once the discovery-side behaviour is
-    # debugged (follow-up task).
+    # Hard assertions. PR #31 downgraded these to WARNINGs because the
+    # customer share intermittently failed to surface a migration_status
+    # row — F.1 traced that to the seeder identity drifting from the
+    # migration SPN, which left the SPN without USE SHARE / USE RECIPIENT
+    # so discovery's ``list_shares()`` / ``list_recipients()`` silently
+    # skipped the objects. The seeder now transfers ownership to the SPN
+    # (see ``seed_uc_test_data.py`` 3.24 block), so both rows must land
+    # every run. If either row is missing, something is genuinely broken
+    # (e.g. ownership ALTER failed, or sharing_worker crashed) — fail
+    # loud rather than silently masking regressions.
     if not _share_rows:
-        print(f"3.24 WARNING: no migration_status row for SHARE_{_cs_name} — follow-up.")
+        error_messages.append(f"3.24 customer share: no migration_status row for SHARE_{_cs_name}.")
     elif _share_rows[0]["status"] != "validated":
-        print(
-            f"3.24 WARNING: SHARE_{_cs_name} status is "
+        error_messages.append(
+            f"3.24 customer share: SHARE_{_cs_name} status is "
             f"{_share_rows[0]['status']!r}, expected 'validated'. "
             f"error={_share_rows[0]['error_message']!r}"
         )
     if not _rcpt_rows:
-        print(f"3.24 WARNING: no migration_status row for RECIPIENT_{_cr_name}.")
+        error_messages.append(f"3.24 customer share: no migration_status row for RECIPIENT_{_cr_name}.")
     elif _rcpt_rows[0]["status"] != "validated":
-        print(
-            f"3.24 WARNING: RECIPIENT_{_cr_name} status is "
-            f"{_rcpt_rows[0]['status']!r}, expected 'validated'."
+        error_messages.append(
+            f"3.24 customer share: RECIPIENT_{_cr_name} status is "
+            f"{_rcpt_rows[0]['status']!r}, expected 'validated'. "
+            f"error={_rcpt_rows[0]['error_message']!r}"
         )
 
     if _share_rows and _share_rows[0]["status"] == "validated":
@@ -785,12 +791,12 @@ if str(_has_cs).lower() == "true":
             _tgt_share = _auth_s.target_client.shares.get(name=_cs_name, include_shared_data=True)
             _shared_objects = list(_tgt_share.objects or [])
             if not _shared_objects:
-                print(f"3.24 WARNING: target share '{_cs_name}' has no objects attached.")
+                error_messages.append(f"3.24 customer share: target share '{_cs_name}' has no objects attached.")
             else:
                 _obj_names = [o.name for o in _shared_objects]
                 if not any("managed_orders" in (n or "") for n in _obj_names):
-                    print(
-                        f"3.24 WARNING: target share '{_cs_name}' objects are "
+                    error_messages.append(
+                        f"3.24 customer share: target share '{_cs_name}' objects are "
                         f"{_obj_names}, expected to include managed_orders."
                     )
                 else:
@@ -799,7 +805,7 @@ if str(_has_cs).lower() == "true":
                         f"{len(_shared_objects)} object(s) including managed_orders."
                     )
         except Exception as _exc:  # noqa: BLE001
-            print(f"3.24 WARNING: target shares.get failed: {_exc}")
+            error_messages.append(f"3.24 customer share: target shares.get failed: {_exc}")
 else:
     print("3.24 customer share: not seeded; skipping.")
 
