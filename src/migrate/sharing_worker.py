@@ -58,6 +58,41 @@ _SHARE_OBJECT_SQL = {
 }
 
 
+def cleanup_partial_share(
+    object_name: str, *, auth, spark=None, config=None
+) -> None:
+    """Cleanup hook (X.1 reconciliation) for an in-progress share.
+
+    ``apply_share`` iterates ``ALTER SHARE ADD`` per object. If the worker
+    dies after adding a subset, the next run's idempotency path (X.2)
+    treats the already-added objects as ``already_present`` and succeeds,
+    so no destructive cleanup is strictly required. But the share may
+    still carry objects that the *next* run has since dropped from the
+    source spec (rare, but possible when source was edited between runs).
+    For safety we drop the share entirely; ``apply_share`` will recreate
+    it on retry from the live spec.
+
+    Best-effort: swallow NOT_FOUND / "does not exist" errors. The
+    ``object_name`` here is the ``SHARE_<name>`` key stamped by
+    ``apply_share`` strip the prefix to get the real share name.
+    """
+    name = object_name
+    if name.startswith("SHARE_"):
+        name = name[len("SHARE_"):]
+    try:
+        auth.target_client.shares.delete(name=name)
+        logger.info("Reconciliation cleanup: dropped partial share %s", name)
+    except Exception as exc:  # noqa: BLE001
+        msg = str(exc).lower()
+        if "not" in msg and ("exist" in msg or "found" in msg):
+            logger.info(
+                "Reconciliation cleanup: share %s already absent; nothing to drop.",
+                name,
+            )
+            return
+        raise
+
+
 def apply_share(
     share: dict,
     *,

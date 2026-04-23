@@ -54,6 +54,30 @@ def _coerce_collision_policy(raw: object) -> str:
     return val
 
 
+def _coerce_test_kill_after(raw: object) -> int | None:
+    """Parse the TEST-ONLY ``test_kill_after`` field.
+
+    Accepts ``None`` / empty / 0 (all return None no-op) or a positive int.
+    Negative values raise a ``ValueError`` so a typo surfaces at config-
+    load time rather than silently becoming "off". Real validation /
+    enforcement (refuse unless a test profile) happens at worker runtime
+    in :mod:`migrate.reconciliation.maybe_kill`.
+    """
+    if raw is None or raw == "":
+        return None
+    try:
+        val = int(raw)
+    except (TypeError, ValueError) as exc:
+        msg = f"test_kill_after must be a non-negative integer, got {raw!r}"
+        raise ValueError(msg) from exc
+    if val < 0:
+        msg = f"test_kill_after must be non-negative, got {val}"
+        raise ValueError(msg)
+    if val == 0:
+        return None
+    return val
+
+
 def _resolve_bundle_config_path() -> str:
     """Resolve config.yaml path from the running notebook's own workspace path.
 
@@ -159,6 +183,16 @@ class MigrationConfig:
     # data from a migration tool by default is almost never what anyone
     # wants.
     on_target_collision: str = "fail"
+    # X.1 kill-injection (TEST ONLY). When set to a positive int, workers
+    # raise ``SystemExit`` after processing that many objects in the current
+    # batch so integration tests can simulate a cluster-death mid-migrate
+    # and then exercise the reconciliation pass on the follow-up run.
+    #
+    # Refused at runtime unless the environment signals a test profile
+    # (``WSM_TEST_MODE=1`` or ``DATABRICKS_ENVIRONMENT`` starts with
+    # ``test``). See :mod:`migrate.reconciliation` for the check. NEVER
+    # set this in a production config.yaml.
+    test_kill_after: int | None = None
 
     @classmethod
     def from_workspace_file(cls, path: str | None = None) -> MigrationConfig:
@@ -215,4 +249,5 @@ class MigrationConfig:
             hive_dbfs_target_path=str(raw.get("hive_dbfs_target_path", "")),
             hive_target_catalog=str(raw.get("hive_target_catalog", "hive_upgraded")),
             on_target_collision=_coerce_collision_policy(raw.get("on_target_collision", "fail")),
+            test_kill_after=_coerce_test_kill_after(raw.get("test_kill_after")),
         )

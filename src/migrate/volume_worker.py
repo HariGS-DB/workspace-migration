@@ -29,7 +29,6 @@ except NameError:
 #   4. Removing the volume from the share
 # Bytes copied + file count are recorded in migration_status.
 
-import contextlib
 import json
 import logging
 import time
@@ -39,7 +38,6 @@ from common.config import MigrationConfig
 from common.sql_utils import execute_and_poll, find_warehouse
 from common.tracking import TrackingManager
 from migrate.target_copy import (
-    TARGET_COPY_NOTEBOOK_PATH,
     ensure_copy_notebook_on_target as _shared_ensure_notebook,
 )
 from migrate.target_copy import (
@@ -120,6 +118,44 @@ def _run_target_volume_copy(
 ) -> dict:
     """Back-compat wrapper — delegates to ``migrate.target_copy.run_target_file_copy``."""
     return _shared_file_copy(auth, src_path, dst_path, run_name, timeout_s=timeout_s)
+
+
+# COMMAND ----------
+# Cleanup hook (X.1 reconciliation)
+#
+# Called by ``migrate.reconciliation`` when a volume row is found with
+# status=in_progress from a prior run. Managed volumes need this because
+# ``dbutils.fs.cp`` may have copied some files but not all; dropping the
+# partial target volume lets the retry start from a clean slate. External
+# volumes need no cleanup (no data was copied), but dropping is still safe
+# and re-running ``CREATE EXTERNAL VOLUME IF NOT EXISTS`` is idempotent.
+
+
+def cleanup_partial_target(
+    object_name: str, *, auth: AuthManager, spark=None, config=None
+) -> None:
+    """Drop the target volume so the retry can recreate it cleanly.
+
+    Best-effort: swallow ``NOT_FOUND`` errors (common when the prior run
+    crashed before the CREATE VOLUME succeeded). Any other error
+    propagates so the reconciler can log it and continue to reset the
+    row regardless.
+    """
+    # Discovery stores volumes as the same FQN on source + target, so the
+    # object_name is both the source FQN and the target FQN (backticked).
+    target_fqn = object_name.strip("`").replace("`.`", ".")
+    try:
+        auth.target_client.volumes.delete(name=target_fqn)
+        logger.info("Reconciliation cleanup: dropped partial target volume %s", target_fqn)
+    except Exception as exc:  # noqa: BLE001
+        msg = str(exc).lower()
+        if "not" in msg and ("exist" in msg or "found" in msg):
+            logger.info(
+                "Reconciliation cleanup: target volume %s already absent; nothing to drop.",
+                target_fqn,
+            )
+            return
+        raise
 
 
 # COMMAND ----------

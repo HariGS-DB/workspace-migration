@@ -21,6 +21,7 @@ except NameError:
 
 import json
 import logging
+import threading as _threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -30,6 +31,7 @@ from common.config import MigrationConfig
 from common.sql_utils import execute_and_poll, find_warehouse
 from common.tracking import TrackingManager
 from common.validation import Validator
+from migrate.reconciliation import maybe_kill
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("managed_table_worker")
@@ -51,6 +53,29 @@ def _is_notebook() -> bool:
 
 
 # COMMAND ----------
+# X.1 kill-injection counter (test only). Module-level so the ThreadPool
+# workers share it; safe to reset between test cases via _reset_kill_counter.
+
+_kill_lock = _threading.Lock()
+_kill_counter = 0
+
+
+def _bump_kill_counter() -> int:
+    """Atomically increment and return the post-increment counter value."""
+    global _kill_counter
+    with _kill_lock:
+        _kill_counter += 1
+        return _kill_counter
+
+
+def _reset_kill_counter() -> None:
+    """Reset the counter (test helper)."""
+    global _kill_counter
+    with _kill_lock:
+        _kill_counter = 0
+
+
+# COMMAND ----------
 # Clone a single managed table
 
 
@@ -66,6 +91,10 @@ def clone_table(
 ) -> dict:
     """Deep clone a single managed table from delta share to target."""
     obj_name = table_info["object_name"]
+    # X.1 kill-injection: simulated mid-batch crash for integration tests.
+    # No-op in production (test_kill_after=None). See reconciliation.maybe_kill.
+    _n = _bump_kill_counter()
+    maybe_kill(config, _n, "managed_table_worker")
     parts = obj_name.strip("`").split("`.`")
     if len(parts) != 3:
         return {
