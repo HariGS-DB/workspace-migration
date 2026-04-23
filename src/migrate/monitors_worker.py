@@ -3,7 +3,9 @@
 # COMMAND ----------
 
 from __future__ import annotations  # noqa: E402
+
 import sys  # noqa: E402
+
 try:
     _ctx = dbutils.notebook.entry_point.getDbutils().notebook().getContext()  # noqa: F821
     _nb = _ctx.notebookPath().get()
@@ -48,19 +50,33 @@ def apply_monitor(mon: dict, *, auth: AuthManager, dry_run: bool) -> dict:
 
     # Strip fields that only apply to the source (table_name, status,
     # dashboard_id) — POST will re-populate these on target.
-    body = {k: v for k, v in definition.items() if k not in (
-        "table_name", "monitor_version", "status", "dashboard_id",
-        "drift_metrics_table_name", "profile_metrics_table_name",
-        "assets_dir",  # re-created on target
-    )}
+    body = {
+        k: v
+        for k, v in definition.items()
+        if k
+        not in (
+            "table_name",
+            "monitor_version",
+            "status",
+            "dashboard_id",
+            "drift_metrics_table_name",
+            "profile_metrics_table_name",
+            "assets_dir",  # re-created on target
+        )
+    }
 
-    clean = table_fqn.replace("`", "")
+    # Strip outer backticks + collapse the `.` separators to dots; preserves
+    # any literal backtick inside a name (``fqn.replace("`", "")`` would
+    # silently collapse ``cat.sch.foo`bar`` -> ``cat.sch.foobar``).
+    clean = table_fqn.strip("`").replace("`.`", ".")
     start = time.time()
     if dry_run:
         logger.info("[DRY RUN] Would POST monitor for %s", table_fqn)
         return {
-            "object_name": obj_key, "object_type": "monitor",
-            "status": "skipped", "error_message": "dry_run",
+            "object_name": obj_key,
+            "object_type": "monitor",
+            "status": "skipped",
+            "error_message": "dry_run",
             "duration_seconds": time.time() - start,
         }
     try:
@@ -70,7 +86,8 @@ def apply_monitor(mon: dict, *, auth: AuthManager, dry_run: bool) -> dict:
             body=body,
         )
         return {
-            "object_name": obj_key, "object_type": "monitor",
+            "object_name": obj_key,
+            "object_type": "monitor",
             "status": "validated",
             "error_message": "Metric history not transferred — target restarts from scratch.",
             "duration_seconds": time.time() - start,
@@ -88,8 +105,10 @@ def apply_monitor(mon: dict, *, auth: AuthManager, dry_run: bool) -> dict:
                 "duration_seconds": time.time() - start,
             }
         return {
-            "object_name": obj_key, "object_type": "monitor",
-            "status": "failed", "error_message": str(exc),
+            "object_name": obj_key,
+            "object_type": "monitor",
+            "status": "failed",
+            "error_message": str(exc),
             "duration_seconds": time.time() - start,
         }
 

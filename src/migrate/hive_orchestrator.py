@@ -3,8 +3,10 @@
 # COMMAND ----------
 
 from __future__ import annotations  # noqa: E402
+
 # Bootstrap: put the bundle's `src/` dir on sys.path so `from common...` imports resolve
 import sys  # noqa: E402
+
 try:
     _ctx = dbutils.notebook.entry_point.getDbutils().notebook().getContext()  # noqa: F821
     _nb = _ctx.notebookPath().get()
@@ -26,6 +28,7 @@ from common.auth import AuthManager
 from common.config import MigrationConfig
 from common.sql_utils import execute_and_poll, find_warehouse
 from common.tracking import TrackingManager
+from migrate.batching import build_batches
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("hive_orchestrator")
@@ -51,10 +54,10 @@ if _is_notebook():
             dbutils.jobs.taskValues.set(key=f"{_cat}_batches", value=json.dumps([]))  # type: ignore[name-defined] # noqa: F821
         dbutils.jobs.taskValues.set(key="hive_view_list", value=json.dumps([]))  # type: ignore[name-defined] # noqa: F821
         dbutils.jobs.taskValues.set(key="hive_function_list", value=json.dumps([]))  # type: ignore[name-defined] # noqa: F821
-        # Short-circuit the rest of the notebook — use sys.exit so downstream
-        # cells don't execute. Non-notebook imports fall through harmlessly
-        # because _is_notebook() returned False above.
-        sys.exit(0)
+        # Short-circuit the rest of the notebook. dbutils.notebook.exit is
+        # the correct idiom — sys.exit raises SystemExit, which Databricks
+        # Jobs marks as FAILED even with code 0.
+        dbutils.notebook.exit("skipped: include_hive=false")  # type: ignore[name-defined] # noqa: F821
 
     tracker = TrackingManager(spark, config)  # type: ignore[name-defined] # noqa: F821
 
@@ -119,18 +122,15 @@ if _is_notebook():
         by_category.setdefault(r.data_category, []).append(rec)
 
     # Build batches per category (for_each_task consumes a JSON list).
+    # Use the shared ``build_batches`` which enforces BOTH the count
+    # ceiling (``batch_size``) AND the Jobs for_each 3000-byte per-
+    # parameter size ceiling.
     batch_size = config.batch_size
-
-    def build_batches(objs: list[dict]) -> list[str]:
-        batches: list[str] = []
-        for i in range(0, len(objs), batch_size):
-            batches.append(json.dumps(objs[i : i + batch_size], default=str))
-        return batches
 
     # Publish task values.
     for cat in ("hive_external", "hive_managed_nondbfs", "hive_managed_dbfs_root"):
         key = f"{cat}_batches"
-        batches = build_batches(by_category.get(cat, []))
+        batches = build_batches(by_category.get(cat, []), batch_size)
         dbutils.jobs.taskValues.set(key=key, value=json.dumps(batches))  # type: ignore[name-defined] # noqa: F821
         logger.info("%s: %d batch(es) (%d objects)", key, len(batches), len(by_category.get(cat, [])))
 

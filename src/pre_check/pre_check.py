@@ -4,6 +4,7 @@
 
 # Bootstrap: put the bundle's `src/` dir on sys.path so `from common...` imports resolve
 import sys  # noqa: E402
+
 try:
     _ctx = dbutils.notebook.entry_point.getDbutils().notebook().getContext()  # noqa: F821
     _nb = _ctx.notebookPath().get()
@@ -42,9 +43,7 @@ def run(dbutils, spark):  # noqa: D103
     tracker = TrackingManager(spark, config)
     explorer = CatalogExplorer(spark, auth)
 
-
     tracker.init_tracking_tables()
-
 
     results: list[dict] = []
 
@@ -57,7 +56,6 @@ def run(dbutils, spark):  # noqa: D103
                 "action_required": action_required,
             }
         )
-
 
     # 1. check_source_auth
     try:
@@ -79,7 +77,6 @@ def run(dbutils, spark):  # noqa: D103
             "Verify SPN credentials and source workspace URL.",
         )
 
-
     # 2. check_target_auth
     try:
         if connectivity["target"]:
@@ -99,7 +96,6 @@ def run(dbutils, spark):  # noqa: D103
             "Verify SPN credentials and target workspace URL.",
         )
 
-
     # 3. check_source_metastore
     try:
         row = spark.sql("SELECT current_metastore() AS ms").first()
@@ -111,7 +107,6 @@ def run(dbutils, spark):  # noqa: D103
             f"Cannot query source metastore: {e}",
             "Ensure the workspace is attached to a Unity Catalog metastore.",
         )
-
 
     # 4. check_target_metastore
     try:
@@ -125,7 +120,6 @@ def run(dbutils, spark):  # noqa: D103
             "Ensure target workspace has a UC metastore assigned.",
         )
 
-
     # 5. check_source_sharing
     try:
         list(auth.source_client.shares.list())
@@ -137,7 +131,6 @@ def run(dbutils, spark):  # noqa: D103
             f"Source sharing check failed: {e}",
             "Delta Sharing may not be enabled on source workspace.",
         )
-
 
     # 6. check_target_sharing
     try:
@@ -151,7 +144,6 @@ def run(dbutils, spark):  # noqa: D103
             "Delta Sharing may not be enabled on target workspace.",
         )
 
-
     # 7. check_catalog_filter
     try:
         available = explorer.list_catalogs()
@@ -162,7 +154,8 @@ def run(dbutils, spark):  # noqa: D103
                     "check_catalog_filter",
                     "WARN",
                     f"Catalogs listed in catalog_filter not found on source: {missing}. Discovery will skip them.",
-                    "If this is unexpected, check catalog_filter for typos. Safe to ignore when running Hive-only or partial migrations.",
+                    "If this is unexpected, check catalog_filter for typos. "
+                    "Safe to ignore when running Hive-only or partial migrations.",
                 )
             else:
                 _add(
@@ -184,7 +177,6 @@ def run(dbutils, spark):  # noqa: D103
             "Ensure SPN has catalog-level permissions on source.",
         )
 
-
     # 8. check_storage_credentials
     try:
         creds = list(auth.target_client.storage_credentials.list())
@@ -200,7 +192,6 @@ def run(dbutils, spark):  # noqa: D103
             f"Cannot list storage credentials: {e}",
             "SPN may lack permission to list storage credentials on target.",
         )
-
 
     # 9. check_external_locations
     try:
@@ -218,7 +209,6 @@ def run(dbutils, spark):  # noqa: D103
             "SPN may lack permission to list external locations on target.",
         )
 
-
     # 10. check_tracking_schema
     try:
         spark.sql(f"DESCRIBE SCHEMA {config.tracking_catalog}.{config.tracking_schema}")
@@ -234,7 +224,6 @@ def run(dbutils, spark):  # noqa: D103
             f"Tracking schema not found: {e}",
             "Run init_tracking_tables or check tracking_catalog/tracking_schema params.",
         )
-
 
     # ----- Hive Metastore checks (Phase 2) -----
 
@@ -257,8 +246,7 @@ def run(dbutils, spark):  # noqa: D103
     # 12. check_hive_dbfs_root_config — surfaces DBFS-root tables and flags
     # config requirements for the Hive DBFS-root worker.
     try:
-        from common.catalog_utils import CatalogExplorer as _CE
-        hive_explorer = _CE(spark, auth)
+        hive_explorer = CatalogExplorer(spark, auth)
         dbfs_root_tables: list[str] = []
         for db in hive_explorer.list_hive_databases():
             for tbl in hive_explorer.classify_hive_tables(db):
@@ -290,23 +278,29 @@ def run(dbutils, spark):  # noqa: D103
             )
         else:
             # Probe write to the configured path
-            from datetime import datetime as _dt
-            probe_path = config.hive_dbfs_target_path.rstrip("/") + f"/.precheck_probe_{_dt.utcnow().strftime('%Y%m%d%H%M%S')}"
+            from datetime import datetime
+
+            ts = datetime.utcnow().strftime("%Y%m%d%H%M%S")
+            probe_path = config.hive_dbfs_target_path.rstrip("/") + f"/.precheck_probe_{ts}"
             try:
-                spark.createDataFrame([(1,)], "x INT").write.mode("overwrite").format("delta").save(probe_path)  # type: ignore[attr-defined]
+                spark.createDataFrame([(1,)], "x INT").write.mode("overwrite").format("delta").save(  # type: ignore[attr-defined]
+                    probe_path
+                )
                 # Clean up
                 dbutils.fs.rm(probe_path, True)  # type: ignore[attr-defined] # noqa: F821
                 _add(
                     "check_hive_dbfs_root_config",
                     "PASS",
-                    f"{len(dbfs_root_tables)} DBFS-root table(s) will migrate to {config.hive_dbfs_target_path}; write probe passed.",
+                    f"{len(dbfs_root_tables)} DBFS-root table(s) will migrate to "
+                    f"{config.hive_dbfs_target_path}; write probe passed.",
                 )
             except Exception as probe_exc:  # noqa: BLE001
                 _add(
                     "check_hive_dbfs_root_config",
                     "FAIL",
                     f"Cannot write to hive_dbfs_target_path {config.hive_dbfs_target_path}: {probe_exc}",
-                    "Verify the SPN has write access to this ADLS location, and that a storage credential + external location exists on target.",
+                    "Verify the SPN has write access to this ADLS location, and that "
+                    "a storage credential + external location exists on target.",
                 )
     except Exception as e:
         _add(
@@ -342,7 +336,8 @@ def run(dbutils, spark):  # noqa: D103
                 "WARN",
                 f"External Hive metastore referenced by {len(hits)} compute resource(s): {hits[:10]}"
                 + ("..." if len(hits) > 10 else ""),
-                "See docs/external_hive_metastore.md — customer must recreate clusters/warehouses on target with the same metastore config.",
+                "See docs/external_hive_metastore.md — customer must recreate "
+                "clusters/warehouses on target with the same metastore config.",
             )
         else:
             _add(
@@ -360,7 +355,6 @@ def run(dbutils, spark):  # noqa: D103
 
     # Persist results
     tracker.append_pre_check_results(results)
-
 
     # Print summary table
     print(f"\n{'Check':<30} {'Status':<8} {'Message'}")

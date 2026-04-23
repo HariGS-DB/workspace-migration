@@ -87,7 +87,7 @@ class TestManagedTableIdempotency:
         res = clone_table(
             {"object_name": "`c`.`s`.`t`", "format": "iceberg"}, **deps,
         )
-        assert res["status"] == "skipped"
+        assert res["status"] == "skipped_by_config"
         mock_exec.assert_not_called()
 
 
@@ -812,8 +812,10 @@ class TestSharingIdempotency:
 # | any | any           | registered_models.set_alias                      | server-side replace, idempotent |
 
 
+@patch("migrate.models_worker.run_target_file_copy", return_value={"bytes_copied": 0, "file_count": 0})
+@patch("migrate.models_worker.ensure_copy_notebook_on_target")
 class TestModelsIdempotency:
-    def test_model_already_exists_continues_to_versions(self):
+    def test_model_already_exists_continues_to_versions(self, _ensure, _copy):
         """Pin: registered_models.create 'already exists' does not fail the model."""
         from migrate.models_worker import apply_model
 
@@ -833,7 +835,7 @@ class TestModelsIdempotency:
         # Version create was still attempted.
         auth.target_client.model_versions.create.assert_called_once()
 
-    def test_version_already_exists_continues_to_aliases(self):
+    def test_version_already_exists_continues_to_aliases(self, _ensure, _copy):
         """Pin: model_versions.create 'already exists' does not fail the model."""
         from migrate.models_worker import apply_model
 
@@ -1071,7 +1073,12 @@ class TestHiveGrantsIdempotency:
 
 class TestGetPendingObjectsFilter:
     def test_filter_excludes_validated_and_skipped(self):
-        """Pin: get_pending_objects filters out only terminal statuses ('validated', 'skipped')."""
+        """Pin: get_pending_objects filters out only terminal statuses.
+
+        Per PR #26, the terminal set is the explicit IN list
+        ('validated', 'skipped_by_pipeline_migration') — not a LIKE pattern —
+        so flag-gated skips (skipped_by_config) re-pickup on re-run.
+        """
         from common.tracking import TrackingManager
 
         spark = MagicMock()
@@ -1085,7 +1092,7 @@ class TestGetPendingObjectsFilter:
         _ = tm.get_pending_objects("managed_table")
         sql = spark.sql.call_args[0][0]
         # Pin the terminal states literal — this is what X.1 must preserve/extend.
-        assert "'validated', 'skipped'" in sql
+        assert "'validated', 'skipped_by_pipeline_migration'" in sql
         # Pin the join key — status row is keyed by (object_name, object_type).
         assert "d.object_name = s.object_name" in sql
         assert "d.object_type = s.object_type" in sql

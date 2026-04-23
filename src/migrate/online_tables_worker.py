@@ -3,7 +3,9 @@
 # COMMAND ----------
 
 from __future__ import annotations  # noqa: E402
+
 import sys  # noqa: E402
+
 try:
     _ctx = dbutils.notebook.entry_point.getDbutils().notebook().getContext()  # noqa: F821
     _nb = _ctx.notebookPath().get()
@@ -56,17 +58,22 @@ def apply_online_table(ot: dict, *, auth: AuthManager, dry_run: bool) -> dict:
     if dry_run:
         logger.info("[DRY RUN] Would POST online table %s", name)
         return {
-            "object_name": obj_key, "object_type": "online_table",
-            "status": "skipped", "error_message": "dry_run",
+            "object_name": obj_key,
+            "object_type": "online_table",
+            "status": "skipped",
+            "error_message": "dry_run",
             "duration_seconds": time.time() - start,
         }
 
     try:
         auth.target_client.api_client.do(
-            "POST", "/api/2.0/online-tables", body=body,
+            "POST",
+            "/api/2.0/online-tables",
+            body=body,
         )
         return {
-            "object_name": obj_key, "object_type": "online_table",
+            "object_name": obj_key,
+            "object_type": "online_table",
             "status": "validated",
             "error_message": "Index state rebuilds on target — initial sync runs async.",
             "duration_seconds": time.time() - start,
@@ -84,8 +91,10 @@ def apply_online_table(ot: dict, *, auth: AuthManager, dry_run: bool) -> dict:
                 "duration_seconds": time.time() - start,
             }
         return {
-            "object_name": obj_key, "object_type": "online_table",
-            "status": "failed", "error_message": str(exc),
+            "object_name": obj_key,
+            "object_type": "online_table",
+            "status": "failed",
+            "error_message": str(exc),
             "duration_seconds": time.time() - start,
         }
 

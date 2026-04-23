@@ -3,8 +3,10 @@
 # COMMAND ----------
 
 from __future__ import annotations  # noqa: E402
+
 # Bootstrap: put the bundle's `src/` dir on sys.path so `from common...` imports resolve
 import sys  # noqa: E402
+
 try:
     _ctx = dbutils.notebook.entry_point.getDbutils().notebook().getContext()  # noqa: F821
     _nb = _ctx.notebookPath().get()
@@ -72,9 +74,7 @@ def _is_sql_created(auth: AuthManager, pipeline_id: str) -> tuple[bool, str]:
     try:
         pipeline = source.pipelines.get(pipeline_id)
     except Exception as exc:  # noqa: BLE001
-        logger.warning(
-            "Could not fetch pipeline %s (%s); assuming SQL-created.", pipeline_id, exc
-        )
+        logger.warning("Could not fetch pipeline %s (%s); assuming SQL-created.", pipeline_id, exc)
         return True, f"pipeline lookup failed: {exc}"
 
     spec = getattr(pipeline, "spec", None)
@@ -94,6 +94,7 @@ def _replay_mv_st_ddl(
     auth: AuthManager,
     wh_id: str,
     dry_run: bool,
+    tracker: TrackingManager,
 ) -> tuple[str, str | None]:
     """Replay the CREATE statement on target and issue an initial REFRESH.
 
@@ -102,12 +103,30 @@ def _replay_mv_st_ddl(
     """
     obj_name = obj_info["object_name"]
     obj_type = obj_info["object_type"]  # "mv" or "st"
+    # create_statement is stripped from for_each batch payloads to stay under
+    # Jobs' 3000-byte limit; re-hydrate from discovery_inventory.
     create_stmt = obj_info.get("create_statement") or ""
+    if not create_stmt:
+        full_row = tracker.get_row(obj_type, obj_name)
+        create_stmt = (full_row or {}).get("create_statement") or ""
     if not create_stmt:
         return "failed", "Missing create_statement in discovery row"
 
     refresh_keyword = "MATERIALIZED VIEW" if obj_type == "mv" else "STREAMING TABLE"
     refresh_sql = f"REFRESH {refresh_keyword} {obj_name}"
+
+    # Streaming-state warning: for STREAMING TABLE, DDL replay rebuilds the
+    # table on target, but source stream state (Kafka offsets, Auto Loader
+    # checkpoints, Delta CDF cursors) does NOT transfer. The target restarts
+    # its stream from the source's CURRENT position — any in-flight or
+    # unacknowledged records at migration time may be duplicated or missed.
+    # Surface this in error_message so operators see the caveat in
+    # migration_status without having to read worker source.
+    streaming_note = (
+        "warning: streaming source state (Kafka offsets, Auto Loader "
+        "checkpoints, Delta CDF cursors) does NOT transfer — target stream "
+        "restarts from source's current position"
+    )
 
     if dry_run:
         logger.info("[DRY RUN] Would execute: %s", create_stmt)
@@ -133,14 +152,15 @@ def _replay_mv_st_ddl(
     # errors; surface them in error_message for visibility.
     logger.info("Refreshing %s on target: %s", obj_type, obj_name)
     refresh = execute_and_poll(auth, wh_id, refresh_sql)
+    notes: list[str] = []
+    if already_existed:
+        notes.append("already existed on target")
     if refresh["state"] != "SUCCEEDED":
-        return (
-            "validated",
-            f"{'already existed on target; ' if already_existed else ''}"
-            f"{'REFRESH failed' if not already_existed else 'REFRESH failed'}: "
-            f"{refresh.get('error', refresh['state'])}",
-        )
-    return "validated", ("already existed on target" if already_existed else None)
+        verb = "REFRESH failed" if already_existed else "created but REFRESH failed"
+        notes.append(f"{verb}: {refresh.get('error', refresh['state'])}")
+    if obj_type == "st":
+        notes.append(streaming_note)
+    return "validated", ("; ".join(notes) if notes else None)
 
 
 # COMMAND ----------
@@ -160,17 +180,21 @@ def migrate_mv_st(
     obj_type = obj_info["object_type"]  # "mv" or "st"
     pipeline_id = obj_info.get("pipeline_id")
 
-    tracker.append_migration_status([{
-        "object_name": obj_name,
-        "object_type": obj_type,
-        "status": "in_progress",
-        "error_message": None,
-        "job_run_id": None,
-        "task_run_id": None,
-        "source_row_count": None,
-        "target_row_count": None,
-        "duration_seconds": None,
-    }])
+    tracker.append_migration_status(
+        [
+            {
+                "object_name": obj_name,
+                "object_type": obj_type,
+                "status": "in_progress",
+                "error_message": None,
+                "job_run_id": None,
+                "task_run_id": None,
+                "source_row_count": None,
+                "target_row_count": None,
+                "duration_seconds": None,
+            }
+        ]
+    )
 
     start = time.time()
 
@@ -187,7 +211,9 @@ def migrate_mv_st(
     if not sql_created:
         logger.info(
             "Skipping DLT-owned %s %s (%s) — handled by pipeline migration.",
-            obj_type, obj_name, diagnostic,
+            obj_type,
+            obj_name,
+            diagnostic,
         )
         return {
             "object_name": obj_name,
@@ -198,7 +224,11 @@ def migrate_mv_st(
         }
 
     status, err = _replay_mv_st_ddl(
-        obj_info, auth=auth, wh_id=wh_id, dry_run=config.dry_run,
+        obj_info,
+        auth=auth,
+        wh_id=wh_id,
+        dry_run=config.dry_run,
+        tracker=tracker,
     )
     return {
         "object_name": obj_name,
@@ -229,7 +259,11 @@ def run(dbutils, spark) -> None:
     for obj in batch:
         try:
             res = migrate_mv_st(
-                obj, config=config, auth=auth, tracker=tracker, wh_id=wh_id,
+                obj,
+                config=config,
+                auth=auth,
+                tracker=tracker,
+                wh_id=wh_id,
             )
         except Exception as exc:  # noqa: BLE001
             res = {

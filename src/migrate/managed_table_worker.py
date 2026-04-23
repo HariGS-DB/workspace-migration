@@ -3,8 +3,10 @@
 # COMMAND ----------
 
 from __future__ import annotations  # noqa: E402
+
 # Bootstrap: put the bundle's `src/` dir on sys.path so `from common...` imports resolve
 import sys  # noqa: E402
+
 try:
     _ctx = dbutils.notebook.entry_point.getDbutils().notebook().getContext()  # noqa: F821
     _nb = _ctx.notebookPath().get()
@@ -106,10 +108,14 @@ def clone_table(
                 "Skipping Iceberg table %s — set config.iceberg_strategy='ddl_replay' to opt in.",
                 obj_name,
             )
+            # Use ``skipped_by_config`` rather than plain ``skipped`` so that a
+            # subsequent run with iceberg_strategy='ddl_replay' picks these
+            # tables back up — ``get_pending_objects`` excludes 'validated'
+            # and 'skipped' but not status suffixes.
             return {
                 "object_name": obj_name,
                 "object_type": "managed_table",
-                "status": "skipped",
+                "status": "skipped_by_config",
                 "error_message": (
                     "Iceberg migration not enabled. Set iceberg_strategy='ddl_replay' "
                     "in config to opt into Option A (loses snapshot history, time travel, "
@@ -118,7 +124,12 @@ def clone_table(
                 "duration_seconds": duration,
             }
 
+        # create_statement is stripped from for_each batch payloads to stay
+        # under Jobs' 3000-byte limit; re-hydrate from discovery_inventory.
         create_stmt = table_info.get("create_statement") or ""
+        if not create_stmt:
+            full_row = tracker.get_row("managed_table", obj_name)
+            create_stmt = (full_row or {}).get("create_statement") or ""
         if not create_stmt:
             return {
                 "object_name": obj_name,
@@ -128,10 +139,7 @@ def clone_table(
                 "duration_seconds": time.time() - start,
             }
 
-        insert_sql = (
-            f"INSERT INTO {target_fqn} "
-            f"SELECT * FROM `{consumer_catalog}`.`{schema}`.`{table}`"
-        )
+        insert_sql = f"INSERT INTO {target_fqn} SELECT * FROM `{consumer_catalog}`.`{schema}`.`{table}`"
 
         if config.dry_run:
             duration = time.time() - start
@@ -172,9 +180,10 @@ def clone_table(
         try:
             validation = validator.validate_row_count(obj_name, target_fqn)
             status = "validated" if validation["match"] else "validation_failed"
-            err = None if validation["match"] else (
-                f"Row count mismatch: source={validation['source_count']}, "
-                f"target={validation['target_count']}"
+            err = (
+                None
+                if validation["match"]
+                else (f"Row count mismatch: source={validation['source_count']}, target={validation['target_count']}")
             )
             return {
                 "object_name": obj_name,

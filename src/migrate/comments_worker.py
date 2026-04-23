@@ -3,7 +3,9 @@
 # COMMAND ----------
 
 from __future__ import annotations  # noqa: E402
+
 import sys  # noqa: E402
+
 try:
     _ctx = dbutils.notebook.entry_point.getDbutils().notebook().getContext()  # noqa: F821
     _nb = _ctx.notebookPath().get()
@@ -25,7 +27,6 @@ except NameError:
 # comments themselves — we re-read from source's information_schema at
 # migrate time to pick up any updates between discovery and migrate).
 
-import json
 import logging
 import time
 
@@ -51,31 +52,51 @@ def _escape(value: str) -> str:
 
 
 def _emit_comment(
-    securable_type: str, fqn: str, comment: str, *,
-    auth: AuthManager, wh_id: str, dry_run: bool,
+    securable_type: str,
+    fqn: str,
+    comment: str,
+    *,
+    auth: AuthManager,
+    wh_id: str,
+    dry_run: bool,
+    column_name: str | None = None,
 ) -> dict:
-    sql = f"COMMENT ON {securable_type} {fqn} IS '{_escape(comment)}'"
-    obj_key = f"COMMENT_{securable_type}_{fqn}"
+    # Column comments need ALTER TABLE ... ALTER COLUMN ... COMMENT '...';
+    # COMMENT ON COLUMN is not supported by Databricks SQL. Table/Schema/
+    # Catalog/Volume all take the generic COMMENT ON <type> fqn IS '...' form.
+    if securable_type == "COLUMN":
+        if not column_name:
+            raise ValueError("column_name is required for COLUMN comments")
+        sql = f"ALTER TABLE {fqn} ALTER COLUMN `{column_name}` COMMENT '{_escape(comment)}'"
+        obj_key = f"COMMENT_COLUMN_{fqn}.{column_name}"
+    else:
+        sql = f"COMMENT ON {securable_type} {fqn} IS '{_escape(comment)}'"
+        obj_key = f"COMMENT_{securable_type}_{fqn}"
     start = time.time()
     if dry_run:
         logger.info("[DRY RUN] %s", sql)
         return {
-            "object_name": obj_key, "object_type": "comment",
-            "status": "skipped", "error_message": "dry_run",
+            "object_name": obj_key,
+            "object_type": "comment",
+            "status": "skipped",
+            "error_message": "dry_run",
             "duration_seconds": time.time() - start,
         }
     result = execute_and_poll(auth, wh_id, sql)
     duration = time.time() - start
     if result["state"] != "SUCCEEDED":
         return {
-            "object_name": obj_key, "object_type": "comment",
+            "object_name": obj_key,
+            "object_type": "comment",
             "status": "failed",
             "error_message": result.get("error", result["state"]),
             "duration_seconds": duration,
         }
     return {
-        "object_name": obj_key, "object_type": "comment",
-        "status": "validated", "error_message": None,
+        "object_name": obj_key,
+        "object_type": "comment",
+        "status": "validated",
+        "error_message": None,
         "duration_seconds": duration,
     }
 
@@ -101,16 +122,21 @@ def run(dbutils, spark) -> None:
     ).collect()
 
     for row in cat_rows:
-        with _suppress_log(results, row.catalog_name, "CATALOG"):
+        with _SuppressLog(results, row.catalog_name, "CATALOG"):
             comment_rows = spark.sql(
-                f"SELECT comment FROM system.information_schema.catalogs "
-                f"WHERE catalog_name = '{row.catalog_name}'"
+                f"SELECT comment FROM system.information_schema.catalogs WHERE catalog_name = '{row.catalog_name}'"
             ).collect()
             if comment_rows and comment_rows[0].comment:
-                results.append(_emit_comment(
-                    "CATALOG", f"`{row.catalog_name}`", comment_rows[0].comment,
-                    auth=auth, wh_id=wh_id, dry_run=config.dry_run,
-                ))
+                results.append(
+                    _emit_comment(
+                        "CATALOG",
+                        f"`{row.catalog_name}`",
+                        comment_rows[0].comment,
+                        auth=auth,
+                        wh_id=wh_id,
+                        dry_run=config.dry_run,
+                    )
+                )
 
     sch_rows = spark.sql(
         f"SELECT DISTINCT catalog_name, schema_name "
@@ -119,18 +145,22 @@ def run(dbutils, spark) -> None:
     ).collect()
 
     for row in sch_rows:
-        with _suppress_log(results, f"{row.catalog_name}.{row.schema_name}", "SCHEMA"):
+        with _SuppressLog(results, f"{row.catalog_name}.{row.schema_name}", "SCHEMA"):
             comment_rows = spark.sql(
                 f"SELECT comment FROM `{row.catalog_name}`.information_schema.schemata "
                 f"WHERE schema_name = '{row.schema_name}'"
             ).collect()
             if comment_rows and comment_rows[0].comment:
-                results.append(_emit_comment(
-                    "SCHEMA",
-                    f"`{row.catalog_name}`.`{row.schema_name}`",
-                    comment_rows[0].comment,
-                    auth=auth, wh_id=wh_id, dry_run=config.dry_run,
-                ))
+                results.append(
+                    _emit_comment(
+                        "SCHEMA",
+                        f"`{row.catalog_name}`.`{row.schema_name}`",
+                        comment_rows[0].comment,
+                        auth=auth,
+                        wh_id=wh_id,
+                        dry_run=config.dry_run,
+                    )
+                )
 
     # Non-Delta tables — TBLPROPERTIES + COMMENT ON TABLE
     non_delta = spark.sql(
@@ -140,7 +170,7 @@ def run(dbutils, spark) -> None:
         f"AND (format IS NULL OR lower(format) <> 'delta')"
     ).collect()
     for row in non_delta:
-        with _suppress_log(results, row.object_name, "TABLE"):
+        with _SuppressLog(results, row.object_name, "TABLE"):
             # COMMENT ON TABLE is replayed from DESCRIBE TABLE EXTENDED;
             # information_schema.tables.comment covers this too.
             parts = row.object_name.strip("`").split("`.`")
@@ -151,10 +181,81 @@ def run(dbutils, spark) -> None:
                     f"WHERE table_schema='{schema}' AND table_name='{name}'"
                 ).collect()
                 if tbl_meta and tbl_meta[0].comment:
-                    results.append(_emit_comment(
-                        "TABLE", row.object_name, tbl_meta[0].comment,
-                        auth=auth, wh_id=wh_id, dry_run=config.dry_run,
-                    ))
+                    results.append(
+                        _emit_comment(
+                            "TABLE",
+                            row.object_name,
+                            tbl_meta[0].comment,
+                            auth=auth,
+                            wh_id=wh_id,
+                            dry_run=config.dry_run,
+                        )
+                    )
+
+    # Column comments — Delta DEEP CLONE preserves column metadata for
+    # managed Delta tables, but external tables and non-Delta tables need
+    # explicit replay. We iterate every UC table we discovered and replay
+    # any column with a non-null comment. Delta managed-table columns will
+    # usually already carry the comment on target; re-issuing the ALTER
+    # TABLE is idempotent.
+    all_tables = spark.sql(
+        f"SELECT object_name FROM "
+        f"{config.tracking_catalog}.{config.tracking_schema}.discovery_inventory "
+        f"WHERE source_type = 'uc' AND object_type IN ('external_table','managed_table')"
+    ).collect()
+    for row in all_tables:
+        parts = row.object_name.strip("`").split("`.`")
+        if len(parts) != 3:
+            continue
+        catalog, schema, name = parts
+        with _SuppressLog(results, row.object_name, "COLUMN"):
+            col_meta = spark.sql(
+                f"SELECT column_name, comment FROM `{catalog}`.information_schema.columns "
+                f"WHERE table_schema='{schema}' AND table_name='{name}' AND comment IS NOT NULL"
+            ).collect()
+            for c in col_meta:
+                if c.comment:
+                    results.append(
+                        _emit_comment(
+                            "COLUMN",
+                            row.object_name,
+                            c.comment,
+                            auth=auth,
+                            wh_id=wh_id,
+                            dry_run=config.dry_run,
+                            column_name=c.column_name,
+                        )
+                    )
+
+    # Volume comments — the volume_worker creates the target volume shell
+    # but does not copy the ``COMMENT`` clause, so replay here via
+    # information_schema.volumes.
+    vol_rows = spark.sql(
+        f"SELECT object_name FROM "
+        f"{config.tracking_catalog}.{config.tracking_schema}.discovery_inventory "
+        f"WHERE source_type = 'uc' AND object_type = 'volume'"
+    ).collect()
+    for row in vol_rows:
+        parts = row.object_name.strip("`").split("`.`")
+        if len(parts) != 3:
+            continue
+        catalog, schema, name = parts
+        with _SuppressLog(results, row.object_name, "VOLUME"):
+            vol_meta = spark.sql(
+                f"SELECT comment FROM `{catalog}`.information_schema.volumes "
+                f"WHERE volume_schema='{schema}' AND volume_name='{name}'"
+            ).collect()
+            if vol_meta and vol_meta[0].comment:
+                results.append(
+                    _emit_comment(
+                        "VOLUME",
+                        row.object_name,
+                        vol_meta[0].comment,
+                        auth=auth,
+                        wh_id=wh_id,
+                        dry_run=config.dry_run,
+                    )
+                )
 
     if results:
         tracker.append_migration_status(results)
@@ -165,8 +266,9 @@ def run(dbutils, spark) -> None:
     )
 
 
-class _suppress_log:
+class _SuppressLog:
     """Record a failed comment replay as a tracking row instead of raising."""
+
     def __init__(self, results, obj_name, securable_type):
         self.results = results
         self.obj_name = obj_name
@@ -178,13 +280,15 @@ class _suppress_log:
     def __exit__(self, exc_type, exc, tb):
         if exc is None:
             return False
-        self.results.append({
-            "object_name": f"COMMENT_{self.securable_type}_{self.obj_name}",
-            "object_type": "comment",
-            "status": "failed",
-            "error_message": str(exc),
-            "duration_seconds": 0.0,
-        })
+        self.results.append(
+            {
+                "object_name": f"COMMENT_{self.securable_type}_{self.obj_name}",
+                "object_type": "comment",
+                "status": "failed",
+                "error_message": str(exc),
+                "duration_seconds": 0.0,
+            }
+        )
         return True  # swallow
 
 

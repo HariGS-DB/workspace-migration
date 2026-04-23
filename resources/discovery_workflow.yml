@@ -2,6 +2,8 @@ resources:
   jobs:
     discovery:
       name: "${var.job_prefix}-discovery"
+      run_as:
+        service_principal_name: ${var.migration_spn_id}
       tasks:
         - task_key: discovery
           notebook_task:

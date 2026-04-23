@@ -3,8 +3,10 @@
 # COMMAND ----------
 
 from __future__ import annotations  # noqa: E402
+
 # Bootstrap: put the bundle's `src/` dir on sys.path so `from common...` imports resolve
 import sys  # noqa: E402
+
 try:
     _ctx = dbutils.notebook.entry_point.getDbutils().notebook().getContext()  # noqa: F821
     _nb = _ctx.notebookPath().get()
@@ -30,20 +32,16 @@ logger = logging.getLogger("orchestrator")
 
 
 # COMMAND ----------
-# Batching helper — importable for unit tests
+# Batching helpers live in ``migrate.batching`` (plain module — notebooks
+# can't import other notebooks). Re-exported here for back-compat so
+# existing ``from migrate.orchestrator import build_batches`` callers
+# (unit tests, downstream code) keep working.
 
-
-def build_batches(objects: list[dict], batch_size: int) -> list[str]:
-    """Split a list of object dicts into JSON-encoded batch strings.
-
-    Each returned string is a JSON array of dicts, with at most *batch_size*
-    elements.
-    """
-    batches: list[str] = []
-    for i in range(0, len(objects), batch_size):
-        chunk = objects[i : i + batch_size]
-        batches.append(json.dumps(chunk, default=str))
-    return batches
+from migrate.batching import (  # noqa: E402, F401
+    MAX_BATCH_BYTES,
+    _strip_heavy_fields,
+    build_batches,
+)
 
 
 # COMMAND ----------
@@ -113,14 +111,24 @@ if _is_notebook():
         # Read discovery inventory and collect pending objects per type
         BATCHED_TYPES = ("managed_table", "external_table", "volume", "mv", "st")
         LIST_TYPES = (
-            "function", "view",
+            "function",
+            "view",
             # Phase 3 governance object types — published even when counts
             # are zero so downstream worker tasks always have a valid JSON
             # payload to consume.
-            "tag", "row_filter", "column_mask", "policy",
+            "tag",
+            "row_filter",
+            "column_mask",
+            "policy",
             "comment",
-            "monitor", "registered_model", "connection", "foreign_catalog",
-            "share", "recipient", "provider", "online_table",
+            "monitor",
+            "registered_model",
+            "connection",
+            "foreign_catalog",
+            "share",
+            "recipient",
+            "provider",
+            "online_table",
         )
 
         batch_output: dict[str, list[str]] = {}
@@ -135,7 +143,9 @@ if _is_notebook():
         for obj_type in LIST_TYPES:
             pending = tracker.get_pending_objects(obj_type)
             logger.info("Pending %s: %d objects", obj_type, len(pending))
-            list_output[f"{obj_type}_list"] = json.dumps(pending, default=str)
+            # Strip heavy fields for the same reason as batched types — the
+            # aggregated list is also subject to the 3000-byte task-value limit.
+            list_output[f"{obj_type}_list"] = json.dumps(_strip_heavy_fields(pending), default=str)
 
         # Publish task values for downstream workers
         for key, batches in batch_output.items():

@@ -16,7 +16,7 @@ def discovery_row(
     object_name: str,
     catalog_name: str | None,
     schema_name: str | None,
-    discovered_at,
+    discovered_at: object,
     row_count: int = 0,
     size_bytes: int = 0,
     is_dlt_managed: bool | None = None,
@@ -56,27 +56,35 @@ def discovery_row(
 def discovery_schema() -> StructType:
     """StructType used when writing to discovery_inventory."""
     from pyspark.sql.types import (
-        BooleanType, LongType, StringType, StructField, StructType, TimestampType,
+        BooleanType,
+        LongType,
+        StringType,
+        StructField,
+        StructType,
+        TimestampType,
     )
-    return StructType([
-        StructField("object_name", StringType(), True),
-        StructField("object_type", StringType(), True),
-        StructField("source_type", StringType(), True),
-        StructField("catalog_name", StringType(), True),
-        StructField("schema_name", StringType(), True),
-        StructField("row_count", LongType(), True),
-        StructField("size_bytes", LongType(), True),
-        StructField("is_dlt_managed", BooleanType(), True),
-        StructField("pipeline_id", StringType(), True),
-        StructField("create_statement", StringType(), True),
-        StructField("data_category", StringType(), True),
-        StructField("table_type", StringType(), True),
-        StructField("provider", StringType(), True),
-        StructField("storage_location", StringType(), True),
-        StructField("format", StringType(), True),
-        StructField("metadata_json", StringType(), True),
-        StructField("discovered_at", TimestampType(), True),
-    ])
+
+    return StructType(
+        [
+            StructField("object_name", StringType(), True),
+            StructField("object_type", StringType(), True),
+            StructField("source_type", StringType(), True),
+            StructField("catalog_name", StringType(), True),
+            StructField("schema_name", StringType(), True),
+            StructField("row_count", LongType(), True),
+            StructField("size_bytes", LongType(), True),
+            StructField("is_dlt_managed", BooleanType(), True),
+            StructField("pipeline_id", StringType(), True),
+            StructField("create_statement", StringType(), True),
+            StructField("data_category", StringType(), True),
+            StructField("table_type", StringType(), True),
+            StructField("provider", StringType(), True),
+            StructField("storage_location", StringType(), True),
+            StructField("format", StringType(), True),
+            StructField("metadata_json", StringType(), True),
+            StructField("discovered_at", TimestampType(), True),
+        ]
+    )
 
 
 class TrackingManager:
@@ -144,28 +152,99 @@ class TrackingManager:
             ) USING DELTA
         """)
 
+        # RLS/CM manifest — records the source-side row filter / column
+        # mask definition for each table that was stripped as part of a
+        # ``drop_and_restore`` migration. ``restored_at`` is NULL until
+        # the post-migrate restore task re-applies the policy. Crash
+        # recovery scans this table at the start of setup_sharing so a
+        # previous-run crash can auto-heal before new strips begin.
+        self.spark.sql(f"""
+            CREATE TABLE IF NOT EXISTS {self._fqn}.rls_cm_manifest (
+                table_fqn STRING NOT NULL,
+                filter_fn_fqn STRING,
+                filter_columns STRING,
+                masks_json STRING,
+                stripped_at TIMESTAMP,
+                restored_at TIMESTAMP,
+                restore_failed_at TIMESTAMP,
+                restore_error STRING,
+                run_id STRING
+            ) USING DELTA
+        """)
+
     def write_discovery_inventory(self, df: DataFrame) -> None:
-        """Overwrite the discovery inventory table with the given DataFrame."""
-        df.write.mode("overwrite").option("mergeSchema", "true").saveAsTable(
-            f"{self._fqn}.discovery_inventory"
+        """Upsert the discovery inventory with this run's DataFrame.
+
+        Uses Delta MERGE INTO keyed on (object_name, object_type,
+        source_type). Two concurrent migrations against the same
+        tracking catalog no longer collide — each one upserts its
+        own keys, and overlapping keys (e.g. same source workspace)
+        end up with whichever run's scan landed last, not a failed
+        DELTA_CONCURRENT_APPEND.
+
+        Prior behaviour was ``mode("overwrite").saveAsTable(...)``
+        which replaced the whole table per run. Side-effect: objects
+        present in a previous scan but not this one were dropped.
+        MERGE preserves them. Operators who want the old "fresh-scan-
+        only" behaviour can truncate ``discovery_inventory`` before
+        discovery runs.
+        """
+        # Stage new rows under a session-local temp view so we can
+        # write the MERGE as pure SQL (Delta's Python merge API works
+        # but leaves less tidy lineage).
+        staging_view = "_staging_discovery_inventory"
+        df.createOrReplaceTempView(staging_view)
+        merge_cols = (
+            "object_name",
+            "object_type",
+            "source_type",
+            "catalog_name",
+            "schema_name",
+            "row_count",
+            "size_bytes",
+            "is_dlt_managed",
+            "pipeline_id",
+            "create_statement",
+            "data_category",
+            "table_type",
+            "provider",
+            "storage_location",
+            "format",
+            "metadata_json",
+            "discovered_at",
         )
+        key_cols = ("object_name", "object_type", "source_type")
+        update_set = ", ".join(f"t.{c} = s.{c}" for c in merge_cols if c not in key_cols)
+        insert_cols = ", ".join(merge_cols)
+        insert_vals = ", ".join(f"s.{c}" for c in merge_cols)
+        self.spark.sql(f"""
+            MERGE INTO {self._fqn}.discovery_inventory t
+            USING {staging_view} s
+            ON  t.object_name  = s.object_name
+            AND t.object_type  = s.object_type
+            AND t.source_type  = s.source_type
+            WHEN MATCHED THEN UPDATE SET {update_set}
+            WHEN NOT MATCHED THEN INSERT ({insert_cols}) VALUES ({insert_vals})
+        """)
 
     def append_migration_status(self, records: list[dict]) -> None:
         """Append migration status records with a current timestamp."""
         from pyspark.sql.functions import current_timestamp
         from pyspark.sql.types import DoubleType, LongType, StringType, StructField, StructType
 
-        schema = StructType([
-            StructField("object_name", StringType(), True),
-            StructField("object_type", StringType(), True),
-            StructField("status", StringType(), True),
-            StructField("error_message", StringType(), True),
-            StructField("job_run_id", StringType(), True),
-            StructField("task_run_id", StringType(), True),
-            StructField("source_row_count", LongType(), True),
-            StructField("target_row_count", LongType(), True),
-            StructField("duration_seconds", DoubleType(), True),
-        ])
+        schema = StructType(
+            [
+                StructField("object_name", StringType(), True),
+                StructField("object_type", StringType(), True),
+                StructField("status", StringType(), True),
+                StructField("error_message", StringType(), True),
+                StructField("job_run_id", StringType(), True),
+                StructField("task_run_id", StringType(), True),
+                StructField("source_row_count", LongType(), True),
+                StructField("target_row_count", LongType(), True),
+                StructField("duration_seconds", DoubleType(), True),
+            ]
+        )
         # Only keep known fields; coerce missing to None
         field_names = [f.name for f in schema.fields]
         normalized = [{k: r.get(k) for k in field_names} for r in records]
@@ -197,7 +276,27 @@ class TrackingManager:
         """)
 
     def get_pending_objects(self, object_type: str) -> list[dict]:
-        """Return discovery inventory objects that have not been validated or skipped."""
+        """Return discovery inventory objects that haven't reached a terminal status.
+
+        Terminal statuses (object won't be reprocessed on re-run):
+        - ``validated``: migrated successfully.
+        - ``skipped_by_pipeline_migration``: DLT-owned; the pipeline is
+          migrated by the pipelines workflow, never by managed_table_worker.
+
+        All other ``skipped_*`` statuses are **non-terminal by design** —
+        they're flag-gated skips that an operator flips via config to
+        re-enable:
+
+        - ``skipped_by_config``: ``iceberg_strategy=""``. Flip to
+          ``"ddl_replay"`` + re-run → table re-enters pending pool.
+        - ``skipped_by_rls_cm_policy``: ``rls_cm_strategy=""``. Flip to
+          ``"drop_and_restore"`` + consent flag + re-run → same.
+        - Plain ``skipped`` (dry_run output): real run must re-evaluate.
+
+        Previously the filter was ``NOT LIKE 'skipped%'`` which treated
+        every skip variant as terminal. That broke the Iceberg re-run
+        scenario that ``skipped_by_config`` was introduced for.
+        """
         rows = self.spark.sql(f"""
             WITH latest_status AS (
                 SELECT *
@@ -216,6 +315,159 @@ class TrackingManager:
             LEFT JOIN latest_status s
                 ON d.object_name = s.object_name AND d.object_type = s.object_type
             WHERE d.object_type = '{object_type}'
-              AND (s.status IS NULL OR s.status NOT IN ('validated', 'skipped'))
+              AND (s.status IS NULL
+                   OR s.status NOT IN ('validated', 'skipped_by_pipeline_migration'))
         """).collect()
         return [row.asDict() for row in rows]
+
+    def get_row(self, object_type: str, object_name: str) -> dict | None:
+        """Return a single discovery_inventory row by (object_type, object_name).
+
+        Used by workers that receive lightweight identifier-only batches from
+        the orchestrator and need to re-hydrate the full row (e.g. the
+        ``create_statement`` field, which the orchestrator strips to keep
+        for_each task-value payloads under Jobs' 3000-byte limit).
+        """
+        rows = self.spark.sql(f"""
+            SELECT *
+            FROM {self._fqn}.discovery_inventory
+            WHERE object_type = '{object_type}'
+              AND object_name = '{object_name}'
+            LIMIT 1
+        """).collect()
+        return rows[0].asDict() if rows else None
+
+    # ---------------------------------------------------------------- RLS/CM manifest
+
+    def record_rls_cm_strip(
+        self,
+        *,
+        table_fqn: str,
+        filter_fn_fqn: str | None,
+        filter_columns: list[str],
+        masks: list[dict],
+        run_id: str,
+    ) -> None:
+        """Insert a pre-strip manifest row. Call BEFORE executing the
+        ``ALTER TABLE ... DROP`` statements — otherwise a crash between
+        the strip and the manifest write leaves the source table
+        unprotected with no record of what to restore.
+        """
+        import json as _json
+
+        self.spark.sql(
+            f"""
+            INSERT INTO {self._fqn}.rls_cm_manifest
+            SELECT
+                '{table_fqn}',
+                {('NULL' if not filter_fn_fqn else "'" + filter_fn_fqn.replace("'", "''") + "'")},
+                '{_json.dumps(filter_columns).replace("'", "''")}',
+                '{_json.dumps(masks).replace("'", "''")}',
+                current_timestamp(),
+                CAST(NULL AS TIMESTAMP),
+                CAST(NULL AS TIMESTAMP),
+                CAST(NULL AS STRING),
+                '{run_id.replace("'", "''")}'
+            """
+        )
+
+    def mark_rls_cm_restored(self, table_fqn: str) -> None:
+        """Mark the manifest row as restored. Clears any prior
+        ``restore_failed_at`` / ``restore_error`` from a previous attempt."""
+        self.spark.sql(
+            f"""
+            UPDATE {self._fqn}.rls_cm_manifest
+            SET restored_at = current_timestamp(),
+                restore_failed_at = NULL,
+                restore_error = NULL
+            WHERE table_fqn = '{table_fqn.replace("'", "''")}'
+              AND restored_at IS NULL
+            """
+        )
+
+    def mark_rls_cm_restore_failed(self, table_fqn: str, error_message: str) -> None:
+        """Mark the manifest row as failed-to-restore but leave
+        ``restored_at`` NULL so a future run still re-attempts."""
+        safe = error_message.replace("'", "''")[:4000]
+        self.spark.sql(
+            f"""
+            UPDATE {self._fqn}.rls_cm_manifest
+            SET restore_failed_at = current_timestamp(),
+                restore_error = '{safe}'
+            WHERE table_fqn = '{table_fqn.replace("'", "''")}'
+              AND restored_at IS NULL
+            """
+        )
+
+    def get_unrestored_rls_cm_manifest(self) -> list[dict]:
+        """Return every manifest row still awaiting restore, most-recent
+        strip first. Used by setup_sharing's crash-recovery scan AND by
+        the post-migrate restore task."""
+        import json as _json
+
+        rows = self.spark.sql(
+            f"""
+            SELECT table_fqn, filter_fn_fqn, filter_columns, masks_json,
+                   stripped_at, restore_failed_at, restore_error, run_id
+            FROM {self._fqn}.rls_cm_manifest
+            WHERE restored_at IS NULL
+            ORDER BY stripped_at DESC
+            """
+        ).collect()
+        result: list[dict] = []
+        for r in rows:
+            try:
+                filter_columns = _json.loads(r.filter_columns or "[]")
+            except json.JSONDecodeError:
+                filter_columns = []
+            try:
+                masks = _json.loads(r.masks_json or "[]")
+            except json.JSONDecodeError:
+                masks = []
+            result.append(
+                {
+                    "table_fqn": r.table_fqn,
+                    "filter_fn_fqn": r.filter_fn_fqn,
+                    "filter_columns": filter_columns,
+                    "masks": masks,
+                    "stripped_at": r.stripped_at,
+                    "restore_failed_at": r.restore_failed_at,
+                    "restore_error": r.restore_error,
+                    "run_id": r.run_id,
+                }
+            )
+        return result
+
+    def get_tables_with_rls_cm(self) -> set[str]:
+        """Return the set of table FQNs that have row filters or column masks
+        recorded in discovery_inventory.
+
+        Delta Sharing refuses to share tables with legacy RLS/CM, so
+        ``setup_sharing`` uses this to filter the share payload when
+        ``config.rls_cm_strategy`` is empty. ``row_filter`` rows have
+        ``object_name`` set to the table FQN; ``column_mask`` rows have
+        ``object_name`` set to ``<table_fqn>.<col>`` with the clean
+        ``table_fqn`` stored in ``metadata_json``.
+        """
+        import json
+
+        result: set[str] = set()
+        rf_rows = self.spark.sql(f"""
+            SELECT object_name FROM {self._fqn}.discovery_inventory
+            WHERE object_type = 'row_filter'
+        """).collect()
+        result.update(r.object_name for r in rf_rows if r.object_name)
+        cm_rows = self.spark.sql(f"""
+            SELECT metadata_json FROM {self._fqn}.discovery_inventory
+            WHERE object_type = 'column_mask'
+        """).collect()
+        for r in cm_rows:
+            if r.metadata_json:
+                try:
+                    meta = json.loads(r.metadata_json)
+                except json.JSONDecodeError:
+                    continue
+                tbl = meta.get("table_fqn")
+                if tbl:
+                    result.add(tbl)
+        return result
