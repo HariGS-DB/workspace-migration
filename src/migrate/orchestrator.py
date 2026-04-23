@@ -42,6 +42,10 @@ from migrate.batching import (  # noqa: E402, F401
     _strip_heavy_fields,
     build_batches,
 )
+from migrate.reconciliation import (  # noqa: E402
+    reconcile_stale_runs,
+    resolve_current_job_run_id,
+)
 
 
 def check_collision_gate(spark, config) -> None:
@@ -156,6 +160,39 @@ if _is_notebook():
     # migrations still get the gate (Hive-target collisions are covered by
     # detect_collisions too).
     check_collision_gate(spark, config)  # type: ignore[name-defined] # noqa: F821
+
+    # X.1: reconcile orphaned in_progress rows from a prior crashed run
+    # before dispatching workers. Runs ONCE here; workers themselves do
+    # not re-run reconciliation. Called after the collision gate so
+    # target-pre-existing-state failures fail-fast without triggering
+    # cleanup hooks. Ignored when include_uc=false because reconciliation
+    # operates on UC + governance workers; the Hive chain has its own
+    # idempotency guarantees (audit: TestHive*Idempotency).
+    from common.auth import AuthManager  # noqa: E402 local import for notebook speed
+
+    _job_run_id = resolve_current_job_run_id(dbutils)  # type: ignore[name-defined] # noqa: F821
+    _auth = AuthManager(config, dbutils)  # type: ignore[name-defined] # noqa: F821
+    _tracker = TrackingManager(spark, config)  # type: ignore[name-defined] # noqa: F821
+    try:
+        _recon = reconcile_stale_runs(
+            spark=spark,  # type: ignore[name-defined] # noqa: F821
+            config=config,
+            tracker=_tracker,
+            auth=_auth,
+            current_job_run_id=_job_run_id,
+        )
+        logger.info(
+            "Reconciliation complete: reset=%d validation_failed=%d cleanup_hooks=%d",
+            _recon["reset_count"],
+            _recon["validation_failed_count"],
+            _recon["cleanup_count"],
+        )
+    except Exception as exc:  # noqa: BLE001
+        # Reconciliation failure must not block a migrate: the worst case is
+        # that workers re-pickup orphaned rows and their X.2 idempotency
+        # tolerates "already exists" on retry. Surface loudly and continue.
+        logger.warning("Reconciliation pass raised, continuing with migrate: %s", exc)
+
     if not config.include_uc:
         logger.info("Skipping UC orchestrator: scope.include_uc=false.")
         _publish_empty_task_values(dbutils)  # type: ignore[name-defined] # noqa: F821
