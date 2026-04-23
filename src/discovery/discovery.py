@@ -151,7 +151,7 @@ def _discover_uc(config, explorer, now) -> tuple[list[dict], int]:
                 # table/view as a TABLE-type securable (UC uses TABLE for
                 # both in the policies API).
                 if obj_type in ("managed_table", "external_table", "view", "mv", "st"):
-                    all_securables.append(("TABLE", fqn.replace("`", "")))
+                    all_securables.append(("TABLE", fqn.strip("`").replace("`.`", ".")))
 
             # --- Functions ---
             for func_fqn in explorer.list_functions(catalog, schema):

@@ -65,7 +65,10 @@ def apply_monitor(mon: dict, *, auth: AuthManager, dry_run: bool) -> dict:
         )
     }
 
-    clean = table_fqn.replace("`", "")
+    # Strip outer backticks + collapse the `.` separators to dots; preserves
+    # any literal backtick inside a name (``fqn.replace("`", "")`` would
+    # silently collapse ``cat.sch.foo`bar`` -> ``cat.sch.foobar``).
+    clean = table_fqn.strip("`").replace("`.`", ".")
     start = time.time()
     if dry_run:
         logger.info("[DRY RUN] Would POST monitor for %s", table_fqn)
