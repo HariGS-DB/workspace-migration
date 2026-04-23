@@ -94,15 +94,28 @@ config_path = _resolve_bundle_config_path()
 backup_path = config_path + ".pre-integration-test.bak"
 
 # Back up the current config exactly once. If the backup already exists
-# (e.g. a previous run crashed before teardown), keep the older backup
-# — it represents the pre-test "real" config.
+# (e.g. a previous run crashed before teardown, or an earlier task in
+# the same negative-paths chain already took the backup), RESTORE
+# from it to start this invocation from the pristine pre-test
+# baseline — see the else branch below. Authoritative-not-additive
+# semantics (S.14): each invocation's overrides apply on top of the
+# real config, NEVER on top of a previous invocation's result.
 import os  # noqa: E402
 
 if not os.path.exists(backup_path):
     shutil.copy2(config_path, backup_path)
     print(f"Backed up {config_path} -> {backup_path}")
 else:
-    print(f"Backup already exists at {backup_path}; reusing.")
+    # Backup exists → restore config.yaml from it BEFORE applying this
+    # invocation's overrides. Without this, successive runs (UC → Hive,
+    # or chained negative-paths scenarios within a single workflow)
+    # would start from the previous invocation's post-override config
+    # and silently inherit UC-only keys (e.g. ``catalog_filter``,
+    # ``batch_size``) that the current workflow never opts into.
+    # Authoritative-not-additive: each invocation writes config.yaml
+    # from the pristine baseline + its own overrides.
+    shutil.copy2(backup_path, config_path)
+    print(f"Backup already exists at {backup_path}; restored {config_path} from it to start clean.")
 
 # COMMAND ----------
 
@@ -147,73 +160,44 @@ inject_bad_spn_id = _get_bool("inject_bad_spn_id", "false")
 inject_unreachable_target = _get_bool("inject_unreachable_target", "false")
 inject_bad_rls_cm = _get_bool("inject_bad_rls_cm", "false")
 
-# The ``inject_bad_rls_cm`` scenario (X.3.4) deliberately forces
-# rls_cm_strategy=drop_and_restore WITHOUT the maintenance-window
-# confirmation so the failure lands in
-# ``setup_sharing._validate_rls_cm_strategy``.
-if inject_bad_rls_cm:
-    rls_cm_strategy = "drop_and_restore"
-    rls_cm_maintenance_window_confirmed = False
-elif (
-    rls_cm_strategy.lower() == "drop_and_restore"
-    and not rls_cm_maintenance_window_confirmed
-):
-    # Belt-and-braces: setup_sharing ALREADY gates drop_and_restore on
-    # the confirmation flag — matching the gate here fails misconfig
-    # fast, before any side effects.
-    raise ValueError(
-        "rls_cm_strategy='drop_and_restore' requires "
-        "rls_cm_maintenance_window_confirmed=true. That path briefly strips "
-        "RLS/CM on the source table during each DEEP CLONE, so it's gated "
-        "behind an explicit operator confirmation."
-    )
+# Delegate the gate + override transformation to a pure helper so the
+# logic is unit-testable without dbutils / yaml I/O (S.14). The helper
+# raises ValueError for drop_and_restore without consent (matching
+# setup_sharing's gate) EXCEPT when inject_bad_rls_cm is true, where
+# the failure must land in setup_sharing's validator instead.
 
 # COMMAND ----------
 
-# Load → override in memory → write back.
+# Load the pristine baseline (the restore-from-backup step above
+# guarantees config.yaml is the pre-test baseline here), transform it
+# via the authoritative helper, and write the result back.
+from tests.integration._config_override import apply_integration_overrides  # type: ignore[import-not-found]  # noqa: E402, I001
+
 with open(config_path) as f:
-    cfg = yaml.safe_load(f) or {}
+    baseline_cfg = yaml.safe_load(f) or {}
 
-scope = cfg.setdefault("scope", {})
-scope["include_uc"] = include_uc
-scope["include_hive"] = include_hive
-cfg["iceberg_strategy"] = iceberg_strategy
-cfg["rls_cm_strategy"] = rls_cm_strategy
-cfg["rls_cm_maintenance_window_confirmed"] = rls_cm_maintenance_window_confirmed
-cfg["migrate_hive_dbfs_root"] = migrate_hive_dbfs_root
-if hive_dbfs_target_path:
-    cfg["hive_dbfs_target_path"] = hive_dbfs_target_path
-# If hive_dbfs_target_path is not provided but migrate_hive_dbfs_root is
-# true, leave the existing value in place (operator-configured pre-test).
-if batch_size_raw:
-    try:
-        cfg["batch_size"] = max(1, int(batch_size_raw))
-    except ValueError as _exc:
-        raise ValueError(f"batch_size must be an integer, got {batch_size_raw!r}") from _exc
-if catalog_filter_raw:
-    cfg["catalog_filter"] = [x.strip() for x in catalog_filter_raw.split(",") if x.strip()]
+cfg = apply_integration_overrides(
+    baseline_cfg,
+    include_uc=include_uc,
+    include_hive=include_hive,
+    iceberg_strategy=iceberg_strategy,
+    rls_cm_strategy=rls_cm_strategy,
+    rls_cm_maintenance_window_confirmed=rls_cm_maintenance_window_confirmed,
+    migrate_hive_dbfs_root=migrate_hive_dbfs_root,
+    hive_dbfs_target_path=hive_dbfs_target_path,
+    batch_size_raw=batch_size_raw,
+    catalog_filter_raw=catalog_filter_raw,
+    inject_bad_spn_id=inject_bad_spn_id,
+    inject_unreachable_target=inject_unreachable_target,
+    inject_bad_rls_cm=inject_bad_rls_cm,
+)
 
-# --- Negative-path injections (integration X.3) ---
-# Applied AFTER the normal overrides so we're corrupting the post-scope
-# config, not the original file. The teardown step (restoring the
-# .pre-integration-test.bak) still cleans up even on failure paths.
-if inject_bad_spn_id:
-    # A well-formed-but-wrong UUID. ``AuthManager._build_client`` will
-    # accept the shape, but ``current_user.me()`` fails when the SDK
-    # attempts the first token exchange — surfacing as an auth error in
-    # ``pre_check.check_source_auth`` / ``check_target_auth``.
-    cfg["spn_client_id"] = "00000000-0000-0000-0000-000000000000"
-if inject_unreachable_target:
-    # Non-resolving hostname in the databricks.net namespace. The SDK
-    # happily builds the client, but ``target_client.current_user.me()``
-    # fails with a DNS / connection error — pre_check wraps it and
-    # surfaces "cannot reach target metastore".
-    cfg["target_workspace_url"] = "https://adb-0000000000000000.0.azuredatabricks.net"
-if inject_bad_rls_cm:
-    cfg["rls_cm_strategy"] = "drop_and_restore"
-    # Force the consent flag off regardless of what the workspace config
-    # had — the whole point of this scenario is the missing consent.
-    cfg["rls_cm_maintenance_window_confirmed"] = False
+# rls_cm_strategy may have been rewritten inside the helper (injection
+# path) — pull the resolved values back for the summary print below.
+rls_cm_strategy = cfg.get("rls_cm_strategy", rls_cm_strategy)
+rls_cm_maintenance_window_confirmed = cfg.get(
+    "rls_cm_maintenance_window_confirmed", rls_cm_maintenance_window_confirmed
+)
 
 with open(config_path, "w") as f:
     yaml.safe_dump(cfg, f, sort_keys=False)
