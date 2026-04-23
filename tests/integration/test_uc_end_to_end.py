@@ -41,8 +41,11 @@ counts = {
 print(f"UC status breakdown: {counts}")
 
 # failed / validation_failed are real errors. skipped_by_pipeline_migration
-# is expected for any DLT-owned MV/ST (not part of our seed today, but
+# is expected for any DLT-owned MV (not part of our seed today, but
 # forward-compatible with the worker's skip path).
+# skipped_by_stateful_service_migration is expected for every streaming
+# table — STs are hard-excluded from the core tool and migrated by the
+# future Stateful Services Phase (see docs/stateful_services_phase.md).
 failures_df = status_df.filter("status IN ('failed','validation_failed')")
 if failures_df.count() > 0:
     for row in failures_df.select("object_name", "object_type", "status", "error_message").collect():
@@ -234,13 +237,18 @@ if str(has_st).lower() == "true":
     st_status = status_df.filter("object_type = 'st' AND object_name LIKE '%st_orders%'").collect()
     if not st_status:
         error_messages.append("Phase 2.5.D: ST row missing from migration_status.")
-    elif st_status[0]["status"] != "validated":
+    elif st_status[0]["status"] != "skipped_by_stateful_service_migration":
+        # Scope change: streaming tables are hard-excluded from the core
+        # migration tool (migrated by the future Stateful Services Phase).
+        # The worker short-circuits to skipped_by_stateful_service_migration
+        # with a documented error_message pointer to
+        # docs/stateful_services_phase.md.
         error_messages.append(
-            f"Phase 2.5.D: ST status is '{st_status[0]['status']}', expected 'validated'. "
-            f"error={st_status[0]['error_message']}"
+            f"Phase 2.5.D: ST status is '{st_status[0]['status']}', expected "
+            f"'skipped_by_stateful_service_migration'. error={st_status[0]['error_message']}"
         )
     else:
-        print(f"Phase 2.5.D ST validated: {st_status[0]['object_name']}")
+        print(f"Phase 2.5.D ST hard-excluded (as expected): {st_status[0]['object_name']}")
 else:
     print("Phase 2.5.D: ST fixture not seeded; skipping ST assertion.")
 
@@ -1090,47 +1098,27 @@ else:
 # error_message contains 'REFRESH failed' + the refresh error.
 
 # COMMAND ----------
-# --- 2.5.12: Streaming table source-state warning ---
-# The existing ``st_orders`` fixture points at a Delta source (managed_
-# orders). mv_st_worker now appends a streaming-state caveat to
-# error_message on the happy path so operators reading migration_status
-# see that Kafka offsets / Auto Loader checkpoints / Delta CDF cursors
-# do NOT transfer to target — the target stream restarts from the
-# source's current position.
-#
-# Assertion: the ST row for st_orders has status=validated AND
-# error_message contains the streaming warning. Gated on has_st so that
-# if the seed's CREATE STREAMING TABLE failed (unsupported runtime),
-# this block skips cleanly.
+# --- 2.5.12 (superseded): Streaming tables now hard-excluded ---
+# The prior streaming-state warning assertion is obsolete. Streaming
+# tables are now hard-excluded from the core tool; mv_st_worker short-
+# circuits them to ``skipped_by_stateful_service_migration`` with a
+# documented error_message pointing at docs/stateful_services_phase.md.
+# The base 2.5.D ST assertion above already verifies the new terminal
+# state, so 2.5.12 degrades to a docstring pointer.
 
 if str(has_st).lower() == "true":
     _st_status_rows = status_df.filter("object_type = 'st' AND object_name LIKE '%st_orders%'").collect()
-    if not _st_status_rows:
-        error_messages.append("2.5.12: no ST migration_status row for st_orders.")
-    elif _st_status_rows[0]["status"] != "validated":
-        # The base 2.5.D ST assertion above already surfaces this; don't
-        # double-log — just skip the warning check.
-        print(
-            f"2.5.12: ST status={_st_status_rows[0]['status']!r}, not 'validated' — "
-            f"skipping streaming-warning check (base 2.5.D assertion reports the failure)."
-        )
-    else:
-        _err = (_st_status_rows[0]["error_message"] or "").lower()
-        if not _err:
+    if _st_status_rows:
+        _err = (_st_status_rows[0]["error_message"] or "")
+        if "stateful_services_phase.md" not in _err.lower():
             error_messages.append(
-                "2.5.12: st_orders validated but error_message is empty — "
-                "streaming-state caveat was not emitted by mv_st_worker. "
-                "Operators need this signal in migration_status."
-            )
-        elif "stream" not in _err or "warning" not in _err:
-            error_messages.append(
-                f"2.5.12: st_orders error_message does not carry the streaming "
-                f"caveat. Got: {_err!r}. Expected a 'warning' mentioning 'stream' state."
+                f"2.5.12: st_orders error_message does not reference "
+                f"stateful_services_phase.md. Got: {_err!r}."
             )
         else:
-            print(f"2.5.12 validated: st_orders error_message carries streaming caveat: {_err[:120]!r}")
+            print(f"2.5.12 validated: st_orders error_message points at the new phase doc: {_err[:160]!r}")
 else:
-    print("2.5.12: ST fixture not seeded; skipping streaming-warning check.")
+    print("2.5.12: ST fixture not seeded; skipping stateful-services pointer check.")
 
 # COMMAND ----------
 

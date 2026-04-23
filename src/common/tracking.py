@@ -87,6 +87,22 @@ def discovery_schema() -> StructType:
     )
 
 
+# Statuses that mark a migration row as terminal from the core tool's
+# perspective — ``get_pending_objects`` filters these out so later runs do
+# not re-pick-up the object. Extend here (not at the call site) to keep
+# the terminal-state contract in one place. See also:
+#   - docs/idempotency_audit.md (status taxonomy)
+#   - docs/retry_resumability.md (reconciliation decision table)
+#   - docs/stateful_services_phase.md (the stateful services scope boundary)
+_TERMINAL_STATUSES: tuple[str, ...] = (
+    "validated",
+    "skipped_by_pipeline_migration",
+    "skipped_target_exists",
+    "skipped_by_stateful_service_migration",
+)
+_TERMINAL_STATUSES_SQL = ", ".join(f"'{s}'" for s in _TERMINAL_STATUSES)
+
+
 class TrackingManager:
     """Manages migration tracking tables for discovery, status, and pre-checks."""
 
@@ -285,6 +301,11 @@ class TrackingManager:
         - ``skipped_target_exists``: pre_check detected a collision with a
           pre-existing target object under the ``on_target_collision:
           skip`` policy (X.4). The target object is left untouched.
+        - ``skipped_by_stateful_service_migration``: the object is out of
+          scope for the core migration tool; the future Stateful Services
+          Phase (separate job) will migrate it. Currently used by
+          ``mv_st_worker`` for streaming tables. See
+          ``docs/stateful_services_phase.md``.
 
         All other ``skipped_*`` statuses are **non-terminal by design** —
         they're flag-gated skips that an operator flips via config to
@@ -319,7 +340,7 @@ class TrackingManager:
                 ON d.object_name = s.object_name AND d.object_type = s.object_type
             WHERE d.object_type = '{object_type}'
               AND (s.status IS NULL
-                   OR s.status NOT IN ('validated', 'skipped_by_pipeline_migration', 'skipped_target_exists'))
+                   OR s.status NOT IN ({_TERMINAL_STATUSES_SQL}))
         """).collect()
         return [row.asDict() for row in rows]
 

@@ -146,9 +146,13 @@ if scenario == "resume":
         )
 
     validated = counts.get("validated", 0)
-    # Plus legitimate terminal skips (pipeline_migration / target_exists).
-    terminal_skips = counts.get("skipped_by_pipeline_migration", 0) + counts.get(
-        "skipped_target_exists", 0
+    # Plus legitimate terminal skips (pipeline_migration / target_exists /
+    # stateful_service_migration — streaming tables hard-excluded from
+    # the core tool; migrated by the future Stateful Services Phase).
+    terminal_skips = (
+        counts.get("skipped_by_pipeline_migration", 0)
+        + counts.get("skipped_target_exists", 0)
+        + counts.get("skipped_by_stateful_service_migration", 0)
     )
     discovered = spark.sql(  # noqa: F821
         f"""

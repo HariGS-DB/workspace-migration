@@ -113,13 +113,16 @@ class TestTrackingManager:
         # Verify the SQL query contains the correct filtering logic
         sql_arg = mock_spark.sql.call_args[0][0]
         assert "LEFT JOIN" in sql_arg
-        # Filter: ``validated``, ``skipped_by_pipeline_migration``, and
-        # ``skipped_target_exists`` (X.4) are terminal. Other skip
+        # Filter: ``validated``, ``skipped_by_pipeline_migration``,
+        # ``skipped_target_exists`` (X.4), and
+        # ``skipped_by_stateful_service_migration`` (streaming tables /
+        # future Stateful Services Phase) are terminal. Other skip
         # statuses (skipped_by_config, skipped_by_rls_cm_policy, plain
         # skipped) re-enter pending so operators can flip config flags
         # and re-run.
         assert (
-            "status NOT IN ('validated', 'skipped_by_pipeline_migration', 'skipped_target_exists')"
+            "status NOT IN ('validated', 'skipped_by_pipeline_migration', "
+            "'skipped_target_exists', 'skipped_by_stateful_service_migration')"
             in sql_arg
         )
         assert "managed_table" in sql_arg
@@ -199,9 +202,11 @@ class TestTrackingManager:
 
     def test_get_pending_objects_terminal_status_list(self, mock_spark, mock_config):
         """Terminal statuses: ``validated``, ``skipped_by_pipeline_migration``
-        (DLT-owned MV/ST), and ``skipped_target_exists`` (X.4 collision
-        skip policy). Other skip statuses re-enter pending on re-run so
-        flag-gated skips (``skipped_by_config``,
+        (DLT-owned MV), ``skipped_target_exists`` (X.4 collision skip
+        policy), and ``skipped_by_stateful_service_migration`` (streaming
+        tables — hard-excluded from the core tool; migrated by the
+        future Stateful Services Phase). Other skip statuses re-enter
+        pending on re-run so flag-gated skips (``skipped_by_config``,
         ``skipped_by_rls_cm_policy``) heal when the operator flips
         ``iceberg_strategy`` / ``rls_cm_strategy``.
         """
@@ -218,8 +223,12 @@ class TestTrackingManager:
         # ``skipped_target_exists`` (X.4) was added as terminal so the
         # skip policy for pre-existing target objects actually short-
         # circuits the worker on the next run.
+        # ``skipped_by_stateful_service_migration`` was added to
+        # hard-exclude streaming tables (migrated by the future Stateful
+        # Services Phase, separate job).
         assert (
-            "status NOT IN ('validated', 'skipped_by_pipeline_migration', 'skipped_target_exists')"
+            "status NOT IN ('validated', 'skipped_by_pipeline_migration', "
+            "'skipped_target_exists', 'skipped_by_stateful_service_migration')"
             in sql
         )
         # Guard against regression to the old LIKE filter that swept up

@@ -88,13 +88,17 @@ class TestReconcileStaleRuns:
         tracker.append_migration_status.assert_not_called()
 
     def test_skipped_terminal_is_noop(self, mock_config):
-        """skipped_by_pipeline_migration / skipped_target_exists are
-        terminal statuses; reconciler must leave them alone."""
+        """skipped_by_pipeline_migration / skipped_target_exists /
+        skipped_by_stateful_service_migration are terminal statuses; the
+        reconciler must leave them alone. The last status covers
+        streaming tables hard-excluded from the core tool (migrated by
+        the future Stateful Services Phase)."""
         from migrate.reconciliation import reconcile_stale_runs
 
         rows = [
             _mock_status_row("cat.sch.mv1", "mv", "skipped_by_pipeline_migration", "old-run"),
             _mock_status_row("cat.sch.t2", "managed_table", "skipped_target_exists", "old-run"),
+            _mock_status_row("cat.sch.st1", "st", "skipped_by_stateful_service_migration", "old-run"),
         ]
         spark = _spark_returning(rows)
         tracker = MagicMock()

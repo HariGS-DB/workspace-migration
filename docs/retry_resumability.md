@@ -22,12 +22,13 @@ The design builds on work shipped in X.2 (per-worker idempotency audit, PR #38) 
 
 Reconciliation runs **once** at the start of every `migrate` workflow, in `migrate.orchestrator`, right after `check_collision_gate`. It scans the latest status row per `(object_name, object_type)` in `migration_status` and decides what to do:
 
-| Prior status                       | Action          | Why |
-|------------------------------------|-----------------|-----|
-| `validated`                        | no-op           | Terminal — filtered out by `get_pending_objects`. |
-| `skipped_by_pipeline_migration`    | no-op           | Terminal — DLT-owned objects never re-migrate. |
-| `skipped_target_exists` (X.4)      | no-op           | Terminal — pre-existing target left alone. |
-| `in_progress`, stale `job_run_id`  | **reset → pending** | Worker died mid-flight. Calls cleanup hook, appends new `pending` row. |
+| Prior status                                  | Action          | Why |
+|-----------------------------------------------|-----------------|-----|
+| `validated`                                   | no-op           | Terminal — filtered out by `get_pending_objects`. |
+| `skipped_by_pipeline_migration`               | no-op           | Terminal — DLT-owned objects never re-migrate. |
+| `skipped_target_exists` (X.4)                 | no-op           | Terminal — pre-existing target left alone. |
+| `skipped_by_stateful_service_migration`      | no-op           | Terminal — object deferred to the future Stateful Services Phase (separate job). Today: streaming tables. See `docs/stateful_services_phase.md`. |
+| `in_progress`, stale `job_run_id`             | **reset → pending** | Worker died mid-flight. Calls cleanup hook, appends new `pending` row. |
 | `in_progress`, current `job_run_id`| no-op           | This run’s own worker; hands-off. |
 | `failed`                           | no-op           | Workers already re-pickup via `get_pending_objects`. Reconciler does not rewrite. |
 | `validation_failed`                | surface only    | Needs operator attention. Appears in summary. Row left alone. |
@@ -53,7 +54,8 @@ Some workers leave partial target state that would wedge the retry. Those define
 | `sharing_worker` (share)      | **Yes** → `cleanup_partial_share` | `ALTER SHARE ADD` may have added a subset of objects. Drop the share entirely; apply_share recreates from the live spec on retry. |
 | `sharing_worker` (recipient)  | No              | `recipients.create` tolerates "already exists". |
 | `sharing_worker` (provider)   | No              | `providers.create` tolerates "already exists". |
-| `mv_st_worker`                | No              | X.2 added "already exists" tolerance + REFRESH always re-runs. |
+| `mv_st_worker` (MV)           | No              | X.2 added "already exists" tolerance + REFRESH always re-runs. |
+| `mv_st_worker` (ST)           | No              | Hard-excluded — short-circuits to `skipped_by_stateful_service_migration` before any target state is touched. See `docs/stateful_services_phase.md`. |
 | `tags` / `row_filters` / `column_masks` | No    | `ALTER … SET` is idempotent. |
 | `policies` / `monitors` / `connections` / `online_tables` | No | X.2 added "already exists" tolerance. |
 | `comments_worker`             | No              | `COMMENT ON ... IS` overwrites. |
