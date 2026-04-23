@@ -241,3 +241,99 @@ batch_size: "100"
         config = MigrationConfig.from_workspace_file(str(path))
         assert config.batch_size == 100
         assert isinstance(config.batch_size, int)
+
+
+
+class TestCollisionPolicyConfig:
+    """X.4: on_target_collision field — default, allowed values, error path."""
+
+    def test_default_is_fail(self):
+        """Unset on_target_collision defaults to 'fail' (safe)."""
+        config = MigrationConfig(
+            source_workspace_url="https://src.azuredatabricks.net",
+            target_workspace_url="https://tgt.azuredatabricks.net",
+            spn_client_id="c",
+            spn_secret_scope="s",
+            spn_secret_key="k",
+        )
+        assert config.on_target_collision == "fail"
+
+    def test_from_yaml_skip(self, tmp_path):
+        path = _write(
+            tmp_path,
+            """
+source_workspace_url: https://src.azuredatabricks.net
+target_workspace_url: https://tgt.azuredatabricks.net
+spn_client_id: c
+spn_secret_scope: s
+spn_secret_key: k
+on_target_collision: skip
+""",
+        )
+        config = MigrationConfig.from_workspace_file(str(path))
+        assert config.on_target_collision == "skip"
+
+    def test_from_yaml_fail_explicit(self, tmp_path):
+        path = _write(
+            tmp_path,
+            """
+source_workspace_url: https://src.azuredatabricks.net
+target_workspace_url: https://tgt.azuredatabricks.net
+spn_client_id: c
+spn_secret_scope: s
+spn_secret_key: k
+on_target_collision: fail
+""",
+        )
+        config = MigrationConfig.from_workspace_file(str(path))
+        assert config.on_target_collision == "fail"
+
+    def test_from_yaml_empty_defaults_to_fail(self, tmp_path):
+        """Empty-string (e.g. commented-out field left with value="") is
+        treated as unset → fail."""
+        path = _write(
+            tmp_path,
+            """
+source_workspace_url: https://src.azuredatabricks.net
+target_workspace_url: https://tgt.azuredatabricks.net
+spn_client_id: c
+spn_secret_scope: s
+spn_secret_key: k
+on_target_collision: ""
+""",
+        )
+        config = MigrationConfig.from_workspace_file(str(path))
+        assert config.on_target_collision == "fail"
+
+    def test_from_yaml_unknown_value_raises(self, tmp_path):
+        """Typo / unsupported value surfaces at pre_check-time, not
+        silently becomes a different policy."""
+        path = _write(
+            tmp_path,
+            """
+source_workspace_url: https://src.azuredatabricks.net
+target_workspace_url: https://tgt.azuredatabricks.net
+spn_client_id: c
+spn_secret_scope: s
+spn_secret_key: k
+on_target_collision: overwrite
+""",
+        )
+        with pytest.raises(ValueError, match="on_target_collision"):
+            MigrationConfig.from_workspace_file(str(path))
+
+    def test_from_yaml_case_insensitive(self, tmp_path):
+        """Common YAML quirks: FAIL / Skip normalize to lowercase."""
+        path = _write(
+            tmp_path,
+            """
+source_workspace_url: https://src.azuredatabricks.net
+target_workspace_url: https://tgt.azuredatabricks.net
+spn_client_id: c
+spn_secret_scope: s
+spn_secret_key: k
+on_target_collision: SKIP
+""",
+        )
+        config = MigrationConfig.from_workspace_file(str(path))
+        assert config.on_target_collision == "skip"

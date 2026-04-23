@@ -282,6 +282,9 @@ class TrackingManager:
         - ``validated``: migrated successfully.
         - ``skipped_by_pipeline_migration``: DLT-owned; the pipeline is
           migrated by the pipelines workflow, never by managed_table_worker.
+        - ``skipped_target_exists``: pre_check detected a collision with a
+          pre-existing target object under the ``on_target_collision:
+          skip`` policy (X.4). The target object is left untouched.
 
         All other ``skipped_*`` statuses are **non-terminal by design** —
         they're flag-gated skips that an operator flips via config to
@@ -316,7 +319,7 @@ class TrackingManager:
                 ON d.object_name = s.object_name AND d.object_type = s.object_type
             WHERE d.object_type = '{object_type}'
               AND (s.status IS NULL
-                   OR s.status NOT IN ('validated', 'skipped_by_pipeline_migration'))
+                   OR s.status NOT IN ('validated', 'skipped_by_pipeline_migration', 'skipped_target_exists'))
         """).collect()
         return [row.asDict() for row in rows]
 

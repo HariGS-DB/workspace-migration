@@ -31,6 +31,29 @@ def _coerce_bool(raw: object) -> bool:
     return str(raw).strip().lower() in ("true", "1", "yes")
 
 
+_COLLISION_POLICIES = ("fail", "skip")
+
+
+def _coerce_collision_policy(raw: object) -> str:
+    """Validate the on_target_collision field against the allow-list.
+
+    Defaults to ``fail`` when unset or empty so operators who don't know
+    about collision handling get the safe behaviour automatically.
+    Unknown values raise a ``ValueError`` with the allow-list so typos
+    surface at pre_check-time rather than silently becoming "skip".
+    """
+    if raw is None or raw == "":
+        return "fail"
+    val = str(raw).strip().lower()
+    if val not in _COLLISION_POLICIES:
+        msg = (
+            f"on_target_collision must be one of {_COLLISION_POLICIES}, "
+            f"got {raw!r}"
+        )
+        raise ValueError(msg)
+    return val
+
+
 def _resolve_bundle_config_path() -> str:
     """Resolve config.yaml path from the running notebook's own workspace path.
 
@@ -118,6 +141,24 @@ class MigrationConfig:
     migrate_hive_dbfs_root: bool = False
     hive_dbfs_target_path: str = ""
     hive_target_catalog: str = "hive_upgraded"
+    # Target pre-existing state / collision handling (X.4).
+    #
+    # When a source object has the same FQN as an object on target AND no
+    # migration_status row says we created it, pre_check emits a
+    # ``target_collision`` pre_check_results row. The policy decides what
+    # happens:
+    #
+    #   ``fail``  (default) — status FAIL, migrate refuses to start.
+    #              Operator must rename, drop, or move the colliding object
+    #              off the target before re-running.
+    #   ``skip``  — status WARN, pre_check writes a ``skipped_target_exists``
+    #              migration_status row so workers skip the object on the
+    #              next migrate run. Target object is left untouched.
+    #
+    # Overwrite is intentionally not offered in v1 — destroying customer
+    # data from a migration tool by default is almost never what anyone
+    # wants.
+    on_target_collision: str = "fail"
 
     @classmethod
     def from_workspace_file(cls, path: str | None = None) -> MigrationConfig:
@@ -173,4 +214,5 @@ class MigrationConfig:
             migrate_hive_dbfs_root=_coerce_bool(raw.get("migrate_hive_dbfs_root")),
             hive_dbfs_target_path=str(raw.get("hive_dbfs_target_path", "")),
             hive_target_catalog=str(raw.get("hive_target_catalog", "hive_upgraded")),
+            on_target_collision=_coerce_collision_policy(raw.get("on_target_collision", "fail")),
         )

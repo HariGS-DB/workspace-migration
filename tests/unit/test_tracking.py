@@ -113,11 +113,15 @@ class TestTrackingManager:
         # Verify the SQL query contains the correct filtering logic
         sql_arg = mock_spark.sql.call_args[0][0]
         assert "LEFT JOIN" in sql_arg
-        # Filter: only ``validated`` and ``skipped_by_pipeline_migration``
-        # are terminal. Other skip statuses (skipped_by_config,
-        # skipped_by_rls_cm_policy, plain skipped) re-enter pending so
-        # operators can flip config flags and re-run.
-        assert "status NOT IN ('validated', 'skipped_by_pipeline_migration')" in sql_arg
+        # Filter: ``validated``, ``skipped_by_pipeline_migration``, and
+        # ``skipped_target_exists`` (X.4) are terminal. Other skip
+        # statuses (skipped_by_config, skipped_by_rls_cm_policy, plain
+        # skipped) re-enter pending so operators can flip config flags
+        # and re-run.
+        assert (
+            "status NOT IN ('validated', 'skipped_by_pipeline_migration', 'skipped_target_exists')"
+            in sql_arg
+        )
         assert "managed_table" in sql_arg
 
         # Verify the result is a list of dicts from collect()
@@ -194,8 +198,9 @@ class TestTrackingManager:
         assert result is None
 
     def test_get_pending_objects_terminal_status_list(self, mock_spark, mock_config):
-        """Only ``validated`` and ``skipped_by_pipeline_migration`` are
-        terminal. Other skip statuses re-enter pending on re-run so
+        """Terminal statuses: ``validated``, ``skipped_by_pipeline_migration``
+        (DLT-owned MV/ST), and ``skipped_target_exists`` (X.4 collision
+        skip policy). Other skip statuses re-enter pending on re-run so
         flag-gated skips (``skipped_by_config``,
         ``skipped_by_rls_cm_policy``) heal when the operator flips
         ``iceberg_strategy`` / ``rls_cm_strategy``.
@@ -210,7 +215,13 @@ class TestTrackingManager:
         sql = mock_spark.sql.call_args[0][0]
         # Terminal set uses an explicit IN list so future skip statuses
         # default to "re-pickup" unless someone adds them here.
-        assert "status NOT IN ('validated', 'skipped_by_pipeline_migration')" in sql
+        # ``skipped_target_exists`` (X.4) was added as terminal so the
+        # skip policy for pre-existing target objects actually short-
+        # circuits the worker on the next run.
+        assert (
+            "status NOT IN ('validated', 'skipped_by_pipeline_migration', 'skipped_target_exists')"
+            in sql
+        )
         # Guard against regression to the old LIKE filter that swept up
         # skipped_by_config + skipped_by_rls_cm_policy as terminal.
         assert "NOT LIKE 'skipped%'" not in sql

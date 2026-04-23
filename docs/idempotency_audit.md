@@ -440,3 +440,118 @@ uv run pytest tests/unit/test_idempotency_audit.py -v
 ```
 
 205 total unit tests pass on main + this PR (154 baseline + 51 new).
+
+---
+
+## Collision handling (X.4)
+
+X.2 (this audit) pinned **per-worker resume idempotency**: if the migrator
+ran yesterday and left a partial state, today's re-run must tolerate
+"already exists" errors because the object WE created is still there.
+
+X.4 adds the **other direction**: what if the target has an object we
+*didn't* create and don't know about? The audit's state matrix answers
+one dimension (input status × target state) but treats the target object
+as always ours. X.4 layers collision scenarios on top:
+
+- Operator ran a dev test migration yesterday against the same target
+  and forgot to tear down.
+- Customer created a catalog `retail` manually on target; source also
+  has one, schema shape differs.
+- Same-named recipient / share exists on target.
+- Pre-existing UC ABAC policy / monitor / online-table attached by
+  some other pipeline.
+
+Before X.4: collisions silently got overwritten (DEEP CLONE `CREATE OR
+REPLACE`), silently skipped (`CREATE TABLE IF NOT EXISTS`), or silently
+succeeded against pre-existing objects (X.2's "already exists"
+tolerance). The operator had no way to tell.
+
+### Policy
+
+Config field: `on_target_collision: fail | skip` (default: `fail`).
+
+| Policy | Default? | Pre_check row | migrate behaviour |
+|---|---|---|---|
+| `fail` | yes | status=FAIL | Orchestrator gate refuses to run. Operator must rename / drop the colliding target object, then rerun pre_check. |
+| `skip` | no | status=WARN | Pre_check seeds `skipped_target_exists` rows in `migration_status`. Workers short-circuit those objects on next run (now a terminal status in `get_pending_objects`). Target object is left untouched. |
+
+No `overwrite` policy in v1 — destroying customer data by default is
+almost never what anyone wants. Operators who truly want overwrite can
+manually drop the target object and rerun.
+
+### Detection
+
+`src/pre_check/collision_detection.py` implements the probe. For each
+row in `discovery_inventory`:
+
+1. Skip if the row has a matching `(object_type, object_name)` entry in
+   `migration_status`. That status row says we own the object — X.2's
+   tolerance covers "already exists" in this case.
+2. Probe the target metastore via SDK getter per object_type:
+   - `catalog` → `catalogs.get(name=...)`
+   - `schema` → `schemas.get(full_name=...)`
+   - `managed_table` / `external_table` / `view` → `tables.get(full_name=...)`
+   - `function` → `functions.get(name=...)`
+   - `volume` → `volumes.read(name=...)`
+   - `hive_table` / `hive_view` → rewrite to `<hive_target_catalog>.<db>.<t>` then `tables.get`.
+3. SDK getter returning an object → collision. 404 / NOT_FOUND → no
+   collision.
+
+Phase 3 governance types (`share`, `recipient`, `provider`, `monitor`,
+`registered_model`, `connection`, `foreign_catalog`, `online_table`,
+`tag`, `row_filter`, `column_mask`, `comment`, `policy`) are
+intentionally out of scope for v1. Those workers already tolerate
+"already exists" (see the per-worker table above), so a pre-existing
+target object there is safe to re-apply against. Future work can extend
+`_PROBES` if we need strict fail-fast for governance too.
+
+### Wiring
+
+- `pre_check.pre_check` runs the collision check as `check_target_collisions`
+  after the other prerequisites, emitting a pre_check_results row with
+  PASS / WARN / FAIL per policy. Under `skip`, it also calls
+  `tracker.append_migration_status` with `skipped_target_exists` rows.
+- `migrate.orchestrator.check_collision_gate` (new helper) reads the
+  latest `check_target_collisions` row per `check_name` and raises
+  `RuntimeError` if the status is FAIL. The orchestrator notebook calls
+  this gate right after config load, before publishing task values.
+- `TrackingManager.get_pending_objects` adds `skipped_target_exists`
+  to the terminal-status IN-list so workers never re-pick-up a skipped
+  collision on later runs (unless the operator deliberately deletes the
+  status row).
+
+### Tests
+
+- `tests/unit/test_collision_detection.py` (43 tests): per-securable
+  probe matrix, Hive rewrite, X.2 compatibility (status row blocks
+  re-probing), unsupported-type handling, `build_skip_status_rows`
+  schema.
+- `tests/unit/test_pre_check.py::TestPreCheckCollisionDetection` (7 tests):
+  empty discovery, no collision, collision under fail, collision under
+  skip + status row seeding, status-row-blocks-collision (X.2 compat),
+  per-type summary message, missing discovery_inventory gracefully
+  degrades.
+- `tests/unit/test_orchestrator.py::TestOrchestratorCollisionGate`
+  (8 tests): no rows passes, PASS / WARN no-op, FAIL raises, message
+  surfaced in error, missing table is warn-and-return, query filters to
+  target_collision rows + latest row per check_name, multi-row safety.
+- `tests/unit/test_config.py::TestCollisionPolicyConfig` (6 tests):
+  defaults, valid values, unknown value raises, case-insensitive,
+  empty-string is fail.
+- `tests/integration/test_collision_handling.py`: end-to-end fixture
+  (run-ready, not live-tested): seeds a rogue target catalog, asserts
+  pre_check_results + migration_status under each policy, asserts the
+  rogue catalog is left untouched, asserts `check_collision_gate` raises
+  under fail and not under skip.
+
+### Interaction with X.2
+
+Collision detection must NOT fire when the object is already tracked in
+`migration_status` (even with a non-terminal status like `in_progress` or
+`failed`). A tracked object is ours — X.2 handles the "we crashed mid-
+migrate, re-run" case, and adding a collision row there would double-
+gate the operator out of their own resume. The
+`existing_status_keys` argument to `detect_collisions` enforces this;
+the test `test_status_row_blocks_collision` pins it.
+

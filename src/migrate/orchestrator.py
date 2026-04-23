@@ -44,6 +44,56 @@ from migrate.batching import (  # noqa: E402, F401
 )
 
 
+def check_collision_gate(spark, config) -> None:
+    """Raise when the latest pre_check_results has any target_collision FAILs.
+
+    X.4 fail-fast gate. Looks only at the latest row per ``check_name`` in
+    ``pre_check_results`` so a prior run's FAIL that has since been
+    resolved (operator dropped the colliding target object and re-ran
+    pre_check) doesn't block this migrate.
+
+    No-op when:
+        - pre_check_results doesn't exist (fresh install, should be
+          impossible because tracking.init_tracking_tables() creates it,
+          but defensive: raise a clearer error than a metastore 404).
+        - No target_collision row exists (pre_check hasn't been run with
+          discovery, or discovery inventory was empty).
+        - Latest target_collision row is PASS or WARN (skip policy).
+
+    Raises:
+        RuntimeError: when the latest ``check_target_collisions`` pre_check
+            row is FAIL, instructing the operator to rerun pre_check after
+            resolving or flipping ``on_target_collision`` to ``skip``.
+    """
+    fqn = f"{config.tracking_catalog}.{config.tracking_schema}.pre_check_results"
+    try:
+        rows = spark.sql(
+            f"""
+            SELECT status, message
+            FROM (
+                SELECT *, ROW_NUMBER() OVER (
+                    PARTITION BY check_name ORDER BY checked_at DESC
+                ) AS rn
+                FROM {fqn}
+            )
+            WHERE rn = 1 AND check_name = 'check_target_collisions'
+            """
+        ).collect()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Could not read pre_check_results for collision gate: %s", exc)
+        return
+    for r in rows:
+        if (r.status or "").upper() == "FAIL":
+            msg = (
+                "Migrate refused to start: latest pre_check recorded a "
+                "target_collision FAIL. Resolve the colliding target "
+                "object(s), or flip on_target_collision to 'skip', then "
+                "rerun pre_check. Details: "
+                + (r.message or "(no message)")
+            )
+            raise RuntimeError(msg)
+
+
 # COMMAND ----------
 
 
@@ -101,6 +151,11 @@ def _publish_empty_task_values(dbutils) -> None:
 
 if _is_notebook():
     config = MigrationConfig.from_workspace_file()  # type: ignore[name-defined] # noqa: F821
+    # X.4: fail-fast when the latest pre_check flagged a target_collision
+    # and the policy is 'fail'. Runs before scope gating so Hive-only
+    # migrations still get the gate (Hive-target collisions are covered by
+    # detect_collisions too).
+    check_collision_gate(spark, config)  # type: ignore[name-defined] # noqa: F821
     if not config.include_uc:
         logger.info("Skipping UC orchestrator: scope.include_uc=false.")
         _publish_empty_task_values(dbutils)  # type: ignore[name-defined] # noqa: F821

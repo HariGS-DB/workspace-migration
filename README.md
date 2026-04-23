@@ -101,6 +101,7 @@ databricks bundle deploy -t dev
 | `iceberg_strategy` | no | `""` | `""` skips Iceberg managed tables (marking `skipped_by_config`). `"ddl_replay"` opts into the Option A path — rebuild schema + re-ingest via `cp_migration_share`. Loses snapshot history / time travel / branches + tags. |
 | `rls_cm_strategy` | no | `""` | Managed tables carrying legacy row filter / column mask. `""` skips them (marking `skipped_by_rls_cm_policy`). `"drop_and_restore"` temporarily drops the RLS/CM on source, DEEP CLONEs via the share, and re-applies after — requires `rls_cm_maintenance_window_confirmed=true`. |
 | `rls_cm_maintenance_window_confirmed` | conditional | `false` | Operator consent gate for `rls_cm_strategy='drop_and_restore'`. Must be `true` to opt in — the strategy exposes the source table to unfiltered/unmasked reads during each DEEP CLONE. Only appropriate for maintenance-window migrations. |
+| `on_target_collision` | no | `"fail"` | What to do when a discovered source object has the same FQN as an object already on target AND no `migration_status` row says the tool created it. `"fail"` (default) — pre_check emits a FAIL `check_target_collisions` row and the migrate workflow refuses to start; operator must rename / drop the colliding object and rerun pre_check. `"skip"` — pre_check emits a WARN row and seeds `skipped_target_exists` migration_status rows; workers skip those objects on the next migrate run (target copy left untouched). See [docs/idempotency_audit.md](docs/idempotency_audit.md#collision-handling-x4). |
 | `migrate_hive_dbfs_root` | no | `false` | Enables `hive_managed_dbfs_worker` — copies DBFS-root bytes to `hive_dbfs_target_path` and registers the target table as EXTERNAL |
 | `hive_dbfs_target_path` | conditional | `""` | ADLS/S3/GCS path where DBFS-root bytes land on target. Required when `migrate_hive_dbfs_root=true`. The SPN needs `READ_FILES`/`WRITE_FILES`/`CREATE_EXTERNAL_TABLE` on the external location that owns this path. |
 | `hive_target_catalog` | no | `hive_upgraded` | Target catalog name for Hive-to-UC migration. Created during migrate if missing. |
@@ -121,7 +122,12 @@ databricks bundle deploy -t dev
    workflow definitions)
 4. Run the `pre_check` workflow to validate connectivity and grants
 5. Run `discovery` to inventory source objects
-6. Run `migrate` to replay on target
+6. Re-run `pre_check` — the second run detects **target collisions**:
+   source objects whose FQN already exists on target and isn't tracked
+   by the tool. By default (`on_target_collision: fail`) this blocks
+   step 7. Either rename / drop the colliding target objects, or flip
+   `on_target_collision: skip` to proceed and leave them untouched.
+7. Run `migrate` to replay on target
 
 To change values later, edit your local `config.yaml` and redeploy —
 **don't edit the workspace copy** (it's a mirror and gets overwritten).
