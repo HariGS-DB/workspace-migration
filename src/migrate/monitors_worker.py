@@ -93,6 +93,17 @@ def apply_monitor(mon: dict, *, auth: AuthManager, dry_run: bool) -> dict:
             "duration_seconds": time.time() - start,
         }
     except Exception as exc:  # noqa: BLE001
+        # Idempotency: on retry, the monitor may already exist on target.
+        # Treat "already exists" as validated so a resumed run doesn't mark
+        # an otherwise-complete migration as failed.
+        err_text = str(exc).lower()
+        if "already" in err_text and "exists" in err_text:
+            return {
+                "object_name": obj_key, "object_type": "monitor",
+                "status": "validated",
+                "error_message": "already existed on target",
+                "duration_seconds": time.time() - start,
+            }
         return {
             "object_name": obj_key,
             "object_type": "monitor",

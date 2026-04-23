@@ -72,6 +72,17 @@ def apply_policy(definition: dict, *, auth: AuthManager, dry_run: bool) -> dict:
             "duration_seconds": time.time() - start,
         }
     except Exception as exc:  # noqa: BLE001
+        # Idempotency: POST /policies has no PUT-or-create variant. On retry
+        # the policy may already exist — treat "already exists" as validated.
+        err_text = str(exc).lower()
+        if "already" in err_text and "exists" in err_text:
+            return {
+                "object_name": obj_key,
+                "object_type": "policy",
+                "status": "validated",
+                "error_message": "already existed on target",
+                "duration_seconds": time.time() - start,
+            }
         return {
             "object_name": obj_key,
             "object_type": "policy",
