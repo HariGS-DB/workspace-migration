@@ -86,11 +86,16 @@ def apply_connection(conn: dict, *, auth: AuthManager, dry_run: bool) -> dict:
             comment=comment,
         )
     except Exception as exc:  # noqa: BLE001
-        return {
-            "object_name": obj_key, "object_type": "connection",
-            "status": "failed", "error_message": str(exc),
-            "duration_seconds": time.time() - start,
-        }
+        # Idempotency: on retry the connection may already exist on target.
+        # Treat "already exists" as success so credential-gap status is still
+        # surfaced via the gaps check below.
+        err_text = str(exc).lower()
+        if not ("already" in err_text and "exists" in err_text):
+            return {
+                "object_name": obj_key, "object_type": "connection",
+                "status": "failed", "error_message": str(exc),
+                "duration_seconds": time.time() - start,
+            }
 
     gaps = _credential_gaps(options)
     if gaps:

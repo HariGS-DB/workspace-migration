@@ -87,6 +87,7 @@ def apply_share(
     # Add objects via SQL ALTER SHARE (covers table/view/volume/schema/catalog)
     failures: list[str] = []
     added = 0
+    already_present = 0
     for o in objects:
         dot_raw = o.get("data_object_type", "")
         # Enum stringified: "SharedDataObjectDataObjectType.TABLE" → "TABLE"
@@ -104,18 +105,29 @@ def apply_share(
             if res["state"] == "SUCCEEDED":
                 added += 1
             else:
-                failures.append(f"{keyword} {fqn}: {res.get('error', res['state'])}")
+                err_text = str(res.get("error", res["state"])).lower()
+                # Idempotency: ALTER SHARE ADD errors if the object is already
+                # in the share. Treat as no-op on retry rather than a failure.
+                if "already" in err_text:
+                    already_present += 1
+                else:
+                    failures.append(f"{keyword} {fqn}: {res.get('error', res['state'])}")
         except Exception as exc:  # noqa: BLE001
-            failures.append(f"{keyword} {fqn}: {exc}")
+            if "already" in str(exc).lower():
+                already_present += 1
+            else:
+                failures.append(f"{keyword} {fqn}: {exc}")
 
     duration = time.time() - start
     status_msg = f"Added {added} object(s)"
+    if already_present:
+        status_msg += f"; {already_present} already present"
     if failures:
         status_msg += f"; {len(failures)} failed: " + "; ".join(failures[:3])
     return {
         "object_name": obj_key, "object_type": "share",
         "status": "validated" if not failures else "validation_failed",
-        "error_message": status_msg if (failures or added == 0) else None,
+        "error_message": status_msg if (failures or (added == 0 and not already_present)) else None,
         "duration_seconds": duration,
     }
 

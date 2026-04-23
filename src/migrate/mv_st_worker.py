@@ -116,8 +116,17 @@ def _replay_mv_st_ddl(
 
     logger.info("Creating %s on target: %s", obj_type, obj_name)
     result = execute_and_poll(auth, wh_id, create_stmt)
+    already_existed = False
     if result["state"] != "SUCCEEDED":
-        return "failed", result.get("error", result["state"])
+        err_text = str(result.get("error", result["state"])).lower()
+        # Idempotency: MV/ST CREATE does not support OR REPLACE. On retry the
+        # object may already exist — skip CREATE and proceed to REFRESH so a
+        # resumed run still validates state instead of marking it failed.
+        if "already exists" in err_text or "already_exists" in err_text:
+            already_existed = True
+            logger.info("%s %s already exists on target; proceeding to REFRESH.", obj_type, obj_name)
+        else:
+            return "failed", result.get("error", result["state"])
 
     # REFRESH is best-effort — the target auto-pipeline may already have
     # started its own refresh. Log but don't fail the migration on REFRESH
@@ -127,9 +136,11 @@ def _replay_mv_st_ddl(
     if refresh["state"] != "SUCCEEDED":
         return (
             "validated",
-            f"created but REFRESH failed: {refresh.get('error', refresh['state'])}",
+            f"{'already existed on target; ' if already_existed else ''}"
+            f"{'REFRESH failed' if not already_existed else 'REFRESH failed'}: "
+            f"{refresh.get('error', refresh['state'])}",
         )
-    return "validated", None
+    return "validated", ("already existed on target" if already_existed else None)
 
 
 # COMMAND ----------
