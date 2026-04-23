@@ -19,18 +19,22 @@ except NameError:
 # COMMAND ----------
 # MV / ST Worker.
 #
-# Migrates SQL-created materialized views and streaming tables via DDL replay.
-# DLT-defined MVs/STs are explicitly out of scope for this tool (handled by a
+# Migrates SQL-created materialized views via DDL replay.
+# DLT-defined MVs are explicitly out of scope for this tool (handled by a
 # separate pipeline migration tool) and are skipped with status
 # `skipped_by_pipeline_migration`.
 #
-# Distinguishing signal: call `w.pipelines.get(pipeline_id)` on source and
-# inspect `spec.libraries`. Empty → SQL-created (auto-provisioned backing
-# pipeline). Non-empty → user-owned DLT pipeline → skip.
+# Streaming tables (ST) are hard-excluded from the core migration tool.
+# Source-side stream state (Kafka offsets, Auto Loader checkpoints, Delta
+# CDF cursors) cannot be transferred by DDL replay, and the future
+# **Stateful Services Phase** — a separate job — will handle them
+# properly. STs short-circuit here with status
+# `skipped_by_stateful_service_migration`. See
+# ``docs/stateful_services_phase.md``.
 #
-# Streaming-table caveat: source state (Kafka offsets, Auto Loader
-# checkpoints, Delta CDF cursors) does NOT transfer — target restarts from the
-# source's current position. Pre-check surfaces this as a warning.
+# Distinguishing signal (MV path): call `w.pipelines.get(pipeline_id)` on
+# source and inspect `spec.libraries`. Empty → SQL-created (auto-
+# provisioned backing pipeline). Non-empty → user-owned DLT pipeline → skip.
 
 import json
 import logging
@@ -102,7 +106,7 @@ def _replay_mv_st_ddl(
     ``failed`` / ``skipped`` (for dry_run).
     """
     obj_name = obj_info["object_name"]
-    obj_type = obj_info["object_type"]  # "mv" or "st"
+    obj_type = obj_info["object_type"]  # "mv" only — "st" is short-circuited upstream
     # create_statement is stripped from for_each batch payloads to stay under
     # Jobs' 3000-byte limit; re-hydrate from discovery_inventory.
     create_stmt = obj_info.get("create_statement") or ""
@@ -112,21 +116,7 @@ def _replay_mv_st_ddl(
     if not create_stmt:
         return "failed", "Missing create_statement in discovery row"
 
-    refresh_keyword = "MATERIALIZED VIEW" if obj_type == "mv" else "STREAMING TABLE"
-    refresh_sql = f"REFRESH {refresh_keyword} {obj_name}"
-
-    # Streaming-state warning: for STREAMING TABLE, DDL replay rebuilds the
-    # table on target, but source stream state (Kafka offsets, Auto Loader
-    # checkpoints, Delta CDF cursors) does NOT transfer. The target restarts
-    # its stream from the source's CURRENT position — any in-flight or
-    # unacknowledged records at migration time may be duplicated or missed.
-    # Surface this in error_message so operators see the caveat in
-    # migration_status without having to read worker source.
-    streaming_note = (
-        "warning: streaming source state (Kafka offsets, Auto Loader "
-        "checkpoints, Delta CDF cursors) does NOT transfer — target stream "
-        "restarts from source's current position"
-    )
+    refresh_sql = f"REFRESH MATERIALIZED VIEW {obj_name}"
 
     if dry_run:
         logger.info("[DRY RUN] Would execute: %s", create_stmt)
@@ -158,8 +148,6 @@ def _replay_mv_st_ddl(
     if refresh["state"] != "SUCCEEDED":
         verb = "REFRESH failed" if already_existed else "created but REFRESH failed"
         notes.append(f"{verb}: {refresh.get('error', refresh['state'])}")
-    if obj_type == "st":
-        notes.append(streaming_note)
     return "validated", ("; ".join(notes) if notes else None)
 
 
@@ -175,9 +163,39 @@ def migrate_mv_st(
     tracker: TrackingManager,
     wh_id: str,
 ) -> dict:
-    """Migrate one materialized view or streaming table."""
+    """Migrate one materialized view. Streaming tables are hard-excluded.
+
+    Streaming tables short-circuit immediately with
+    ``skipped_by_stateful_service_migration`` — offset / checkpoint state
+    cannot be transferred by DDL replay and is handled by the future
+    Stateful Services Phase. See ``docs/stateful_services_phase.md``.
+    """
     obj_name = obj_info["object_name"]
     obj_type = obj_info["object_type"]  # "mv" or "st"
+
+    start = time.time()
+
+    # Streaming tables are out of scope for the core migration tool.
+    # Emit a terminal skip status and bypass DLT detection entirely —
+    # the Stateful Services Phase (separate future job) migrates STs
+    # with proper stream-state handling.
+    if obj_type == "st":
+        logger.info(
+            "Skipping streaming table %s — handled by the Stateful Services Phase.",
+            obj_name,
+        )
+        return {
+            "object_name": obj_name,
+            "object_type": obj_type,
+            "status": "skipped_by_stateful_service_migration",
+            "error_message": (
+                "Streaming tables are out of scope for the core migration "
+                "tool. Migration handled by the Stateful Services Phase "
+                "(separate job). See docs/stateful_services_phase.md."
+            ),
+            "duration_seconds": time.time() - start,
+        }
+
     pipeline_id = obj_info.get("pipeline_id")
 
     tracker.append_migration_status(
@@ -195,8 +213,6 @@ def migrate_mv_st(
             }
         ]
     )
-
-    start = time.time()
 
     if not pipeline_id:
         return {
@@ -278,9 +294,11 @@ def run(dbutils, spark) -> None:
 
     tracker.append_migration_status(results)
     logger.info(
-        "MV/ST worker complete. %d validated, %d skipped_by_pipeline_migration, %d failed.",
+        "MV/ST worker complete. %d validated, %d skipped_by_pipeline_migration, "
+        "%d skipped_by_stateful_service_migration, %d failed.",
         sum(1 for r in results if r["status"] == "validated"),
         sum(1 for r in results if r["status"] == "skipped_by_pipeline_migration"),
+        sum(1 for r in results if r["status"] == "skipped_by_stateful_service_migration"),
         sum(1 for r in results if r["status"] == "failed"),
     )
 

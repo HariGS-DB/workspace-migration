@@ -9,13 +9,16 @@ Contract (see ``docs/retry_resumability.md`` for the full decision
 table):
 
 ================================  ==============  =========================
-Latest status (prior run)         Reconciler      Notes
-================================  ==============  =========================
-``validated``                     no-op           Terminal filtered by
-                                                  ``get_pending_objects``.
-``skipped_by_pipeline_migration`` no-op           Terminal ditto.
-``skipped_target_exists`` (X.4)   no-op           Terminal ditto.
-``in_progress`` (orphaned)        RESET -> pending Worker died mid-flight.
+Latest status (prior run)                    Reconciler      Notes
+===========================================  ==============  ==================
+``validated``                                no-op           Terminal filtered by
+                                                             ``get_pending_objects``.
+``skipped_by_pipeline_migration``            no-op           Terminal ditto.
+``skipped_target_exists`` (X.4)              no-op           Terminal ditto.
+``skipped_by_stateful_service_migration``   no-op           Terminal ditto — STs are
+                                                             handled by the future
+                                                             Stateful Services Phase.
+``in_progress`` (orphaned)                   RESET -> pending Worker died mid-flight.
                                                   Calls per-worker cleanup
                                                   hook; appends new
                                                   ``pending`` row.

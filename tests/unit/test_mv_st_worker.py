@@ -84,17 +84,18 @@ class TestMvStWorker:
 
     @patch("migrate.mv_st_worker.time")
     @patch("migrate.mv_st_worker.execute_and_poll")
-    def test_migrate_sql_created_st_uses_streaming_refresh(self, mock_execute, mock_time):
+    def test_streaming_table_is_skipped_by_stateful_service_migration(self, mock_execute, mock_time):
+        """Streaming tables are hard-excluded from the core migration tool.
+        They must short-circuit to ``skipped_by_stateful_service_migration``
+        without any CREATE/REFRESH DDL or pipeline lookup — the future
+        Stateful Services Phase handles them. See
+        ``docs/stateful_services_phase.md``.
+        """
         from migrate.mv_st_worker import migrate_mv_st
 
-        mock_time.time.side_effect = [100.0, 125.0]
-        mock_execute.return_value = {"state": "SUCCEEDED", "statement_id": "s"}
+        mock_time.time.side_effect = [100.0, 100.1]
 
         deps = self._make_deps()
-        pipeline = MagicMock()
-        pipeline.spec.libraries = []
-        deps["auth"].source_client.pipelines.get.return_value = pipeline
-
         obj_info = {
             "object_name": "`cat`.`sch`.`st1`",
             "object_type": "st",
@@ -103,9 +104,12 @@ class TestMvStWorker:
         }
         result = migrate_mv_st(obj_info, **deps)
 
-        assert result["status"] == "validated"
-        sqls = [c.args[2] for c in mock_execute.call_args_list]
-        assert any("REFRESH STREAMING TABLE" in s for s in sqls)
+        assert result["status"] == "skipped_by_stateful_service_migration"
+        assert "Stateful Services Phase" in result["error_message"]
+        assert "stateful_services_phase.md" in result["error_message"]
+        # No SQL was executed, no DLT detection invoked.
+        mock_execute.assert_not_called()
+        deps["auth"].source_client.pipelines.get.assert_not_called()
 
     @patch("migrate.mv_st_worker.time")
     def test_migrate_dlt_defined_is_skipped(self, mock_time):
@@ -257,14 +261,16 @@ class TestMvStWorkerEdgeCases:
     @patch("migrate.mv_st_worker.time")
     @patch("migrate.mv_st_worker.execute_and_poll")
     @patch("migrate.mv_st_worker._is_sql_created")
-    def test_st_uses_streaming_refresh_keyword(self, mock_is_sql, mock_execute, mock_time):
-        """Streaming tables get ``REFRESH STREAMING TABLE`` (not
-        ``REFRESH MATERIALIZED VIEW``). Locks in the syntax pick."""
+    def test_streaming_table_short_circuits_without_ddl(self, mock_is_sql, mock_execute, mock_time):
+        """Streaming tables are hard-excluded — short-circuit to
+        ``skipped_by_stateful_service_migration`` before any DLT detection
+        or DDL execution. Regression guard: reintroducing a DDL-replay
+        branch for STs would re-break the offset/checkpoint semantics
+        that the Stateful Services Phase is being built to handle.
+        See ``docs/stateful_services_phase.md``."""
         from migrate.mv_st_worker import migrate_mv_st
 
         mock_time.time.side_effect = [100.0, 100.1]
-        mock_is_sql.return_value = (True, "")
-        mock_execute.return_value = {"state": "SUCCEEDED", "statement_id": "s"}
 
         deps = self._deps()
         obj = {
@@ -273,80 +279,13 @@ class TestMvStWorkerEdgeCases:
             "pipeline_id": "p1",
             "create_statement": "CREATE STREAMING TABLE `c`.`s`.`st1` AS SELECT 1",
         }
-        migrate_mv_st(obj, **deps)
-
-        # Inspect all SQL calls — second one should be REFRESH on streaming.
-        sqls = [c.args[2] for c in mock_execute.call_args_list]
-        refresh_sqls = [s for s in sqls if "REFRESH" in s]
-        assert refresh_sqls, "Expected a REFRESH call"
-        assert "STREAMING TABLE" in refresh_sqls[0]
-        assert "MATERIALIZED VIEW" not in refresh_sqls[0]
-
-    @patch("migrate.mv_st_worker.time")
-    @patch("migrate.mv_st_worker.execute_and_poll")
-    @patch("migrate.mv_st_worker._is_sql_created")
-    def test_st_success_emits_streaming_state_warning(self, mock_is_sql, mock_execute, mock_time):
-        """On ST happy path, error_message carries a ``warning:`` note about
-        streaming source state not transferring. Operators reading
-        migration_status must see the caveat without having to open worker
-        source — this is the only signal that Kafka offsets / Auto Loader
-        checkpoints / CDF cursors are not migrated (Phase 2.5.12)."""
-        from migrate.mv_st_worker import migrate_mv_st
-
-        mock_time.time.side_effect = [100.0, 100.5]
-        mock_is_sql.return_value = (True, "")
-        mock_execute.return_value = {"state": "SUCCEEDED", "statement_id": "s"}
-
-        deps = self._deps()
-        obj = {
-            "object_name": "`c`.`s`.`st_ok`",
-            "object_type": "st",
-            "pipeline_id": "p1",
-            "create_statement": "CREATE STREAMING TABLE `c`.`s`.`st_ok` AS SELECT 1",
-        }
         result = migrate_mv_st(obj, **deps)
 
-        assert result["status"] == "validated"
-        assert result["error_message"] is not None, (
-            "ST happy path must carry a streaming-state warning in error_message"
-        )
-        msg = result["error_message"].lower()
-        assert "warning" in msg
-        assert "stream" in msg
-        assert "state" in msg or "offset" in msg or "checkpoint" in msg
-
-    @patch("migrate.mv_st_worker.time")
-    @patch("migrate.mv_st_worker.execute_and_poll")
-    @patch("migrate.mv_st_worker._is_sql_created")
-    def test_st_refresh_failure_preserves_streaming_warning(self, mock_is_sql, mock_execute, mock_time):
-        """REFRESH failure + streaming caveat must coexist in error_message.
-        Don't clobber the refresh-failure message with just the warning, and
-        don't drop the streaming caveat just because refresh failed."""
-        from migrate.mv_st_worker import migrate_mv_st
-
-        mock_time.time.side_effect = [100.0, 100.5]
-        mock_is_sql.return_value = (True, "")
-        mock_execute.side_effect = [
-            {"state": "SUCCEEDED", "statement_id": "s-create"},
-            {"state": "FAILED", "error": "PIPELINE_BUSY", "statement_id": "s-refresh"},
-        ]
-
-        deps = self._deps()
-        obj = {
-            "object_name": "`c`.`s`.`st_err`",
-            "object_type": "st",
-            "pipeline_id": "p1",
-            "create_statement": "CREATE STREAMING TABLE `c`.`s`.`st_err` AS SELECT 1",
-        }
-        result = migrate_mv_st(obj, **deps)
-
-        assert result["status"] == "validated"
-        msg = result["error_message"]
-        assert msg is not None
-        assert "REFRESH failed" in msg
-        assert "PIPELINE_BUSY" in msg
-        # Streaming caveat must survive alongside the refresh-failure note
-        assert "stream" in msg.lower()
+        assert result["status"] == "skipped_by_stateful_service_migration"
+        assert "Stateful Services Phase" in result["error_message"]
+        # No DDL, no DLT detection.
+        mock_execute.assert_not_called()
+        mock_is_sql.assert_not_called()
 
 
 class TestIcebergSkipByConfigBehaviorContract:

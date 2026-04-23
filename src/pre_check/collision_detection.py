@@ -107,6 +107,17 @@ def _volume_exists(client: WorkspaceClient, full_name: str) -> bool:
 # Map an object_type (as stored in discovery_inventory) to its probe fn.
 # ``view`` is a separate object_type in discovery but UC treats it as a
 # table for the purposes of ``tables.get``.
+#
+# ``mv`` is intentionally NOT probed — materialized views are out of scope
+# for v1 collision detection (the mv_st_worker already tolerates
+# "already exists" on target per the X.2 audit).
+#
+# ``st`` (streaming tables) is intentionally NOT probed either —
+# streaming tables are hard-excluded from the core migration tool and are
+# migrated by the future Stateful Services Phase (separate job). They
+# short-circuit in ``mv_st_worker`` with ``skipped_by_stateful_service_
+# migration``, so probing them here would report collisions that have no
+# downstream effect. See ``docs/stateful_services_phase.md``.
 _PROBES: dict[str, Callable[[WorkspaceClient, str], bool]] = {
     "catalog": _catalog_exists,
     "schema": _schema_exists,

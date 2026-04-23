@@ -21,12 +21,13 @@ assume independent worker idempotency.
 Terminal (filtered by `get_pending_objects`):
 
 - `validated`
-- `skipped` (matched by the `NOT IN ('validated', 'skipped')` literal in
-  `TrackingManager.get_pending_objects`). Every worker that wants to emit
-  a terminal skip uses `"skipped"` or `"skipped_by_pipeline_migration"`
-  (the latter matches the prefix `"skipped"` in the current filter only
-  because the orchestrator passes the MV/ST scope straight through; this
-  was resolved in PR #26).
+- `skipped_by_pipeline_migration` (DLT-owned MV; the pipelines workflow
+  handles it)
+- `skipped_target_exists` (X.4 — pre-existing target object under the
+  `on_target_collision: skip` policy)
+- `skipped_by_stateful_service_migration` (streaming tables, and the
+  general escape hatch for objects moved to the future Stateful
+  Services Phase — see `docs/stateful_services_phase.md`)
 
 Non-terminal (re-picked-up on next run):
 
@@ -152,20 +153,28 @@ Pin tests: `TestCommentsIdempotency`.
 
 ### `mv_st_worker.migrate_mv_st`
 
-DDL: `CREATE MATERIALIZED VIEW` / `CREATE STREAMING TABLE` (no OR REPLACE
-is supported by Databricks) + `REFRESH`.
+DDL: `CREATE MATERIALIZED VIEW` (no OR REPLACE is supported by
+Databricks) + `REFRESH`.
 
-**Bug (fixed in this PR):** on retry the CREATE fails with
+**Scope:** this worker covers **materialized views only**. Streaming
+tables are hard-excluded from the core migration tool and short-
+circuit to `skipped_by_stateful_service_migration` before any DLT
+detection or DDL execution — the future Stateful Services Phase (a
+separate job) migrates them with proper offset / checkpoint handling.
+See `docs/stateful_services_phase.md`.
+
+**Bug (fixed in PR #38):** on retry the CREATE fails with
 `[TABLE_OR_VIEW_ALREADY_EXISTS]`, previously marking the object failed.
-Now the worker tolerates "already exists" errors from the CREATE step
+The worker now tolerates "already exists" errors from the CREATE step
 and proceeds to `REFRESH`.
 
-| Input status | Target | Current behavior | Idempotent? |
-|---|---|---|---|
-| any | missing | CREATE + REFRESH | yes |
-| any | exists (retry) | CREATE fails "already exists" → proceed to REFRESH | yes (after fix) |
-| any (DLT-defined) | any | `skipped_by_pipeline_migration` | yes |
-| any | any other CREATE error | `failed` | correct |
+| Object type | Input status | Target | Current behavior | Idempotent? |
+|---|---|---|---|---|
+| `mv` | any | missing | CREATE + REFRESH | yes |
+| `mv` | any | exists (retry) | CREATE fails "already exists" → proceed to REFRESH | yes (after fix) |
+| `mv` (DLT-defined) | any | any | `skipped_by_pipeline_migration` | yes |
+| `mv` | any | any other CREATE error | `failed` | correct |
+| `st` | any | any | `skipped_by_stateful_service_migration` (short-circuit) | yes — terminal skip |
 
 Pin tests: `TestMvStIdempotency`.
 

@@ -403,6 +403,31 @@ class TestMvStIdempotency:
         )
         assert res["status"] == "failed"
 
+    @patch("migrate.mv_st_worker._is_sql_created")
+    @patch("migrate.mv_st_worker.time")
+    @patch("migrate.mv_st_worker.execute_and_poll")
+    def test_streaming_table_is_skipped_by_stateful_service_migration(self, mock_exec, mock_time, mock_is_sql):
+        """Pin: streaming tables are hard-excluded from the core tool and
+        short-circuit to ``skipped_by_stateful_service_migration``. The
+        Stateful Services Phase (separate future job) migrates them with
+        proper offset/checkpoint handling. Regression guard against
+        reintroducing a DDL-replay path for STs here —
+        ``_is_sql_created`` and ``execute_and_poll`` must not be called.
+        """
+        from migrate.mv_st_worker import migrate_mv_st
+
+        mock_time.time.side_effect = [100.0, 100.1]
+        deps = self._deps()
+        res = migrate_mv_st(
+            {"object_name": "`c`.`s`.`st1`", "object_type": "st",
+             "pipeline_id": "p1", "create_statement": "CREATE STREAMING TABLE ..."},
+            **deps,
+        )
+        assert res["status"] == "skipped_by_stateful_service_migration"
+        assert "Stateful Services Phase" in (res["error_message"] or "")
+        mock_is_sql.assert_not_called()
+        mock_exec.assert_not_called()
+
 
 # ============================================================================
 # tags_worker
