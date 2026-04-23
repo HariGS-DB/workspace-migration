@@ -614,7 +614,7 @@ class CatalogExplorer:
         results: list[dict] = []
         client = self.auth_manager.source_client.api_client  # type: ignore[attr-defined]
         for fqn in table_fqns:
-            clean = fqn.replace("`", "")
+            clean = fqn.strip("`").replace("`.`", ".")
             try:
                 resp = client.do("GET", f"/api/2.1/unity-catalog/tables/{clean}/monitor")
                 if isinstance(resp, dict) and resp.get("table_name"):
