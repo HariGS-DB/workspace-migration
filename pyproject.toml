@@ -15,6 +15,7 @@ dev = [
     "pytest-mock>=3.14",
     "ruff>=0.6.0",
     "mypy>=1.11",
+    "sqlglot>=25.0",
 ]
 
 [[tool.uv.index]]
