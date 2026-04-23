@@ -67,3 +67,20 @@ rls_cm_strategy: ""
 # each DEEP CLONE. Set to true ONLY during a scheduled maintenance
 # window — setup_sharing will refuse the strategy otherwise.
 rls_cm_maintenance_window_confirmed: false
+
+# --- Target pre-existing state / collision handling (X.4) ---
+# What to do when a discovered source object has the same FQN as an
+# object already on target, and no migration_status row says we
+# created it (someone else put it there: leftover dev fixture, manual
+# customer provisioning, prior tool run under a different tracking
+# catalog, etc.).
+#
+#   "fail"  (default) — pre_check emits a FAIL target_collision row
+#                       and migrate refuses to start. Operator must
+#                       rename, drop, or move the colliding object
+#                       off target, then rerun pre_check.
+#   "skip"  — pre_check emits a WARN row and seeds a
+#             skipped_target_exists migration_status row per collision
+#             so workers skip each one. Target object is left untouched.
+on_target_collision: "fail"
+

@@ -22,6 +22,7 @@ from common.auth import AuthManager
 from common.catalog_utils import CatalogExplorer
 from common.config import MigrationConfig
 from common.tracking import TrackingManager
+from pre_check.collision_detection import build_skip_status_rows, detect_collisions
 
 # COMMAND ----------
 
@@ -351,6 +352,108 @@ def run(dbutils, spark):  # noqa: D103
             "WARN",
             f"Could not scan compute for external metastore config: {e}",
             "Manually check clusters/warehouses for javax.jdo.option.ConnectionURL in spark_conf.",
+        )
+
+    # ----- Target pre-existing state / collision detection (Check 14, X.4) -----
+    #
+    # Queries the target workspace for every object already recorded in
+    # discovery_inventory. When the target has the same FQN AND there's
+    # no migration_status row keyed by that FQN (meaning we didn't create
+    # it), we emit a target_collision pre_check row. Policy:
+    #
+    #   on_target_collision=fail (default): each collision is a FAIL row.
+    #     The orchestrator's pre_check gate refuses to start migrate when
+    #     any FAIL target_collision row is in the latest pre_check_results.
+    #
+    #   on_target_collision=skip: each collision is a WARN row, and
+    #     pre_check seeds a ``skipped_target_exists`` migration_status
+    #     row so the worker on next migrate run short-circuits that
+    #     object and leaves the target copy untouched.
+    #
+    # This check is a no-op on a fresh install (before discovery runs)
+    # because discovery_inventory is empty.
+    try:
+        discovery_rows = spark.sql(
+            f"""
+            SELECT object_name, object_type, source_type
+            FROM {config.tracking_catalog}.{config.tracking_schema}.discovery_inventory
+            """
+        ).collect()
+        discovery_dicts = [
+            {
+                "object_name": r.object_name,
+                "object_type": r.object_type,
+                "source_type": r.source_type,
+            }
+            for r in discovery_rows
+        ]
+        status_rows = spark.sql(
+            f"""
+            SELECT DISTINCT object_name, object_type
+            FROM {config.tracking_catalog}.{config.tracking_schema}.migration_status
+            """
+        ).collect()
+        existing_status_keys: set[tuple[str, str]] = {
+            (r.object_type, r.object_name) for r in status_rows
+        }
+        collisions = detect_collisions(
+            target_client=auth.target_client,
+            discovery_rows=discovery_dicts,
+            existing_status_keys=existing_status_keys,
+            hive_target_catalog=config.hive_target_catalog,
+        )
+        if not discovery_dicts:
+            _add(
+                "check_target_collisions",
+                "PASS",
+                "discovery_inventory is empty — run discovery before re-running "
+                "pre-check to enable collision detection.",
+            )
+        elif not collisions:
+            _add(
+                "check_target_collisions",
+                "PASS",
+                f"Target has no pre-existing object among {len(discovery_dicts)} discovered source objects.",
+            )
+        else:
+            policy = (config.on_target_collision or "fail").lower()
+            grouped: dict[str, list[str]] = {}
+            for c in collisions:
+                grouped.setdefault(c["object_type"], []).append(c["target_fqn"])
+            summary = ", ".join(f"{otype}={len(v)}" for otype, v in sorted(grouped.items()))
+            # First few target FQNs surfaced in the message — capped so the
+            # pre_check_results table doesn't balloon to multi-KB rows.
+            sample = [c["target_fqn"] for c in collisions[:10]]
+            details = f"{len(collisions)} collision(s) — {summary}. Sample: {sample}"
+            if policy == "skip":
+                _add(
+                    "check_target_collisions",
+                    "WARN",
+                    f"{details} — on_target_collision=skip; these will be skipped (skipped_target_exists).",
+                    "Target objects are left untouched. Verify that the pre-existing objects are the intended state.",
+                )
+                skip_rows = build_skip_status_rows(collisions)
+                if skip_rows:
+                    tracker.append_migration_status(skip_rows)
+            else:  # fail (the default)
+                _add(
+                    "check_target_collisions",
+                    "FAIL",
+                    f"{details} — on_target_collision=fail; migrate workflow will refuse to start.",
+                    "Rename, drop, or move the colliding target object(s); or set "
+                    "on_target_collision=skip to proceed without overwriting them.",
+                )
+    except Exception as e:  # noqa: BLE001 — discovery_inventory absent / transient
+        # discovery_inventory / migration_status may not exist yet on a
+        # first-ever pre_check run. init_tracking_tables above created
+        # them, but the collision check still needs discovery to have
+        # populated discovery_inventory at least once. Surface as a WARN
+        # so the operator sees why collision detection was skipped.
+        _add(
+            "check_target_collisions",
+            "WARN",
+            f"Collision detection skipped: {e}",
+            "Run discovery before re-running pre-check to enable collision detection.",
         )
 
     # Persist results

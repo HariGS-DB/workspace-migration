@@ -46,10 +46,15 @@ class TestPreCheck:
         mock_explorer_cls.return_value.list_hive_databases.return_value = []
         mock_explorer_cls.return_value.classify_hive_tables.return_value = []
 
+        # spark.sql default MagicMock returns an empty collect() which
+        # the collision-detection check reads as "discovery_inventory
+        # empty" → PASS.
+
         results = run(dbutils, spark)
 
-        # 10 core UC checks + 3 Hive/external-metastore checks = 13
-        assert len(results) == 13
+        # 10 core UC checks + 3 Hive/external-metastore checks +
+        # 1 target-collision check (X.4) = 14
+        assert len(results) == 14
         assert all(r["status"] in ("PASS", "WARN") for r in results)
         assert sum(1 for r in results if r["status"] == "FAIL") == 0
 
@@ -207,3 +212,280 @@ class TestPreCheckIndividualFailures:
         assert total_rows >= 5, (
             f"Only {total_rows} pre-check result(s) recorded — one check failing should not abort the rest."
         )
+
+
+
+def _setup_collision_mocks(
+    mock_auth_cls,
+    mock_tracker_cls,
+    mock_explorer_cls,
+    spark,
+    discovery_rows=None,
+    status_rows=None,
+    target_hits=None,
+):
+    """Wire the collision-detection dependencies: discovery_inventory SQL
+    returns the given rows, migration_status returns the given status
+    rows, and target_client.tables.get raises or returns based on
+    target_hits (a set of target FQNs present on target)."""
+    mock_auth = _base_mocks(mock_auth_cls, mock_tracker_cls, mock_explorer_cls, spark)
+
+    discovery_rows = discovery_rows or []
+    status_rows = status_rows or []
+    target_hits = target_hits or set()
+
+    # Build spark.sql side_effect: depending on query, return the right
+    # MagicMock.collect() output. The collision check issues TWO queries:
+    # one for discovery_inventory, one for migration_status.
+    def _sql_side_effect(query, *args, **kwargs):
+        r = MagicMock()
+        q = query if isinstance(query, str) else str(query)
+        if "discovery_inventory" in q and "SELECT object_name" in q:
+            mocks = []
+            for row in discovery_rows:
+                m = MagicMock()
+                m.object_name = row["object_name"]
+                m.object_type = row["object_type"]
+                m.source_type = row.get("source_type", "uc")
+                mocks.append(m)
+            r.collect.return_value = mocks
+            return r
+        if "migration_status" in q and "SELECT DISTINCT" in q:
+            mocks = []
+            for srow in status_rows:
+                m = MagicMock()
+                m.object_name = srow["object_name"]
+                m.object_type = srow["object_type"]
+                mocks.append(m)
+            r.collect.return_value = mocks
+            return r
+        if "current_metastore()" in q:
+            r.first.return_value = MagicMock(ms="metastore-id")
+            return r
+        # Default
+        r.first.return_value = MagicMock()
+        return r
+
+    spark.sql.side_effect = _sql_side_effect
+
+    # Wire target_client probes based on target_hits
+    def _tables_get(full_name):
+        if full_name in target_hits:
+            return MagicMock()
+        raise RuntimeError("NOT_FOUND")
+
+    def _catalogs_get(name):
+        if name in target_hits:
+            return MagicMock()
+        raise RuntimeError("NOT_FOUND")
+
+    mock_auth.target_client.tables.get.side_effect = _tables_get
+    mock_auth.target_client.catalogs.get.side_effect = _catalogs_get
+    mock_auth.target_client.schemas.get.side_effect = lambda full_name: (
+        MagicMock() if full_name in target_hits else (_ for _ in ()).throw(RuntimeError("NOT_FOUND"))
+    )
+    mock_auth.target_client.functions.get.side_effect = lambda name: (
+        MagicMock() if name in target_hits else (_ for _ in ()).throw(RuntimeError("NOT_FOUND"))
+    )
+    mock_auth.target_client.volumes.read.side_effect = lambda name: (
+        MagicMock() if name in target_hits else (_ for _ in ()).throw(RuntimeError("NOT_FOUND"))
+    )
+    return mock_auth
+
+
+class TestPreCheckCollisionDetection:
+    """X.4: pre_check's new check_target_collisions row.
+
+    Exercises each branch:
+    - discovery_inventory empty → PASS, no WARN
+    - no target hits → PASS
+    - target hits under default on_target_collision=fail → FAIL
+    - target hits under on_target_collision=skip → WARN + seeded
+      skipped_target_exists migration_status rows
+    - X.2 compatibility: status-row-present objects are NOT re-probed
+      (no duplicate collision row)
+    """
+
+    @patch("pre_check.pre_check.MigrationConfig.from_workspace_file")
+    @patch("pre_check.pre_check.AuthManager")
+    @patch("pre_check.pre_check.TrackingManager")
+    @patch("pre_check.pre_check.CatalogExplorer")
+    def test_empty_discovery_is_pass(self, mock_explorer_cls, mock_tracker_cls, mock_auth_cls, mock_from_file):
+        dbutils = MagicMock()
+        spark = MagicMock()
+        mock_from_file.return_value = _make_config()
+        _setup_collision_mocks(mock_auth_cls, mock_tracker_cls, mock_explorer_cls, spark, discovery_rows=[])
+
+        results = run(dbutils, spark)
+        coll = [r for r in results if r["check_name"] == "check_target_collisions"]
+        assert len(coll) == 1
+        assert coll[0]["status"] == "PASS"
+        assert "empty" in coll[0]["message"].lower()
+
+    @patch("pre_check.pre_check.MigrationConfig.from_workspace_file")
+    @patch("pre_check.pre_check.AuthManager")
+    @patch("pre_check.pre_check.TrackingManager")
+    @patch("pre_check.pre_check.CatalogExplorer")
+    def test_no_target_hits_is_pass(self, mock_explorer_cls, mock_tracker_cls, mock_auth_cls, mock_from_file):
+        dbutils = MagicMock()
+        spark = MagicMock()
+        mock_from_file.return_value = _make_config()
+        _setup_collision_mocks(
+            mock_auth_cls, mock_tracker_cls, mock_explorer_cls, spark,
+            discovery_rows=[
+                {"object_name": "`c`.`s`.`t`", "object_type": "managed_table", "source_type": "uc"}
+            ],
+            target_hits=set(),
+        )
+
+        results = run(dbutils, spark)
+        coll = [r for r in results if r["check_name"] == "check_target_collisions"]
+        assert len(coll) == 1
+        assert coll[0]["status"] == "PASS"
+
+    @patch("pre_check.pre_check.MigrationConfig.from_workspace_file")
+    @patch("pre_check.pre_check.AuthManager")
+    @patch("pre_check.pre_check.TrackingManager")
+    @patch("pre_check.pre_check.CatalogExplorer")
+    def test_collision_under_fail_policy_emits_fail(
+        self, mock_explorer_cls, mock_tracker_cls, mock_auth_cls, mock_from_file
+    ):
+        """Default on_target_collision=fail: collision rows get status=FAIL
+        and pre_check itself raises (because at least one check failed)."""
+        dbutils = MagicMock()
+        spark = MagicMock()
+        mock_from_file.return_value = _make_config(on_target_collision="fail")
+        _setup_collision_mocks(
+            mock_auth_cls, mock_tracker_cls, mock_explorer_cls, spark,
+            discovery_rows=[
+                {"object_name": "`c`.`s`.`t`", "object_type": "managed_table", "source_type": "uc"}
+            ],
+            target_hits={"c.s.t"},
+        )
+
+        with pytest.raises(Exception, match="Pre-check failed"):
+            run(dbutils, spark)
+
+    @patch("pre_check.pre_check.MigrationConfig.from_workspace_file")
+    @patch("pre_check.pre_check.AuthManager")
+    @patch("pre_check.pre_check.TrackingManager")
+    @patch("pre_check.pre_check.CatalogExplorer")
+    def test_collision_under_skip_policy_emits_warn_and_seeds_status(
+        self, mock_explorer_cls, mock_tracker_cls, mock_auth_cls, mock_from_file
+    ):
+        """on_target_collision=skip: collision rows are WARN, and pre_check
+        calls tracker.append_migration_status with skipped_target_exists."""
+        dbutils = MagicMock()
+        spark = MagicMock()
+        mock_from_file.return_value = _make_config(on_target_collision="skip")
+        _setup_collision_mocks(
+            mock_auth_cls, mock_tracker_cls, mock_explorer_cls, spark,
+            discovery_rows=[
+                {"object_name": "`c`.`s`.`t`", "object_type": "managed_table", "source_type": "uc"},
+                {"object_name": "`c`.`s`.`v`", "object_type": "view", "source_type": "uc"},
+            ],
+            target_hits={"c.s.t", "c.s.v"},
+        )
+
+        results = run(dbutils, spark)
+
+        coll = [r for r in results if r["check_name"] == "check_target_collisions"]
+        assert len(coll) == 1
+        assert coll[0]["status"] == "WARN"
+        assert "skipped_target_exists" in coll[0]["message"]
+
+        # Verify tracker.append_migration_status was called with the skip rows
+        tracker = mock_tracker_cls.return_value
+        tracker.append_migration_status.assert_called_once()
+        seeded = tracker.append_migration_status.call_args[0][0]
+        assert len(seeded) == 2
+        assert all(r["status"] == "skipped_target_exists" for r in seeded)
+        assert {r["object_type"] for r in seeded} == {"managed_table", "view"}
+
+    @patch("pre_check.pre_check.MigrationConfig.from_workspace_file")
+    @patch("pre_check.pre_check.AuthManager")
+    @patch("pre_check.pre_check.TrackingManager")
+    @patch("pre_check.pre_check.CatalogExplorer")
+    def test_status_row_blocks_collision(
+        self, mock_explorer_cls, mock_tracker_cls, mock_auth_cls, mock_from_file
+    ):
+        """X.2 compatibility: on re-run of migrate, discovery has a
+        discovery row AND a migration_status row for the same (type, name).
+        The status row means the object is ours — collision detection
+        must NOT fire, else X.2's idempotency is broken."""
+        dbutils = MagicMock()
+        spark = MagicMock()
+        mock_from_file.return_value = _make_config(on_target_collision="fail")
+        _setup_collision_mocks(
+            mock_auth_cls, mock_tracker_cls, mock_explorer_cls, spark,
+            discovery_rows=[
+                {"object_name": "`c`.`s`.`t`", "object_type": "managed_table", "source_type": "uc"}
+            ],
+            status_rows=[
+                {"object_name": "`c`.`s`.`t`", "object_type": "managed_table"}
+            ],
+            target_hits={"c.s.t"},  # target has it — but we own it
+        )
+
+        results = run(dbutils, spark)
+        coll = [r for r in results if r["check_name"] == "check_target_collisions"]
+        assert len(coll) == 1
+        assert coll[0]["status"] == "PASS"
+
+    @patch("pre_check.pre_check.MigrationConfig.from_workspace_file")
+    @patch("pre_check.pre_check.AuthManager")
+    @patch("pre_check.pre_check.TrackingManager")
+    @patch("pre_check.pre_check.CatalogExplorer")
+    def test_collision_check_records_per_type_summary(
+        self, mock_explorer_cls, mock_tracker_cls, mock_auth_cls, mock_from_file
+    ):
+        """Message should break down the counts per object_type so
+        operators can triage quickly."""
+        dbutils = MagicMock()
+        spark = MagicMock()
+        mock_from_file.return_value = _make_config(on_target_collision="skip")
+        _setup_collision_mocks(
+            mock_auth_cls, mock_tracker_cls, mock_explorer_cls, spark,
+            discovery_rows=[
+                {"object_name": "`c`.`s`.`t1`", "object_type": "managed_table", "source_type": "uc"},
+                {"object_name": "`c`.`s`.`t2`", "object_type": "managed_table", "source_type": "uc"},
+                {"object_name": "`c`.`s`.`v`", "object_type": "view", "source_type": "uc"},
+            ],
+            target_hits={"c.s.t1", "c.s.t2", "c.s.v"},
+        )
+
+        results = run(dbutils, spark)
+        coll = [r for r in results if r["check_name"] == "check_target_collisions"]
+        assert len(coll) == 1
+        assert "managed_table=2" in coll[0]["message"]
+        assert "view=1" in coll[0]["message"]
+
+    @patch("pre_check.pre_check.MigrationConfig.from_workspace_file")
+    @patch("pre_check.pre_check.AuthManager")
+    @patch("pre_check.pre_check.TrackingManager")
+    @patch("pre_check.pre_check.CatalogExplorer")
+    def test_discovery_query_failure_is_warn_not_fail(
+        self, mock_explorer_cls, mock_tracker_cls, mock_auth_cls, mock_from_file
+    ):
+        """If discovery_inventory doesn't exist (fresh install before
+        discovery ran), collision detection emits WARN with a pointer to
+        run discovery — not FAIL."""
+        dbutils = MagicMock()
+        spark = MagicMock()
+        mock_from_file.return_value = _make_config()
+        _base_mocks(mock_auth_cls, mock_tracker_cls, mock_explorer_cls, spark)
+
+        def _sql(query, *args, **kwargs):
+            if "discovery_inventory" in str(query):
+                raise RuntimeError("TABLE_NOT_FOUND")
+            r = MagicMock()
+            r.first.return_value = MagicMock(ms="ms")
+            return r
+
+        spark.sql.side_effect = _sql
+
+        results = run(dbutils, spark)
+        coll = [r for r in results if r["check_name"] == "check_target_collisions"]
+        assert len(coll) == 1
+        assert coll[0]["status"] == "WARN"
+        assert "run discovery" in coll[0]["action_required"].lower()

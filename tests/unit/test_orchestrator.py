@@ -157,3 +157,132 @@ class TestBuildBatchesByteCap:
         assert len(parsed) == 2
         assert {o["object_name"] for o in parsed[0]} == {"t_0", "t_1", "t_2"}
         assert parsed[1][0]["object_name"] == "huge"
+
+
+
+class TestOrchestratorCollisionGate:
+    """X.4: migrate orchestrator refuses to start when the latest
+    pre_check_results has a target_collision FAIL row. Verified against
+    the ``check_collision_gate`` helper in ``migrate.orchestrator``.
+    """
+
+    def _mock_spark_with_gate_rows(self, rows: list[tuple[str, str]]):
+        """Return a spark mock whose sql().collect() yields MagicMocks
+        with .status and .message attrs matching the given (status, msg)
+        tuples."""
+        from unittest.mock import MagicMock
+
+        result_rows = []
+        for status, msg in rows:
+            m = MagicMock()
+            m.status = status
+            m.message = msg
+            result_rows.append(m)
+        result = MagicMock()
+        result.collect.return_value = result_rows
+        spark = MagicMock()
+        spark.sql.return_value = result
+        return spark
+
+    def _mock_config(self):
+        from unittest.mock import MagicMock
+
+        c = MagicMock()
+        c.tracking_catalog = "migration_tracking"
+        c.tracking_schema = "cp_migration"
+        return c
+
+    def test_no_pre_check_rows_passes(self):
+        """When pre_check_results has no target_collision row, the gate is
+        a no-op — typical when pre_check hasn't been rerun after
+        discovery."""
+        from migrate.orchestrator import check_collision_gate
+
+        spark = self._mock_spark_with_gate_rows([])
+        check_collision_gate(spark, self._mock_config())  # should not raise
+
+    def test_pass_row_does_not_raise(self):
+        """A PASS row means collision detection ran and found nothing."""
+        from migrate.orchestrator import check_collision_gate
+
+        spark = self._mock_spark_with_gate_rows([("PASS", "all clean")])
+        check_collision_gate(spark, self._mock_config())  # should not raise
+
+    def test_warn_row_does_not_raise(self):
+        """A WARN row means on_target_collision=skip was active —
+        migration proceeds with skipped_target_exists rows pre-seeded."""
+        from migrate.orchestrator import check_collision_gate
+
+        spark = self._mock_spark_with_gate_rows([("WARN", "3 collisions skipped")])
+        check_collision_gate(spark, self._mock_config())  # should not raise
+
+    def test_fail_row_raises(self):
+        """A FAIL row means on_target_collision=fail and the operator
+        hasn't resolved the collisions. Migrate must refuse."""
+        import pytest
+
+        from migrate.orchestrator import check_collision_gate
+
+        spark = self._mock_spark_with_gate_rows([("FAIL", "2 collisions detected")])
+        with pytest.raises(RuntimeError, match="Migrate refused to start"):
+            check_collision_gate(spark, self._mock_config())
+
+    def test_fail_row_message_surfaced_in_raise(self):
+        """Helpful errors: operator should see which collisions blocked
+        them without having to tail the pre_check_results table."""
+        import pytest
+
+        from migrate.orchestrator import check_collision_gate
+
+        spark = self._mock_spark_with_gate_rows(
+            [("FAIL", "collision in catalog retail and schema orders")]
+        )
+        with pytest.raises(RuntimeError) as excinfo:
+            check_collision_gate(spark, self._mock_config())
+        assert "collision in catalog retail" in str(excinfo.value)
+
+    def test_pre_check_results_missing_is_warning_not_raise(self):
+        """Fresh install: pre_check_results table doesn't exist yet (or
+        some other sql exception). Gate should log and return, not raise —
+        that would block EVERY first migrate run."""
+        from unittest.mock import MagicMock
+
+        from migrate.orchestrator import check_collision_gate
+
+        spark = MagicMock()
+        spark.sql.side_effect = RuntimeError("TABLE_OR_VIEW_NOT_FOUND")
+        check_collision_gate(spark, self._mock_config())  # should not raise
+
+    def test_sql_query_filters_to_target_collisions_only(self):
+        """Sanity: the gate should only look at target_collision rows,
+        not every FAIL in pre_check_results."""
+        from unittest.mock import MagicMock
+
+        from migrate.orchestrator import check_collision_gate
+
+        spark = MagicMock()
+        result = MagicMock()
+        result.collect.return_value = []
+        spark.sql.return_value = result
+        check_collision_gate(spark, self._mock_config())
+
+        sql = spark.sql.call_args[0][0]
+        assert "check_target_collisions" in sql
+        # Partitions by check_name so multiple pre_check runs don't
+        # confuse the gate — only the LATEST row per check_name is read.
+        assert "ROW_NUMBER()" in sql
+        assert "ORDER BY checked_at DESC" in sql
+
+    def test_multiple_rows_any_fail_triggers_raise(self):
+        """If the pre_check batch writes multiple collision checks (e.g.
+        one per type in a future expansion), any FAIL triggers the gate.
+        Safety > strictness."""
+        import pytest
+
+        from migrate.orchestrator import check_collision_gate
+
+        spark = self._mock_spark_with_gate_rows(
+            [("PASS", "catalogs clean"), ("FAIL", "schemas have collisions")]
+        )
+        with pytest.raises(RuntimeError):
+            check_collision_gate(spark, self._mock_config())
