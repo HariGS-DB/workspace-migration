@@ -758,6 +758,39 @@ try:
     spark.sql(  # noqa: F821
         f"ALTER SHARE `{_CUSTOMER_SHARE}` ADD TABLE integration_test_src.test_schema.managed_orders"
     )
+    # Transfer ownership of the share + recipient to the migration SPN.
+    #
+    # UC's ``shares.list()`` / ``recipients.list()`` only return objects
+    # the caller owns or holds USE SHARE / USE RECIPIENT on. Discovery
+    # runs under the migration SPN (via OAuth M2M in ``AuthManager``);
+    # the seeder's ``_w_seed = WorkspaceClient()`` uses the notebook's
+    # ambient credentials which are *usually* the same SPN (thanks to
+    # ``run_as`` on the job) but can drift to the triggering user when
+    # the job is kicked off manually. If that drifts, the customer
+    # share silently vanishes from ``list_shares()`` output at
+    # discovery time and no migration_status row is ever emitted for
+    # ``SHARE_integration_test_customer_share`` (root cause of F.1).
+    #
+    # Ownership transfer is the strongest access bit (it implies USE
+    # SHARE / USE RECIPIENT) and makes discovery deterministic
+    # regardless of seeder identity. Swallow failures with
+    # ``contextlib.suppress`` so a transient ALTER failure doesn't mask
+    # the share-create success; if ownership didn't land and the SPN
+    # can't see the share, the 3.24 hard assertion in
+    # ``test_uc_end_to_end.py`` fails loud with a clear message.
+    if config.spn_client_id:
+        with contextlib.suppress(Exception):
+            spark.sql(  # noqa: F821
+                f"ALTER SHARE `{_CUSTOMER_SHARE}` OWNER TO `{config.spn_client_id}`"
+            )
+        with contextlib.suppress(Exception):
+            spark.sql(  # noqa: F821
+                f"ALTER RECIPIENT `{_CUSTOMER_RECIPIENT}` OWNER TO `{config.spn_client_id}`"
+            )
+        print(
+            f"Transferred ownership of share '{_CUSTOMER_SHARE}' + recipient "
+            f"'{_CUSTOMER_RECIPIENT}' to SPN {config.spn_client_id}."
+        )
     _has_customer_share = True
     print(f"Created customer share '{_CUSTOMER_SHARE}' with recipient '{_CUSTOMER_RECIPIENT}'.")
 except Exception as _exc:  # noqa: BLE001

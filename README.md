@@ -156,6 +156,44 @@ edit them there if you need to change test behavior.
 See [docs/external_hive_metastore.md](docs/external_hive_metastore.md) for
 the Hive-specific cluster/init-script reconfiguration checklist.
 
+## Delta Sharing prerequisites
+
+Unity Catalog's Delta Sharing APIs (`shares.list()`, `recipients.list()`,
+and `shares.get(..., include_shared_data=True)`) only return objects
+where the caller is the **owner** or holds `USE SHARE` / `USE RECIPIENT`.
+Objects the caller can't see are silently skipped by the API — no
+exception is raised.
+
+The migration SPN connects to both workspaces via OAuth M2M (see
+`spn_client_id` in config). For Delta Sharing discovery to find your
+customer-defined shares and recipients, the SPN must either:
+
+1. **Own** each share + recipient to be migrated (recommended), or
+2. Hold `USE SHARE` on each share and `USE RECIPIENT` on each recipient.
+
+Both can be granted via SQL on the source workspace before running
+`discovery`:
+
+```sql
+-- Transfer ownership (strongest, implies USE SHARE / USE RECIPIENT):
+ALTER SHARE `my_customer_share` OWNER TO `<spn-application-id>`;
+ALTER RECIPIENT `my_customer_recipient` OWNER TO `<spn-application-id>`;
+
+-- Or grant the minimum required privileges:
+GRANT USE SHARE ON SHARE `my_customer_share` TO `<spn-application-id>`;
+GRANT USE RECIPIENT ON RECIPIENT `my_customer_recipient` TO `<spn-application-id>`;
+```
+
+If this step is skipped, `discovery` silently omits the share / recipient
+from `discovery_inventory`, no migration_status row is written, and the
+object won't be recreated on target. `pre_check`'s `check_source_sharing`
+only verifies that the SPN can call `shares.list()` at all — not that
+any specific customer share is visible.
+
+The migration tool's own internal `cp_migration_share` is created by
+`setup_sharing` under the SPN's own identity, so it's always owned by
+the SPN and never affected by this.
+
 ## Row filter / column mask on managed tables
 
 Delta Sharing providers cannot share tables protected by legacy
