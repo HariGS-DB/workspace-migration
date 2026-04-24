@@ -78,9 +78,12 @@ import sys  # noqa: E402
 try:
     _ctx = dbutils.notebook.entry_point.getDbutils().notebook().getContext()  # noqa: F821
     _nb = _ctx.notebookPath().get()
-    _src = "/Workspace" + _nb.split("/files/")[0] + "/files/src"
-    if _src not in sys.path:
-        sys.path.insert(0, _src)
+    _files_root = "/Workspace" + _nb.split("/files/")[0] + "/files"
+    _src = f"{_files_root}/src"
+    # /files/src first (common.config resolution) then /files (tests.integration.*).
+    for _p in (_src, _files_root):
+        if _p not in sys.path:
+            sys.path.insert(0, _p)
 except NameError:
     pass
 
@@ -147,9 +150,7 @@ include_uc = _get_bool("include_uc", "true")
 include_hive = _get_bool("include_hive", "false")
 iceberg_strategy = _get_str("iceberg_strategy", "")
 rls_cm_strategy = _get_str("rls_cm_strategy", "")
-rls_cm_maintenance_window_confirmed = _get_bool(
-    "rls_cm_maintenance_window_confirmed", "false"
-)
+rls_cm_maintenance_window_confirmed = _get_bool("rls_cm_maintenance_window_confirmed", "false")
 migrate_hive_dbfs_root = _get_bool("migrate_hive_dbfs_root", "false")
 hive_dbfs_target_path = _get_str("hive_dbfs_target_path", "")
 batch_size_raw = _get_str("batch_size", "")
