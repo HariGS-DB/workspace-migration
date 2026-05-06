@@ -65,8 +65,8 @@ UC_OVERRIDES = dict(
     include_uc=True,
     include_hive=False,
     iceberg_strategy="ddl_replay",
-    rls_cm_strategy="drop_and_restore",
-    rls_cm_maintenance_window_confirmed=True,
+    rls_cm_strategy="staging_copy",
+    rls_cm_maintenance_window_confirmed=False,
     migrate_hive_dbfs_root=False,
     hive_dbfs_target_path="",
     batch_size_raw="",
@@ -253,8 +253,8 @@ class TestApplyIntegrationOverridesBehavior:
         cfg = apply_integration_overrides(_baseline_config(), **UC_OVERRIDES)
         assert cfg["scope"] == {"include_uc": True, "include_hive": False}
         assert cfg["iceberg_strategy"] == "ddl_replay"
-        assert cfg["rls_cm_strategy"] == "drop_and_restore"
-        assert cfg["rls_cm_maintenance_window_confirmed"] is True
+        assert cfg["rls_cm_strategy"] == "staging_copy"
+        assert cfg["rls_cm_maintenance_window_confirmed"] is False
         assert cfg["migrate_hive_dbfs_root"] is False
         # batch_size + catalog_filter unset in UC workflow → baseline preserved.
         assert cfg["batch_size"] == 50
@@ -290,7 +290,11 @@ class TestApplyIntegrationOverridesBehavior:
         assert baseline["rls_cm_strategy"] == snapshot["rls_cm_strategy"]
 
     def test_drop_and_restore_without_consent_raises(self):
-        bad = dict(UC_OVERRIDES, rls_cm_maintenance_window_confirmed=False)
+        bad = dict(
+            UC_OVERRIDES,
+            rls_cm_strategy="drop_and_restore",
+            rls_cm_maintenance_window_confirmed=False,
+        )
         with pytest.raises(ValueError, match="rls_cm_maintenance_window_confirmed=true"):
             apply_integration_overrides(_baseline_config(), **bad)
 
@@ -351,8 +355,7 @@ class TestOverrideCycleCleanSlate:
     the Hive run's override must start from the pristine baseline
     — NEVER from the UC run's post-override config. Otherwise UC-only
     keys leak:
-      - ``rls_cm_strategy=drop_and_restore``
-      - ``rls_cm_maintenance_window_confirmed=true``
+      - ``rls_cm_strategy=staging_copy``
       - ``iceberg_strategy=ddl_replay``
 
     And similarly for the negative-paths workflow whose chained
@@ -371,8 +374,8 @@ class TestOverrideCycleCleanSlate:
         baseline = _baseline_config()
         uc_cfg = apply_integration_overrides(baseline, **UC_OVERRIDES)
         # Sanity: UC run set the UC-specific keys.
-        assert uc_cfg["rls_cm_strategy"] == "drop_and_restore"
-        assert uc_cfg["rls_cm_maintenance_window_confirmed"] is True
+        assert uc_cfg["rls_cm_strategy"] == "staging_copy"
+        assert uc_cfg["rls_cm_maintenance_window_confirmed"] is False
         assert uc_cfg["iceberg_strategy"] == "ddl_replay"
 
         hive_cfg = apply_integration_overrides(baseline, **HIVE_OVERRIDES)
@@ -415,7 +418,7 @@ class TestOverrideCycleCleanSlate:
         baseline = _baseline_config()
 
         uc = apply_integration_overrides(baseline, **UC_OVERRIDES)
-        assert uc["rls_cm_strategy"] == "drop_and_restore"
+        assert uc["rls_cm_strategy"] == "staging_copy"
 
         hive = apply_integration_overrides(baseline, **HIVE_OVERRIDES)
         assert hive["rls_cm_strategy"] == ""
@@ -586,8 +589,10 @@ class TestWorkflowOverrideContractsMatchYaml:
         assert params.get("include_uc") == "true"
         assert params.get("include_hive") == "false"
         assert params.get("iceberg_strategy") == "ddl_replay"
-        assert params.get("rls_cm_strategy") == "drop_and_restore"
-        assert params.get("rls_cm_maintenance_window_confirmed") == "true"
+        assert params.get("rls_cm_strategy") == "staging_copy"
+        # staging_copy doesn't strip RLS/CM on the source so the UC
+        # workflow no longer needs the maintenance-window consent flag.
+        assert "rls_cm_maintenance_window_confirmed" not in params
         assert params.get("migrate_hive_dbfs_root") == "false"
         # UC does NOT pass batch_size or catalog_filter — those are the
         # keys most at risk of leaking from a prior Hive run.
@@ -674,8 +679,8 @@ class TestNotebookFileCycleSimulation:
         # Inspect the intermediate state — UC-specific keys set.
         with open(config_path) as f:
             after_uc = _yaml.safe_load(f)
-        assert after_uc["rls_cm_strategy"] == "drop_and_restore"
-        assert after_uc["rls_cm_maintenance_window_confirmed"] is True
+        assert after_uc["rls_cm_strategy"] == "staging_copy"
+        assert after_uc["rls_cm_maintenance_window_confirmed"] is False
 
         self._cycle_step(str(config_path), str(backup_path), HIVE_OVERRIDES, restore_from_backup=True)
         with open(config_path) as f:
