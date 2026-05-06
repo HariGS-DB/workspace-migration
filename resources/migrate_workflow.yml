@@ -115,6 +115,19 @@ resources:
           notebook_task:
             notebook_path: ../src/migrate/restore_rls_cm.py
 
+        - task_key: cleanup_staging
+          run_if: ALL_DONE
+          notebook_task:
+            notebook_path: ../src/migrate/cleanup_staging.py
+            source: WORKSPACE
+          depends_on:
+            # Mirror restore_rls_cm's deps so it fires alongside.
+            # Path A: drops staging tables created by setup_sharing.
+            # Strategy gate is inside the notebook — drop_and_restore
+            # runs make this a no-op.
+            - task_key: migrate_managed_tables
+            - task_key: migrate_external_tables
+
         # --- Phase 3 Tier A: table-level governance (after grants) ---
 
         - task_key: migrate_tags
@@ -269,6 +282,7 @@ resources:
             - task_key: migrate_online_tables
             - task_key: migrate_hive_grants
             - task_key: restore_rls_cm
+            - task_key: cleanup_staging
           run_if: ALL_DONE
           notebook_task:
             notebook_path: ../src/migrate/summary.py
