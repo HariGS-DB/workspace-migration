@@ -364,3 +364,52 @@ def test_get_unrestored_rls_cm_manifest_handles_malformed_filter_columns_json(mo
                        "filter_columns": [], "masks": [],
                        "stripped_at": None, "restore_failed_at": None,
                        "restore_error": None, "run_id": "r1"}]
+
+
+def test_init_creates_rls_cm_staging_manifest_table(mock_spark, mock_config):
+    """Path A: init_tracking_tables must create rls_cm_staging_manifest
+    table in tracking_catalog.tracking_schema with the expected schema."""
+    mgr = TrackingManager(mock_spark, mock_config)
+    mgr.init_tracking_tables()
+
+    sql_calls = [c.args[0] for c in mock_spark.sql.call_args_list]
+    staging_create = next(
+        (s for s in sql_calls if "rls_cm_staging_manifest" in s and "CREATE TABLE IF NOT EXISTS" in s),
+        None,
+    )
+    assert staging_create is not None, "rls_cm_staging_manifest CREATE missing"
+    assert "original_fqn STRING NOT NULL" in staging_create
+    assert "staging_fqn STRING NOT NULL" in staging_create
+    assert "created_at TIMESTAMP" in staging_create
+    assert "dropped_at TIMESTAMP" in staging_create
+    assert "drop_failed_at TIMESTAMP" in staging_create
+    assert "drop_error STRING" in staging_create
+    assert "run_id STRING" in staging_create
+
+
+def test_init_creates_cp_migration_staging_schema(mock_spark, mock_config):
+    """Path A: staging tables live in tracking_catalog.cp_migration_staging,
+    not tracking_schema. Must create the schema."""
+    mgr = TrackingManager(mock_spark, mock_config)
+    mgr.init_tracking_tables()
+
+    sql_calls = [c.args[0] for c in mock_spark.sql.call_args_list]
+    staging_schema_create = next(
+        (s for s in sql_calls if "cp_migration_staging" in s and "CREATE SCHEMA IF NOT EXISTS" in s),
+        None,
+    )
+    assert staging_schema_create is not None, "cp_migration_staging schema CREATE missing"
+    # Positive: schema is created at tracking_catalog.cp_migration_staging
+    # (with or without backticks).
+    assert (
+        "migration_tracking.cp_migration_staging" in staging_schema_create
+        or "`migration_tracking`.`cp_migration_staging`" in staging_schema_create
+    )
+    # Negative: schema must NOT be nested inside tracking_schema. Catches
+    # the bug where the implementation accidentally uses ``self._fqn``
+    # (catalog.schema) instead of ``self._catalog`` as the parent.
+    assert "migration_tracking.cp_migration.cp_migration_staging" not in staging_schema_create
+    assert (
+        "`migration_tracking`.`cp_migration`.`cp_migration_staging`"
+        not in staging_schema_create
+    )

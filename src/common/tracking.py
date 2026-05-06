@@ -188,6 +188,29 @@ class TrackingManager:
             ) USING DELTA
         """)
 
+        # Path A staging schema — staging table copies live here so the
+        # tracking_schema only holds metadata, not user data. One schema
+        # for all migrations against this tracking catalog.
+        self.spark.sql(f"""
+            CREATE SCHEMA IF NOT EXISTS {self._catalog}.cp_migration_staging
+        """)
+
+        # Path A staging manifest — records the source→staging FQN mapping
+        # for each table we copy as a substitute for stripping RLS/CM.
+        # ``dropped_at`` is NULL until cleanup_staging removes the staging
+        # table after migrate completes.
+        self.spark.sql(f"""
+            CREATE TABLE IF NOT EXISTS {self._fqn}.rls_cm_staging_manifest (
+                original_fqn STRING NOT NULL,
+                staging_fqn STRING NOT NULL,
+                created_at TIMESTAMP,
+                dropped_at TIMESTAMP,
+                drop_failed_at TIMESTAMP,
+                drop_error STRING,
+                run_id STRING
+            ) USING DELTA
+        """)
+
     def write_discovery_inventory(self, df: DataFrame) -> None:
         """Upsert the discovery inventory with this run's DataFrame.
 
