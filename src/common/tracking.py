@@ -485,6 +485,97 @@ class TrackingManager:
             )
         return result
 
+    # ---------------------------------------------------------------- Staging manifest (Path A)
+
+    def record_staging_created(
+        self,
+        *,
+        original_fqn: str,
+        staging_fqn: str,
+        run_id: str,
+    ) -> None:
+        """Insert a staging-manifest row. Call AFTER the CTAS into
+        cp_migration_staging succeeds so we never record a non-existent
+        staging table."""
+        self.spark.sql(
+            f"""
+            INSERT INTO {self._fqn}.rls_cm_staging_manifest
+            SELECT
+                '{original_fqn.replace("'", "''")}',
+                '{staging_fqn.replace("'", "''")}',
+                current_timestamp(),
+                CAST(NULL AS TIMESTAMP),
+                CAST(NULL AS TIMESTAMP),
+                CAST(NULL AS STRING),
+                '{run_id.replace("'", "''")}'
+            """
+        )
+
+    def mark_staging_dropped(self, staging_fqn: str) -> None:
+        """Mark a staging table dropped after cleanup_staging succeeded.
+        Clears any prior drop_failed_at / drop_error from a previous attempt."""
+        self.spark.sql(
+            f"""
+            UPDATE {self._fqn}.rls_cm_staging_manifest
+            SET dropped_at = current_timestamp(),
+                drop_failed_at = NULL,
+                drop_error = NULL
+            WHERE staging_fqn = '{staging_fqn.replace("'", "''")}'
+              AND dropped_at IS NULL
+            """
+        )
+
+    def mark_staging_drop_failed(self, staging_fqn: str, error_message: str) -> None:
+        """Stamp drop_failed_at + drop_error so the next cleanup_staging run
+        retries and operators can inspect failures."""
+        safe = error_message.replace("'", "''")[:4000]
+        self.spark.sql(
+            f"""
+            UPDATE {self._fqn}.rls_cm_staging_manifest
+            SET drop_failed_at = current_timestamp(),
+                drop_error = '{safe}'
+            WHERE staging_fqn = '{staging_fqn.replace("'", "''")}'
+              AND dropped_at IS NULL
+            """
+        )
+
+    def get_active_stagings(self) -> list[dict]:
+        """Return all staging rows still awaiting cleanup, oldest first.
+        cleanup_staging iterates this list to drop staging tables."""
+        rows = self.spark.sql(
+            f"""
+            SELECT original_fqn, staging_fqn, created_at, run_id
+            FROM {self._fqn}.rls_cm_staging_manifest
+            WHERE dropped_at IS NULL
+            ORDER BY created_at ASC
+            """
+        ).collect()
+        return [
+            {
+                "original_fqn": r.original_fqn,
+                "staging_fqn": r.staging_fqn,
+                "created_at": r.created_at,
+                "run_id": r.run_id,
+            }
+            for r in rows
+        ]
+
+    def get_staging_for_original(self, original_fqn: str) -> str | None:
+        """Look up the staging FQN for an original table FQN. Returns None
+        if no active staging exists. managed_table_worker uses this to find
+        the staging consumer-side path for DEEP CLONE."""
+        rows = self.spark.sql(
+            f"""
+            SELECT staging_fqn
+            FROM {self._fqn}.rls_cm_staging_manifest
+            WHERE original_fqn = '{original_fqn.replace("'", "''")}'
+              AND dropped_at IS NULL
+            ORDER BY created_at DESC
+            LIMIT 1
+            """
+        ).collect()
+        return rows[0].staging_fqn if rows else None
+
     def get_tables_with_rls_cm(self) -> set[str]:
         """Return the set of table FQNs that have row filters or column masks
         recorded in discovery_inventory.
