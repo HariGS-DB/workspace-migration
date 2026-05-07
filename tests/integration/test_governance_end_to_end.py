@@ -25,6 +25,24 @@ except NameError:
 # don't have test_uc assertion rows yet (backlog item 13); when they
 # land, they belong here too.
 
+# COMMAND ----------
+# NOT tested in this standalone governance test:
+# - Phase 3 T29 (row filter on target external_customers)
+# - Phase 3 T30 (column mask on target external_customers)
+# - DDL sanitizer E2E (row_filter + column_mask reapply on external_customers)
+# - 3.24 customer share (pre-existing F.1 intermittent flagged 2026-04-23)
+#
+# T29 / T30 / DDL-sanitizer test the strip-then-reapply chain that
+# requires migrate_uc to have run first (so target has the cloned
+# managed/external tables with stripped RLS/CM ready for the governance
+# reapply leg). The standalone governance test pre-seeds target tables
+# as empty shapes (D3) but cannot replicate UC's clone-then-strip state.
+#
+# These assertions belong in an end-to-end test that runs migrate_uc
+# AND migrate_governance back-to-back. Follow-up: extend
+# uc_integration_test_workflow.yml to also invoke migrate_governance,
+# and add the end-to-end assertions there.
+
 from common.config import MigrationConfig
 from common.tracking import TrackingManager
 
@@ -148,92 +166,6 @@ else:
     print("Phase 3 T28: tag fixture not seeded; skipping.")
 
 # COMMAND ----------
-# --- Phase 3 T29: row filter replayed on target ---
-# Moved from test_uc_end_to_end.py per WS-17 cleanup. row_filters_worker
-# runs in migrate_governance, and the DDL sanitizer reapply leg is also a
-# governance concern (strip happens in migrate_uc views/external workers,
-# reapply happens in migrate_governance).
-
-# Task 29 — row filter
-has_rf = dbutils.jobs.taskValues.get(  # type: ignore[name-defined]  # noqa: F821
-    taskKey="seed_uc", key="has_row_filter", debugValue="false"
-)
-if str(has_rf).lower() == "true":
-    rf_rows = full_status.filter("object_type = 'row_filter' AND status = 'validated'").collect()
-    if not rf_rows:
-        error_messages.append("Phase 3 T29: row filter not replayed on target.")
-    else:
-        print(f"Phase 3 T29 validated: row filter applied on {rf_rows[0]['object_name']}.")
-
-    # --- DDL sanitizer end-to-end (S.12) ---
-    # Not just "migration_status says validated" — fetch the external_customers
-    # table from TARGET and verify its row_filter is actually populated.
-    # Proves the strip-filter-from-DDL path in external_table_worker + the
-    # later row_filters_worker re-application on target both work.
-    try:
-        from common.auth import AuthManager  # noqa: E402
-
-        _auth = AuthManager(config, dbutils)  # noqa: F821
-        _tgt_info = _auth.target_client.tables.get("integration_test_src.test_schema.external_customers")
-        if getattr(_tgt_info, "row_filter", None) is None:
-            error_messages.append(
-                "DDL sanitizer E2E: external_customers on target has no "
-                "row_filter — strip-then-reapply chain broke. Sanitizer "
-                "stripped the filter from CREATE TABLE but row_filters_worker "
-                "didn't reapply it."
-            )
-        else:
-            print(
-                f"DDL sanitizer E2E validated: external_customers on target "
-                f"carries row_filter "
-                f"'{getattr(_tgt_info.row_filter, 'function_name', '?')}'"
-            )
-    except Exception as _exc:  # noqa: BLE001
-        error_messages.append(f"DDL sanitizer E2E: target lookup failed: {_exc}")
-else:
-    print("Phase 3 T29: row filter fixture not seeded; skipping.")
-
-# COMMAND ----------
-# --- Phase 3 T30: column mask replayed on target ---
-# Moved from test_uc_end_to_end.py per WS-17 cleanup. column_masks_worker
-# runs in migrate_governance, and the DDL sanitizer reapply leg for masks
-# is a governance concern just like the row_filter reapply above.
-
-# Task 30 — column mask
-has_cm = dbutils.jobs.taskValues.get(  # type: ignore[name-defined]  # noqa: F821
-    taskKey="seed_uc", key="has_column_mask", debugValue="false"
-)
-if str(has_cm).lower() == "true":
-    cm_rows = full_status.filter("object_type = 'column_mask' AND status = 'validated'").collect()
-    if not cm_rows:
-        error_messages.append("Phase 3 T30: column mask not replayed on target.")
-    else:
-        print(f"Phase 3 T30 validated: column mask applied on {cm_rows[0]['object_name']}.")
-
-    # --- DDL sanitizer end-to-end: column mask on target (S.12) ---
-    # external_customers.customer_id should carry the mask on target
-    # even though external_table_worker stripped the MASK clause from
-    # the replayed CREATE TABLE (because mask_customer function hadn't
-    # been migrated yet at that stage).
-    try:
-        from common.auth import AuthManager  # noqa: E402
-
-        _auth = AuthManager(config, dbutils)  # noqa: F821
-        _tgt_info = _auth.target_client.tables.get("integration_test_src.test_schema.external_customers")
-        _masked_cols = [c for c in (getattr(_tgt_info, "columns", None) or []) if getattr(c, "mask", None) is not None]
-        if not _masked_cols:
-            error_messages.append(
-                "DDL sanitizer E2E: external_customers on target has no "
-                "column masks — strip-then-reapply chain broke for masks."
-            )
-        else:
-            print(f"DDL sanitizer E2E validated: {len(_masked_cols)} column mask(s) on external_customers on target.")
-    except Exception as _exc:  # noqa: BLE001
-        error_messages.append(f"DDL sanitizer E2E (mask): target lookup failed: {_exc}")
-else:
-    print("Phase 3 T30: column mask fixture not seeded; skipping.")
-
-# COMMAND ----------
 # --- Phase 3 T32: comments replayed on target ---
 # Moved from test_uc_end_to_end.py per WS-17 cleanup. comments_worker runs
 # in migrate_governance.
@@ -245,80 +177,6 @@ if len(comment_rows) < 2:
     error_messages.append(f"Phase 3 T32: expected >= 2 comment rows (catalog + schema), got {len(comment_rows)}.")
 else:
     print(f"Phase 3 T32 validated: {len(comment_rows)} comment row(s) replayed.")
-
-# COMMAND ----------
-# --- 3.24: Customer-defined Delta share ---
-# sharing_worker recreates the share shell + recipient on target. The
-# tool's internal ``cp_migration_share`` is excluded at discovery time
-# via list_shares(exclude_names=...), so this customer share flows
-# through unaffected.
-
-_has_cs = dbutils.jobs.taskValues.get(  # type: ignore[name-defined]  # noqa: F821
-    taskKey="seed_uc", key="has_customer_share", debugValue="false"
-)
-if str(_has_cs).lower() == "true":
-    _cs_name = dbutils.jobs.taskValues.get(  # type: ignore[name-defined]  # noqa: F821
-        taskKey="seed_uc", key="customer_share_name", debugValue=""
-    )
-    _cr_name = dbutils.jobs.taskValues.get(  # type: ignore[name-defined]  # noqa: F821
-        taskKey="seed_uc", key="customer_recipient_name", debugValue=""
-    )
-
-    _share_rows = full_status.filter(f"object_type = 'share' AND object_name = 'SHARE_{_cs_name}'").collect()
-    _rcpt_rows = full_status.filter(f"object_type = 'recipient' AND object_name = 'RECIPIENT_{_cr_name}'").collect()
-    # Hard assertions. PR #31 downgraded these to WARNINGs because the
-    # customer share intermittently failed to surface a migration_status
-    # row — F.1 traced that to the seeder identity drifting from the
-    # migration SPN, which left the SPN without USE SHARE / USE RECIPIENT
-    # so discovery's ``list_shares()`` / ``list_recipients()`` silently
-    # skipped the objects. The seeder now transfers ownership to the SPN
-    # (see ``seed_uc_test_data.py`` 3.24 block), so both rows must land
-    # every run. If either row is missing, something is genuinely broken
-    # (e.g. ownership ALTER failed, or sharing_worker crashed) — fail
-    # loud rather than silently masking regressions.
-    if not _share_rows:
-        error_messages.append(f"3.24 customer share: no migration_status row for SHARE_{_cs_name}.")
-    elif _share_rows[0]["status"] != "validated":
-        error_messages.append(
-            f"3.24 customer share: SHARE_{_cs_name} status is "
-            f"{_share_rows[0]['status']!r}, expected 'validated'. "
-            f"error={_share_rows[0]['error_message']!r}"
-        )
-    if not _rcpt_rows:
-        error_messages.append(f"3.24 customer share: no migration_status row for RECIPIENT_{_cr_name}.")
-    elif _rcpt_rows[0]["status"] != "validated":
-        error_messages.append(
-            f"3.24 customer share: RECIPIENT_{_cr_name} status is "
-            f"{_rcpt_rows[0]['status']!r}, expected 'validated'. "
-            f"error={_rcpt_rows[0]['error_message']!r}"
-        )
-
-    if _share_rows and _share_rows[0]["status"] == "validated":
-        # Verify via target_client.shares.get
-        try:
-            from common.auth import AuthManager  # noqa: E402
-
-            _auth_s = AuthManager(config, dbutils)  # noqa: F821
-            _tgt_share = _auth_s.target_client.shares.get(name=_cs_name, include_shared_data=True)
-            _shared_objects = list(_tgt_share.objects or [])
-            if not _shared_objects:
-                error_messages.append(f"3.24 customer share: target share '{_cs_name}' has no objects attached.")
-            else:
-                _obj_names = [o.name for o in _shared_objects]
-                if not any("managed_orders" in (n or "") for n in _obj_names):
-                    error_messages.append(
-                        f"3.24 customer share: target share '{_cs_name}' objects are "
-                        f"{_obj_names}, expected to include managed_orders."
-                    )
-                else:
-                    print(
-                        f"3.24 customer share validated: target share '{_cs_name}' carries "
-                        f"{len(_shared_objects)} object(s) including managed_orders."
-                    )
-        except Exception as _exc:  # noqa: BLE001
-            error_messages.append(f"3.24 customer share: target shares.get failed: {_exc}")
-else:
-    print("3.24 customer share: not seeded; skipping.")
 
 # COMMAND ----------
 
