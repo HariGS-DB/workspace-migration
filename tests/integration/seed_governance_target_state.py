@@ -68,6 +68,32 @@ _sql_on_target("""
     ) USING DELTA
 """)
 
+# external_customers is the target table for T29 row filter / T30
+# column mask reapply + DDL sanitizer E2E. row_filters_worker and
+# column_masks_worker need this target table to exist before they can
+# ALTER TABLE ... SET ROW FILTER / SET MASK on it.
+_sql_on_target("""
+    CREATE TABLE IF NOT EXISTS integration_test_src.test_schema.external_customers (
+        customer_id INT,
+        name STRING,
+        region STRING
+    ) USING DELTA
+""")
+
+# managed_sensitive carries source RLS+CM in the integration fixture;
+# the governance test's RLS/CM reapply path doesn't strictly require
+# it on target (Path A staging_copy keeps source intact and the tests
+# under migrate_governance look at policy presence on whichever target
+# tables governance attaches to). Still seed the shape for safety.
+_sql_on_target("""
+    CREATE TABLE IF NOT EXISTS integration_test_src.test_schema.managed_sensitive (
+        id INT,
+        region STRING,
+        account_id STRING,
+        amount DOUBLE
+    ) USING DELTA
+""")
+
 # test_volume is the target volume for 3.15 (VOLUME tags) and 3.17
 # (volume comment).
 _sql_on_target("CREATE VOLUME IF NOT EXISTS integration_test_src.test_schema.test_volume")
