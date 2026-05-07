@@ -9,8 +9,7 @@ resources:
 
           X.3.1  Invalid spn_client_id              -> pre_check FAILs
           X.3.2  Unreachable target_workspace_url   -> pre_check FAILs
-          X.3.3  include_uc=false AND include_hive=false
-                                                    -> migrate SUCCEEDs as no-op
+          X.3.3  No discoverable source objects     -> migrate SUCCEEDs as no-op
 
         All three chains rewrite the same workspace ``config.yaml``, so they
         run sequentially (not in parallel) — otherwise one chain's config
@@ -28,8 +27,6 @@ resources:
           notebook_task:
             notebook_path: ../../tests/integration/setup_test_config.py
             base_parameters:
-              include_uc: "true"
-              include_hive: "false"
               iceberg_strategy: ""
               rls_cm_strategy: ""
               migrate_hive_dbfs_root: "false"
@@ -65,8 +62,6 @@ resources:
           notebook_task:
             notebook_path: ../../tests/integration/setup_test_config.py
             base_parameters:
-              include_uc: "true"
-              include_hive: "false"
               iceberg_strategy: ""
               rls_cm_strategy: ""
               migrate_hive_dbfs_root: "false"
@@ -90,11 +85,14 @@ resources:
               trigger_task_key: "trigger_X32_pre_check"
               parent_run_id: "{{job.run_id}}"
 
-        # ---------- Scenario X.3.3: Both scopes false (no-op) ----------
-        # Not an error path — migrate should complete as SUCCESS.
-        # setup_sharing returns early (``include_uc=false``); orchestrator
-        # publishes empty task values; the for_each workers receive []
-        # batches and skip; summary finishes.
+        # ---------- Scenario X.3.3: Empty discovery (no-op) ----------
+        # Not an error path — migrate should complete as SUCCESS even when
+        # discovery finds no objects to migrate. After WS-10 the scope
+        # flags (``include_uc`` / ``include_hive``) were removed; this
+        # scenario now relies on the fact that nothing has been seeded
+        # for the negative-paths run, so discovery emits an empty
+        # inventory, the for_each workers receive [] batches and skip,
+        # and summary finishes cleanly.
 
         - task_key: setup_X33_config
           depends_on:
@@ -103,8 +101,6 @@ resources:
           notebook_task:
             notebook_path: ../../tests/integration/setup_test_config.py
             base_parameters:
-              include_uc: "false"
-              include_hive: "false"
               iceberg_strategy: ""
               rls_cm_strategy: ""
               migrate_hive_dbfs_root: "false"
