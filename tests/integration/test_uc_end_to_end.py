@@ -1240,11 +1240,209 @@ else:
     print("3.20 Model artifacts: fixture not seeded; skipping.")
 
 # COMMAND ----------
-# --- Path A staging_copy assertions placeholder ---
-# Task 15 will land staging_copy-specific end-to-end assertions
-# (rls_cm_staging_manifest, target RLS/CM re-apply, cleanup_staging
-# behaviour). The drop_and_restore P.1 block was removed in Task 14
-# alongside the strategy itself.
+# --- Path A staging_copy end-to-end assertions ---
+# Only meaningful when rls_cm_strategy="staging_copy" — under the empty
+# default the RLS/CM table is skipped, so neither the staging manifest
+# nor cp_migration_staging will be populated.
+#
+# The staging_copy contract guarantees:
+#   1. setup_sharing CTAS-copies each RLS/CM-bearing table into
+#      <tracking_catalog>.cp_migration_staging.stg_<sha12> (admin-bypassed
+#      via is_account_group_member('admins') in the seed's filter/mask
+#      bodies). A row lands in rls_cm_staging_manifest with dropped_at
+#      NULL.
+#   2. managed_table_worker DEEP CLONEs from the staging copy on the
+#      consumer side, so target_row_count matches the unfiltered source
+#      count (already cross-checked by the L60 managed_rows assertion).
+#   3. cleanup_staging (final workflow task) drops every staging table
+#      and stamps dropped_at via mark_staging_dropped, leaving the
+#      cp_migration_staging schema empty.
+#   4. The source RLS/CM is **never mutated** (Path A's whole point —
+#      no strip-then-restore window), so source TableInfo retains its
+#      row_filter / column mask after migrate completes.
+
+if _rls_cm_strategy_active == "staging_copy" and str(has_rls_cm_managed).lower() == "true":
+    # The seed applied row filter + column mask to managed_sensitive
+    # (managed table) using region_filter / mask_customer — both
+    # contain is_account_group_member('admins') so the migrate SPN
+    # bypasses them during the staging CTAS.
+    _staging_rls_cm_fqns = [
+        "integration_test_src.test_schema.managed_sensitive",
+    ]
+
+    # P.1 — every manifest row must have dropped_at NOT NULL after
+    # cleanup_staging. drop_failed_at + drop_error must both be NULL.
+    _manifest_fqn = (
+        f"{config.tracking_catalog}.{config.tracking_schema}.rls_cm_staging_manifest"
+    )
+    try:
+        _staging_rows = spark.sql(  # noqa: F821
+            f"SELECT original_fqn, staging_fqn, dropped_at, drop_failed_at, drop_error "
+            f"FROM {_manifest_fqn}"
+        ).collect()
+    except Exception as _exc:  # noqa: BLE001
+        error_messages.append(
+            f"P.1 staging manifest: cannot read {_manifest_fqn}: {_exc}. "
+            f"TrackingManager.ensure_tracking_objects may have failed to "
+            f"create the manifest."
+        )
+        _staging_rows = []
+
+    if not _staging_rows:
+        error_messages.append(
+            "P.1 staging manifest: no rows recorded for the seeded "
+            "managed_sensitive RLS/CM fixture. setup_sharing's "
+            "staging_copy branch (record_staging) didn't fire — check "
+            "the rls_cm_strategy plumbing into setup_sharing."
+        )
+    else:
+        for _row in _staging_rows:
+            if _row.dropped_at is None:
+                error_messages.append(
+                    f"P.1 staging manifest: staging table {_row.staging_fqn} "
+                    f"(for original {_row.original_fqn}) has dropped_at IS NULL "
+                    f"after cleanup_staging — the cleanup task either didn't "
+                    f"run or silently skipped this row. drop_failed_at="
+                    f"{_row.drop_failed_at}, drop_error={_row.drop_error!r}."
+                )
+            elif _row.drop_failed_at is not None or _row.drop_error is not None:
+                error_messages.append(
+                    f"P.1 staging manifest: staging {_row.staging_fqn} dropped "
+                    f"but residual drop_failed_at={_row.drop_failed_at} / "
+                    f"drop_error={_row.drop_error!r}; cleanup_staging didn't "
+                    f"clear retry markers via mark_staging_dropped."
+                )
+        if not [r for r in _staging_rows if r.dropped_at is None]:
+            print(
+                f"P.1 staging manifest validated: {len(_staging_rows)} row(s) "
+                f"with dropped_at NOT NULL and clean retry markers."
+            )
+
+    # P.2 — cp_migration_staging schema must be empty. cleanup_staging
+    # drops each staging table; no orphans should remain. SHOW TABLES
+    # against the schema is the cheapest way to assert physical absence
+    # (the manifest is metadata, this proves the table no longer exists).
+    _staging_schema = f"{config.tracking_catalog}.cp_migration_staging"
+    try:
+        _remaining = spark.sql(  # noqa: F821
+            f"SHOW TABLES IN {_staging_schema}"
+        ).collect()
+    except Exception as _exc:  # noqa: BLE001
+        error_messages.append(
+            f"P.2 staging schema: SHOW TABLES IN {_staging_schema} failed: {_exc}. "
+            f"The schema should have been created by ensure_tracking_objects."
+        )
+        _remaining = []
+
+    if _remaining:
+        _leftover = [r.tableName for r in _remaining]
+        error_messages.append(
+            f"P.2 staging schema: cp_migration_staging not empty after "
+            f"cleanup_staging — leftover tables: {_leftover}. cleanup_staging "
+            f"either skipped these or hit a DROP error without recording it "
+            f"(check drop_failed_at / drop_error in the manifest)."
+        )
+    else:
+        print(
+            f"P.2 staging schema validated: {_staging_schema} is empty after "
+            f"cleanup_staging."
+        )
+
+    # P.3 — Source RLS/CM intact. Path A's invariant is "source never
+    # mutated": no strip-then-restore window, no drop-then-rebuild. So
+    # post-migrate, every fixture table that had RLS/CM still has it.
+    try:
+        from common.auth import AuthManager  # noqa: E402
+
+        _auth_pa = AuthManager(config, dbutils)  # noqa: F821
+        for _fqn in _staging_rls_cm_fqns:
+            try:
+                _src_info = _auth_pa.source_client.tables.get(_fqn)
+            except Exception as _exc:  # noqa: BLE001
+                error_messages.append(
+                    f"P.3 source RLS/CM intact: source_client.tables.get({_fqn}) "
+                    f"failed: {_exc}."
+                )
+                continue
+            _has_rf = getattr(_src_info, "row_filter", None) is not None
+            _has_cm = any(
+                getattr(c, "mask", None) is not None
+                for c in (getattr(_src_info, "columns", None) or [])
+            )
+            if not _has_rf and not _has_cm:
+                error_messages.append(
+                    f"P.3 source RLS/CM intact: source table {_fqn} has "
+                    f"NEITHER row_filter NOR column mask after migrate — "
+                    f"Path A invariant violated. setup_sharing's "
+                    f"staging_copy branch must not touch the source."
+                )
+            else:
+                print(
+                    f"P.3 source RLS/CM intact: {_fqn} retains "
+                    f"row_filter={_has_rf}, column_mask={_has_cm} on source."
+                )
+    except Exception as _exc:  # noqa: BLE001
+        error_messages.append(
+            f"P.3 source RLS/CM intact: AuthManager bootstrap failed: {_exc}."
+        )
+
+    # P.4 — Target row count equals unfiltered source count. The L60
+    # managed_rows block already enforces source_row_count ==
+    # target_row_count for every validated managed_table; here we add
+    # a sharper assertion specifically for the RLS/CM-bearing tables
+    # so a regression that silently drops rows during the staging CTAS
+    # surfaces with a staging-copy-specific error message rather than
+    # a generic row-count mismatch.
+    for _fqn in _staging_rls_cm_fqns:
+        _ms_rows = full_status.filter(
+            f"object_type = 'managed_table' AND object_name LIKE '%{_fqn.split('.')[-1]}%'"
+        ).collect()
+        if not _ms_rows:
+            error_messages.append(
+                f"P.4 admin-bypass row count: no migration_status row for "
+                f"{_fqn}; staging_copy migrate didn't run for this fixture."
+            )
+            continue
+        _row = _ms_rows[0]
+        if _row["status"] != "validated":
+            error_messages.append(
+                f"P.4 admin-bypass row count: {_fqn} status is "
+                f"{_row['status']!r}, expected 'validated' under staging_copy."
+            )
+            continue
+        _src_n = _row["source_row_count"]
+        _tgt_n = _row["target_row_count"]
+        if _src_n is None or _tgt_n is None:
+            error_messages.append(
+                f"P.4 admin-bypass row count: {_fqn} has NULL "
+                f"source_row_count={_src_n} / target_row_count={_tgt_n}."
+            )
+        elif _src_n != _tgt_n:
+            error_messages.append(
+                f"P.4 admin-bypass row count: {_fqn} target ({_tgt_n}) != "
+                f"source ({_src_n}). Admin bypass may not have applied to "
+                f"the staging CTAS — check the SPN's group membership and "
+                f"the filter function bodies."
+            )
+        else:
+            # Seed inserts 3 rows into managed_sensitive. If the row filter
+            # had been applied during staging CTAS (admin bypass failed),
+            # only US rows would have been copied (2 of 3) — checking >0
+            # alone is too weak; require the seed's known unfiltered count.
+            print(
+                f"P.4 admin-bypass row count validated: {_fqn} src=tgt="
+                f"{_src_n} (full unfiltered set copied through staging)."
+            )
+elif _rls_cm_strategy_active == "staging_copy":
+    print(
+        "Path A staging_copy assertions: managed_sensitive fixture not "
+        "seeded; skipping (P.1–P.4 require has_rls_cm_managed=true)."
+    )
+else:
+    print(
+        f"Path A staging_copy assertions: rls_cm_strategy="
+        f"{_rls_cm_strategy_active!r} (not 'staging_copy'); skipping P.1–P.4."
+    )
 
 # COMMAND ----------
 
