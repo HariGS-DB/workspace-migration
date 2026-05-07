@@ -57,7 +57,7 @@ def _baseline_config() -> dict:
 
 # ---------------------------------------------------------------
 # Overrides that mirror the integration workflow YAMLs. If these
-# drift from ``resources/*_integration_test_workflow.yml`` the
+# drift from ``resources/integration_tests/*_integration_test_workflow.yml`` the
 # ``TestWorkflowOverrideContractsMatchYaml`` suite will fail loudly.
 # ---------------------------------------------------------------
 UC_OVERRIDES = dict(
@@ -448,7 +448,7 @@ class TestWorkflowOverrideContractsMatchYaml:
         import yaml as _yaml
 
         repo_root = pathlib.Path(__file__).resolve().parents[2]
-        path = repo_root / "resources" / filename
+        path = repo_root / "resources" / "integration_tests" / filename
         doc = _yaml.safe_load(path.read_text())
         tasks = next(iter(doc["resources"]["jobs"].values()))["tasks"]
         for t in tasks:

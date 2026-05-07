@@ -6,7 +6,7 @@ Two artefacts are covered:
   verifies each scenario's trigger task failed for the expected reason
   (or succeeded as no-op for X.3.3). Source-level checks lock in the
   per-scenario expected-substring contract.
-- ``resources/negative_paths_integration_test_workflow.yml`` — YAML
+- ``resources/integration_tests/negative_paths_integration_test_workflow.yml`` — YAML
   that wires up the three scenarios. Shape checks make sure all three
   chains exist, run sequentially (required because they share
   ``config.yaml``), and each has a ``run_if: ALL_DONE`` assertion task.
@@ -33,6 +33,7 @@ def _workflow_yaml() -> dict:
     path = (
         pathlib.Path(__file__).resolve().parents[2]
         / "resources"
+        / "integration_tests"
         / "negative_paths_integration_test_workflow.yml"
     )
     return yaml.safe_load(path.read_text())

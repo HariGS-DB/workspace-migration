@@ -26,7 +26,7 @@ resources:
 
         - task_key: setup_X31_config
           notebook_task:
-            notebook_path: ../tests/integration/setup_test_config.py
+            notebook_path: ../../tests/integration/setup_test_config.py
             base_parameters:
               include_uc: "true"
               include_hive: "false"
@@ -40,14 +40,14 @@ resources:
           depends_on:
             - task_key: setup_X31_config
           notebook_task:
-            notebook_path: ../src/pre_check/pre_check.py
+            notebook_path: ../../src/pre_check/pre_check.py
 
         - task_key: assert_X31
           depends_on:
             - task_key: trigger_X31_pre_check
           run_if: ALL_DONE
           notebook_task:
-            notebook_path: ../tests/integration/test_negative_paths.py
+            notebook_path: ../../tests/integration/test_negative_paths.py
             base_parameters:
               scenario: "X.3.1"
               trigger_task_key: "trigger_X31_pre_check"
@@ -63,7 +63,7 @@ resources:
             - task_key: assert_X31
           run_if: ALL_DONE
           notebook_task:
-            notebook_path: ../tests/integration/setup_test_config.py
+            notebook_path: ../../tests/integration/setup_test_config.py
             base_parameters:
               include_uc: "true"
               include_hive: "false"
@@ -77,14 +77,14 @@ resources:
           depends_on:
             - task_key: setup_X32_config
           notebook_task:
-            notebook_path: ../src/pre_check/pre_check.py
+            notebook_path: ../../src/pre_check/pre_check.py
 
         - task_key: assert_X32
           depends_on:
             - task_key: trigger_X32_pre_check
           run_if: ALL_DONE
           notebook_task:
-            notebook_path: ../tests/integration/test_negative_paths.py
+            notebook_path: ../../tests/integration/test_negative_paths.py
             base_parameters:
               scenario: "X.3.2"
               trigger_task_key: "trigger_X32_pre_check"
@@ -101,7 +101,7 @@ resources:
             - task_key: assert_X32
           run_if: ALL_DONE
           notebook_task:
-            notebook_path: ../tests/integration/setup_test_config.py
+            notebook_path: ../../tests/integration/setup_test_config.py
             base_parameters:
               include_uc: "false"
               include_hive: "false"
@@ -121,7 +121,7 @@ resources:
             - task_key: trigger_X33_migrate
           run_if: ALL_DONE
           notebook_task:
-            notebook_path: ../tests/integration/test_negative_paths.py
+            notebook_path: ../../tests/integration/test_negative_paths.py
             base_parameters:
               scenario: "X.3.3"
               trigger_task_key: "trigger_X33_migrate"
@@ -145,4 +145,4 @@ resources:
             - task_key: assert_X33
           run_if: ALL_DONE
           notebook_task:
-            notebook_path: ../tests/integration/teardown_negative_paths.py
+            notebook_path: ../../tests/integration/teardown_negative_paths.py
