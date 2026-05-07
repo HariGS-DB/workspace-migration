@@ -24,7 +24,7 @@ def test_cleanup_staging_skips_when_strategy_not_staging_copy():
     from migrate.cleanup_staging import run
     spark = MagicMock()
     config = MagicMock()
-    config.rls_cm_strategy = "drop_and_restore"  # not staging_copy
+    config.rls_cm_strategy = ""  # default skip — not staging_copy
     config.include_uc = True
 
     with _patch_config(config), _patch_tracker(MagicMock()):
@@ -34,7 +34,7 @@ def test_cleanup_staging_skips_when_strategy_not_staging_copy():
 
 
 def test_cleanup_staging_skips_when_include_uc_false():
-    """include_uc=false also short-circuits (parity with restore_rls_cm)."""
+    """include_uc=false short-circuits before any tracker access."""
     from migrate.cleanup_staging import run
     spark = MagicMock()
     config = MagicMock()

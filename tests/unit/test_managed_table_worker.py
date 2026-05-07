@@ -341,119 +341,12 @@ class TestIcebergManagedTable:
         assert not any("INSERT INTO" in s for s in sqls)
 
 
-class TestRlsCmStrippedCtasBranch:
-    """When the source table was RLS/CM-stripped by setup_sharing (P.1
-    drop_and_restore), the share-consumer exposes it as ``deltasharing``
-    format during the post-strip metadata propagation window. DEEP CLONE
-    rejects that format; CTAS reads cleanly via the Delta Sharing
-    protocol. clone_table branches on the ``rls_cm_stripped`` set.
-    """
-
-    def _make_deps(self) -> dict:
-        config = MagicMock()
-        config.dry_run = False
-        tracker = MagicMock()
-        # drop_and_restore branch: no staging entries.
-        tracker.get_staging_for_original.return_value = None
-        return {
-            "config": config,
-            "auth": MagicMock(),
-            "tracker": tracker,
-            "validator": MagicMock(),
-            "wh_id": "wh-1",
-            "share_name": "cp_migration_share",
-        }
-
-    @patch("migrate.managed_table_worker.time")
-    @patch("migrate.managed_table_worker.execute_and_poll")
-    def test_stripped_table_uses_ctas_not_deep_clone(self, mock_execute, mock_time):
-        from migrate.managed_table_worker import clone_table
-
-        mock_time.time.side_effect = [100.0, 110.0, 115.0]
-        mock_execute.return_value = {"state": "SUCCEEDED", "statement_id": "s"}
-
-        deps = self._make_deps()
-        deps["validator"].validate_row_count.return_value = {
-            "match": True,
-            "source_count": 4,
-            "target_count": 4,
-        }
-
-        table_info = {"object_name": "`cat`.`sch`.`t_rls`"}
-        result = clone_table(
-            table_info,
-            **deps,
-            rls_cm_stripped=frozenset({"`cat`.`sch`.`t_rls`"}),
-        )
-
-        assert result["status"] == "validated"
-        sqls = [c.args[2] for c in mock_execute.call_args_list]
-        # CTAS path fires, DEEP CLONE does not.
-        assert any("AS SELECT * FROM" in s for s in sqls), sqls
-        assert not any("DEEP CLONE" in s for s in sqls), sqls
-        # Source is the consumer catalog view — same FQN shape as the CLONE path.
-        assert any("`cp_migration_share_consumer`.`sch`.`t_rls`" in s for s in sqls)
-
-    @patch("migrate.managed_table_worker.time")
-    @patch("migrate.managed_table_worker.execute_and_poll")
-    def test_unstripped_table_still_uses_deep_clone(self, mock_execute, mock_time):
-        """Tables not in ``rls_cm_stripped`` keep the existing DEEP CLONE path."""
-        from migrate.managed_table_worker import clone_table
-
-        mock_time.time.side_effect = [100.0, 110.0, 115.0]
-        mock_execute.return_value = {"state": "SUCCEEDED", "statement_id": "s"}
-
-        deps = self._make_deps()
-        deps["validator"].validate_row_count.return_value = {
-            "match": True,
-            "source_count": 10,
-            "target_count": 10,
-        }
-
-        table_info = {"object_name": "`cat`.`sch`.`t_plain`"}
-        result = clone_table(
-            table_info,
-            **deps,
-            rls_cm_stripped=frozenset({"`cat`.`sch`.`t_rls`"}),  # different table
-        )
-
-        assert result["status"] == "validated"
-        sqls = [c.args[2] for c in mock_execute.call_args_list]
-        assert any("DEEP CLONE" in s for s in sqls), sqls
-        assert not any("AS SELECT * FROM" in s for s in sqls), sqls
-
-    @patch("migrate.managed_table_worker.time")
-    @patch("migrate.managed_table_worker.execute_and_poll")
-    def test_empty_rls_cm_stripped_is_noop(self, mock_execute, mock_time):
-        """Default (empty frozenset) preserves DEEP CLONE behaviour — no
-        regression for the common case where no RLS/CM tables exist."""
-        from migrate.managed_table_worker import clone_table
-
-        mock_time.time.side_effect = [100.0, 110.0, 115.0]
-        mock_execute.return_value = {"state": "SUCCEEDED", "statement_id": "s"}
-
-        deps = self._make_deps()
-        deps["validator"].validate_row_count.return_value = {
-            "match": True,
-            "source_count": 1,
-            "target_count": 1,
-        }
-
-        table_info = {"object_name": "`cat`.`sch`.`tbl`"}
-        # Not passing rls_cm_stripped → default frozenset() kicks in.
-        result = clone_table(table_info, **deps)
-
-        assert result["status"] == "validated"
-        sqls = [c.args[2] for c in mock_execute.call_args_list]
-        assert any("DEEP CLONE" in s for s in sqls)
-
-
 class TestStagingCopyDeepClone:
     """Path A — staging_copy. When tracker.get_staging_for_original returns a
     staging FQN, clone_table must DEEP CLONE from the consumer-side staging
     path (`<consumer>.cp_migration_staging.<staging_table>`), NOT from the
     original consumer path. Staging tables preserve full schema/properties so
-    DEEP CLONE works without the CTAS fallback used for drop_and_restore.
+    DEEP CLONE works directly without any CTAS fallback.
     """
 
     def _make_deps(self, *, staging_fqn: str | None) -> dict:

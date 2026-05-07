@@ -221,18 +221,15 @@ class TestSetupSharing:
 class TestRlsCmStrategyGating:
     """Verify ``_validate_rls_cm_strategy``'s contract.
 
-    The flag is intentionally gated: today the drop-and-restore flow is
-    designed but not implemented. Setting the flag should fail loud so
-    operators don't silently assume the path is live. Any other non-empty
-    value should also be rejected (typo protection). The validator runs
-    BEFORE any side-effecting setup so misconfiguration doesn't leave
-    orphan shares / recipients on source.
+    Path A: only ``""`` (skip) and ``"staging_copy"`` are accepted. Any
+    other non-empty value is rejected (typo protection). The validator
+    runs BEFORE any side-effecting setup so misconfiguration doesn't
+    leave orphan shares / recipients on source.
     """
 
-    def _config(self, strategy: str, confirmed: bool = False) -> MagicMock:
+    def _config(self, strategy: str) -> MagicMock:
         config = MagicMock()
         config.rls_cm_strategy = strategy
-        config.rls_cm_maintenance_window_confirmed = confirmed
         return config
 
     def test_empty_strategy_returns_empty(self):
@@ -246,24 +243,17 @@ class TestRlsCmStrategyGating:
     def test_whitespace_strategy_treated_as_empty(self):
         assert _validate_rls_cm_strategy(self._config("   ")) == ""
 
-    def test_drop_and_restore_without_consent_raises_value_error(self):
-        """Operator must flip ``rls_cm_maintenance_window_confirmed=true``
-        to opt into drop_and_restore — validator refuses otherwise."""
-        with pytest.raises(ValueError, match="rls_cm_maintenance_window_confirmed"):
-            _validate_rls_cm_strategy(self._config("drop_and_restore", confirmed=False))
+    def test_staging_copy_returns_normalized(self):
+        """staging_copy is the only non-empty strategy now accepted."""
+        assert _validate_rls_cm_strategy(self._config("staging_copy")) == "staging_copy"
 
-    def test_drop_and_restore_with_consent_returns_normalized(self):
-        """With consent flag set, validator returns normalized strategy."""
-        assert (
-            _validate_rls_cm_strategy(self._config("drop_and_restore", confirmed=True))
-            == "drop_and_restore"
-        )
+    def test_staging_copy_mixed_case_normalized(self):
+        assert _validate_rls_cm_strategy(self._config("Staging_Copy")) == "staging_copy"
 
-    def test_drop_and_restore_mixed_case_still_requires_consent(self):
-        """Validator normalizes casing; ``Drop_And_Restore`` without consent
-        still trips the gate."""
-        with pytest.raises(ValueError):
-            _validate_rls_cm_strategy(self._config("Drop_And_Restore", confirmed=False))
+    def test_drop_and_restore_now_rejected(self):
+        """Path A removed drop_and_restore — validator rejects it as unknown."""
+        with pytest.raises(ValueError, match="Unknown rls_cm_strategy"):
+            _validate_rls_cm_strategy(self._config("drop_and_restore"))
 
     def test_unknown_value_raises_value_error(self):
         with pytest.raises(ValueError, match="Unknown rls_cm_strategy"):
@@ -526,8 +516,6 @@ class TestStagingCopyFlow:
     def _config(self) -> MagicMock:
         config = MagicMock()
         config.rls_cm_strategy = "staging_copy"
-        # staging_copy does NOT require the maintenance-window consent flag.
-        config.rls_cm_maintenance_window_confirmed = False
         config.include_uc = True
         config.dry_run = False
         config.tracking_catalog = "tcat"
