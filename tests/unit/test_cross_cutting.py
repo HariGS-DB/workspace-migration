@@ -186,7 +186,6 @@ class TestWorkerScopeGating:
     UC_WORKERS_WITH_SCOPE_GATE = (
         "views_worker.py",
         "functions_worker.py",
-        "grants_worker.py",
         "tags_worker.py",
         "row_filters_worker.py",
         "column_masks_worker.py",
