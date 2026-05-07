@@ -20,8 +20,11 @@ except NameError:
 #
 # Runs at the end of the migrate workflow when rls_cm_strategy='staging_copy'.
 # For each row in rls_cm_staging_manifest with dropped_at IS NULL:
-#   1. DROP TABLE IF EXISTS <staging_fqn>
-#   2. UPDATE rls_cm_staging_manifest SET dropped_at = current_timestamp()
+#   1. ALTER SHARE cp_migration_share REMOVE TABLE <staging_fqn>
+#      (UC rejects DROP on a table still in an active Delta Share with
+#      INVALID_STATE; "not in share" is swallowed for re-run idempotency.)
+#   2. DROP TABLE IF EXISTS <staging_fqn>
+#   3. UPDATE rls_cm_staging_manifest SET dropped_at = current_timestamp()
 #
 # Per-table continue-on-failure: a single bad drop doesn't block the rest;
 # failures stamp drop_failed_at + drop_error for operator follow-up. Final
@@ -33,6 +36,8 @@ import logging
 from common.auth import AuthManager
 from common.config import MigrationConfig
 from common.tracking import TrackingManager
+
+SHARE_NAME = "cp_migration_share"
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("cleanup_staging")
@@ -69,6 +74,18 @@ def run(dbutils, spark) -> None:  # noqa: ARG001
     for row in stagings:
         staging_fqn = row["staging_fqn"]
         try:
+            # Step 1: remove the staging table from cp_migration_share. UC
+            # rejects DROP on a table still in an active Delta Share with
+            # INVALID_STATE. "Not in share" / "not exist" swallowed so a
+            # re-run after a partial cleanup still makes progress.
+            try:
+                spark.sql(f"ALTER SHARE {SHARE_NAME} REMOVE TABLE {staging_fqn}")
+            except Exception as share_exc:  # noqa: BLE001
+                msg = str(share_exc).lower()
+                if not ("not" in msg and ("shared" in msg or "in share" in msg or "exist" in msg)):
+                    raise
+                logger.info("Staging %s already out of share; continuing.", staging_fqn)
+            # Step 2: drop the staging table.
             spark.sql(f"DROP TABLE IF EXISTS {staging_fqn}")
             tracker.mark_staging_dropped(staging_fqn)
             dropped += 1

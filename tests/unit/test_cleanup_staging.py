@@ -66,8 +66,11 @@ def test_cleanup_staging_skips_when_no_active_stagings():
     tracker.mark_staging_dropped.assert_not_called()
 
 
-def test_cleanup_staging_drops_each_active_staging_and_marks_manifest():
-    """For each active staging, issue DROP TABLE and mark dropped_at."""
+def test_cleanup_staging_removes_from_share_then_drops_each_staging():
+    """For each active staging: ALTER SHARE REMOVE TABLE, then DROP TABLE,
+    then mark dropped_at. UC rejects DROP if the table is still in an
+    active Delta Share, so the share-removal step is mandatory before drop.
+    """
     from migrate.cleanup_staging import run
     spark = MagicMock()
     config = MagicMock()
@@ -84,12 +87,43 @@ def test_cleanup_staging_drops_each_active_staging_and_marks_manifest():
     with _patch_config(config), _patch_tracker(tracker):
         run(MagicMock(), spark)
 
-    drop_calls = [c.args[0] for c in spark.sql.call_args_list if "DROP TABLE" in c.args[0]]
+    sql_calls = [c.args[0] for c in spark.sql.call_args_list]
+    alter_calls = [s for s in sql_calls if "ALTER SHARE" in s and "REMOVE TABLE" in s]
+    drop_calls = [s for s in sql_calls if "DROP TABLE" in s]
+    assert len(alter_calls) == 2
     assert len(drop_calls) == 2
-    # Order matches active-stagings order (oldest first).
-    assert "stg_a" in drop_calls[0]
-    assert "stg_b" in drop_calls[1]
+    # Per-staging ordering: ALTER SHARE comes before DROP TABLE for the same fqn.
+    a_alter_idx = next(i for i, s in enumerate(sql_calls) if "stg_a" in s and "ALTER SHARE" in s)
+    a_drop_idx = next(i for i, s in enumerate(sql_calls) if "stg_a" in s and "DROP TABLE" in s)
+    assert a_alter_idx < a_drop_idx
+    # Outer ordering: a before b (oldest first).
+    assert "stg_a" in alter_calls[0]
+    assert "stg_b" in alter_calls[1]
     assert tracker.mark_staging_dropped.call_count == 2
+
+
+def test_cleanup_staging_swallows_not_in_share_on_alter_share():
+    """Re-run after partial cleanup: a previously removed staging table
+    should produce a benign 'not in share' / 'does not exist' message
+    on ALTER SHARE; cleanup must continue and DROP TABLE the orphan."""
+    from migrate.cleanup_staging import run
+    spark = MagicMock()
+    config = MagicMock()
+    config.rls_cm_strategy = "staging_copy"
+    config.include_uc = True
+    tracker = MagicMock()
+    tracker.get_active_stagings.return_value = [
+        {"original_fqn": "`c`.`s`.`t1`", "staging_fqn": "`tc`.`cp_migration_staging`.`stg_a`",
+         "created_at": None, "run_id": "r1"},
+    ]
+    # ALTER SHARE raises "not shared", DROP TABLE succeeds.
+    spark.sql.side_effect = [Exception("Table is not shared"), None]
+
+    with _patch_config(config), _patch_tracker(tracker):
+        run(MagicMock(), spark)
+
+    tracker.mark_staging_dropped.assert_called_once()
+    tracker.mark_staging_drop_failed.assert_not_called()
 
 
 def test_cleanup_staging_continues_on_per_table_failure_then_raises():
@@ -106,21 +140,19 @@ def test_cleanup_staging_continues_on_per_table_failure_then_raises():
         {"original_fqn": "`c`.`s`.`t2`", "staging_fqn": "`tc`.`cp_migration_staging`.`stg_b`",
          "created_at": None, "run_id": "r1"},
     ]
-    # First drop raises, second succeeds.
-    spark.sql.side_effect = [Exception("boom"), None]
+    # Per-staging: ALTER SHARE succeeds, DROP TABLE raises (first), then
+    # ALTER SHARE succeeds + DROP TABLE succeeds (second).
+    spark.sql.side_effect = [None, Exception("boom"), None, None]
 
     with _patch_config(config), _patch_tracker(tracker):
         with pytest.raises(RuntimeError) as excinfo:
             run(MagicMock(), spark)
 
-    # Failed first
     tracker.mark_staging_drop_failed.assert_called_once()
     failed_args = tracker.mark_staging_drop_failed.call_args
     assert "stg_a" in failed_args.args[0]
-    # Succeeded second
     tracker.mark_staging_dropped.assert_called_once()
     succ_args = tracker.mark_staging_dropped.call_args
     assert "stg_b" in succ_args.args[0]
-    # Final RuntimeError mentions count and the failing FQN
     assert "1" in str(excinfo.value)
     assert "stg_a" in str(excinfo.value)
