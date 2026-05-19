@@ -32,13 +32,7 @@ logger = logging.getLogger("orchestrator")
 
 
 # COMMAND ----------
-# Batching helpers live in ``migrate.batching`` (plain module — notebooks
-# can't import other notebooks). Re-exported here for back-compat so
-# existing ``from migrate.orchestrator import build_batches`` callers
-# (unit tests, downstream code) keep working.
-
-from migrate.batching import (  # noqa: E402, F401
-    MAX_BATCH_BYTES,
+from migrate.batching import (  # noqa: E402
     _strip_heavy_fields,
     build_batches,
 )
