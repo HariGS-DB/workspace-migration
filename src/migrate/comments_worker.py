@@ -48,7 +48,18 @@ def _is_notebook() -> bool:
 
 
 def _escape(value: str) -> str:
-    return str(value).replace("'", "''")
+    """Escape a comment string for inline SQL.
+
+    Backslash-double MUST happen before quote-double, otherwise the escape-
+    doubled `\\'` gets re-broken. Semicolons are dropped because they would
+    terminate the COMMENT ON ... IS '...' statement mid-string.
+    """
+    return (
+        str(value)
+        .replace("\\", "\\\\")
+        .replace("'", "''")
+        .replace(";", "")
+    )
 
 
 def _emit_comment(

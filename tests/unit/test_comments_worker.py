@@ -78,6 +78,25 @@ class TestCommentsWorkerEmit:
         # single quote in body should become '' so the SQL is valid
         assert "'owner''s table'" in sql
 
+    def test_escape_handles_backslashes(self):
+        """Backslashes must be doubled (Spark SQL interprets ``\\`` in literals)."""
+        from migrate.comments_worker import _escape
+
+        assert _escape("path\\to\\thing") == "path\\\\to\\\\thing"
+
+    def test_escape_strips_semicolons(self):
+        """Semicolons would terminate the COMMENT ON ... IS '...' statement."""
+        from migrate.comments_worker import _escape
+
+        assert _escape("note; DROP TABLE users") == "note DROP TABLE users"
+
+    def test_escape_combined_order(self):
+        """Backslash doubling must happen before single-quote doubling so the
+        escape-doubled ``\\'`` doesn't get re-broken; semicolons dropped."""
+        from migrate.comments_worker import _escape
+
+        assert _escape("O'Brien\\; etc") == "O''Brien\\\\ etc"
+
     @patch("migrate.comments_worker.time")
     @patch("migrate.comments_worker.execute_and_poll")
     def test_dry_run_short_circuits(self, mock_execute, mock_time):
