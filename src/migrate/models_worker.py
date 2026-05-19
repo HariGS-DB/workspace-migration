@@ -34,6 +34,8 @@ import json
 import logging
 import time
 
+from databricks.sdk.errors import AlreadyExists
+
 from common.auth import AuthManager
 from common.config import MigrationConfig
 from common.tracking import TrackingManager
@@ -106,19 +108,20 @@ def apply_model(
             comment=model.get("comment"),
             storage_location=model.get("storage_location"),
         )
+    except AlreadyExists:
+        # IDEMPOTENT: model already exists, continue to versions + aliases
+        pass
     except Exception as exc:  # noqa: BLE001
-        # IDEMPOTENT: if model already exists, continue to versions + aliases
-        if "already" not in str(exc).lower() or "exists" not in str(exc).lower():
-            results.append(
-                {
-                    "object_name": obj_key,
-                    "object_type": "registered_model",
-                    "status": "failed",
-                    "error_message": str(exc),
-                    "duration_seconds": time.time() - start,
-                }
-            )
-            return results
+        results.append(
+            {
+                "object_name": obj_key,
+                "object_type": "registered_model",
+                "status": "failed",
+                "error_message": str(exc),
+                "duration_seconds": time.time() - start,
+            }
+        )
+        return results
 
     # Ensure the target-side copy helper notebook is uploaded once up front
     # so repeated per-version copy calls don't each re-upload it.
@@ -151,11 +154,17 @@ def apply_model(
                 source=source_uri,
                 run_id=None,
             )
+        except AlreadyExists:
+            # IDEMPOTENT: version exists — fetch it so artifacts can retry.
+            try:
+                created_version = client.model_versions.get(
+                    full_name=f"{catalog}.{schema}.{name}",
+                    version=int(version_num),
+                )
+            except Exception:  # noqa: BLE001
+                created_version = None
         except Exception as exc:  # noqa: BLE001
-            if "already" not in str(exc).lower() or "exists" not in str(exc).lower():
-                version_errors.append(f"v{version_num}: {exc}")
-            # For idempotent re-runs we still try to fetch the existing version
-            # so artifacts can be retried on a subsequent pass.
+            version_errors.append(f"v{version_num}: {exc}")
             try:
                 created_version = client.model_versions.get(
                     full_name=f"{catalog}.{schema}.{name}",
